@@ -23,6 +23,7 @@ import yaml
 
 from .engines.base import Engine
 from .finetune import _TRAIN_PY, recommend_recipe
+from .store import atomic_write_text
 
 TRAINABLE_ROLES = {"extractor", "interviewer", "predictor", "compiler", "judge"}
 
@@ -119,7 +120,7 @@ def export_engine_bundle(project_dir: str | Path, role: str, *, base_model: str 
     files: list[str] = []
 
     def _write(fn: str, content: str) -> None:
-        (out / fn).write_text(content)
+        atomic_write_text(out / fn, content)
         files.append(f"trained-engines/{role}/{fn}")
 
     _write("dataset.jsonl", "".join(json.dumps(r) + "\n" for r in rows))

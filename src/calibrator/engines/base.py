@@ -76,7 +76,7 @@ def loads_tolerant(text: Any) -> Any:
         candidate = _extract_json(text) if isinstance(text, str) else None
         if candidate is not None:
             return json.loads(candidate)  # JSONDecodeError (a ValueError) propagates
-        raise ValueError("no JSON found in engine output")
+        raise ValueError("no JSON found in engine output") from None
 
 
 def require_object(out: Any, what: str = "engine") -> dict:

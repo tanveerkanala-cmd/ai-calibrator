@@ -18,10 +18,11 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from .coerce import as_opt_str, as_str, is_str
+from .coerce import as_list, as_opt_str, as_str, is_str
 from .compile import render_system_prompt
 from .engines.base import Engine, require_object
 from .models import BehaviorSpec, EvalCriterion, Project, TestCase, Weight
+from .store import atomic_write_text
 
 PROBE_SCHEMA = {
     "type": "object",
@@ -128,7 +129,7 @@ def generate_probes(spec: BehaviorSpec, engine: Engine, *, max_probes: int = 12)
     )
     out = require_object(engine.complete(prompt, system=_REDTEAM_SYSTEM, schema=PROBE_SCHEMA), "red-team generator")
     probes = []
-    for p in out.get("probes", []):
+    for p in as_list(out.get("probes")):
         if isinstance(p, dict) and is_str(p.get("input")) and is_str(p.get("target")):
             probes.append({"input": p["input"], "target": p["target"], "tactic": as_opt_str(p.get("tactic")) or "unspecified"})
     return probes[:max_probes]
@@ -211,8 +212,7 @@ def redteam_dict(report: RedTeamReport) -> dict:
 
 def save_redteam(project_dir: str | Path, report: RedTeamReport) -> Path:
     d = Path(project_dir) / "evals" / report.run_id
-    d.mkdir(parents=True, exist_ok=True)
-    (d / "redteam.json").write_text(json.dumps(redteam_dict(report), indent=2))
+    atomic_write_text(d / "redteam.json", json.dumps(redteam_dict(report), indent=2))
     return d
 
 

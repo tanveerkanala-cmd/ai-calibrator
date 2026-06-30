@@ -54,7 +54,7 @@ def test_compile_on_corrupt_project_is_friendly(tmp_path):
 
 def test_serve_rejects_out_of_range_port(tmp_path):
     for bad in ("-1", "70000", "99999", "65536"):
-        result = runner.invoke(app, [f"serve", f"--port={bad}"])
+        result = runner.invoke(app, ["serve", f"--port={bad}"])
         assert result.exit_code == 1, f"port {bad} should be rejected"
         assert "between 0 and 65535" in result.output
         assert _has_no_traceback(result.output)

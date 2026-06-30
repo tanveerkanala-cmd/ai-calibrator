@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .coerce import as_opt_str, as_str, is_str
+from .coerce import as_list, as_str, is_str
 from .engines.base import Engine, require_object
 from .models import BehaviorSpec, EdgeCase, EvalCriterion, Example, Persona, Project, TaskType
 
@@ -122,7 +122,7 @@ def detect_conflicts(statements: list[Statement], engine: Engine) -> list[Confli
     conflicts: list[Conflict] = []
     seen: set[tuple[int, int]] = set()
     k = 1
-    for c in out.get("conflicts", []):
+    for c in as_list(out.get("conflicts")):
         if not isinstance(c, dict):
             continue
         a, b = c.get("a"), c.get("b")

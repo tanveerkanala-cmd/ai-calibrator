@@ -8,7 +8,7 @@ signal that later compiles into the behavior spec (M3).
 
 from __future__ import annotations
 
-from .coerce import as_opt_str, as_str, is_str
+from .coerce import as_list, as_opt_str, as_str, is_str
 from .engines.base import Engine, require_object
 from .models import InterviewItem, Project
 
@@ -67,7 +67,7 @@ def generate_questions(project: Project, engine: Engine) -> list[InterviewItem]:
     result = require_object(engine.complete(prompt, system=_INTERVIEW_SYSTEM, schema=QUESTION_SCHEMA), "interviewer")
 
     items: list[InterviewItem] = []
-    for i, q in enumerate(result.get("questions", []), start=1):
+    for i, q in enumerate(as_list(result.get("questions")), start=1):
         if not isinstance(q, dict) or not is_str(q.get("question")):
             continue
         items.append(

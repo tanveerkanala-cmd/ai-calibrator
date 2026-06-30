@@ -18,6 +18,7 @@ import yaml
 from .compile import rag_config, render_system_prompt, rubric
 from .engines.base import parse_engine_spec
 from .models import Project
+from .store import atomic_write_text
 
 DEFAULT_LOCAL_BASE = "qwen2.5:14b"
 
@@ -136,7 +137,7 @@ def export_bundle(project: Project, *, project_dir: str | Path, name: str | None
     files: list[str] = []
 
     def _write(fn: str, content: str) -> None:
-        (out / fn).write_text(content)
+        atomic_write_text(out / fn, content)
         files.append(f"export/{fn}")
 
     _write("system_prompt.txt", system)

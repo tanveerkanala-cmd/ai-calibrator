@@ -12,10 +12,11 @@ import json
 import math
 from pathlib import Path
 
-from .coerce import as_opt_str, as_str
+from .coerce import as_list, as_opt_str, as_str
 from .compile import render_system_prompt
 from .engines.base import Engine, require_object
 from .models import CriterionResult, Project, Scorecard, TestResult
+from .store import atomic_write_text
 
 JUDGE_SCHEMA = {
     "type": "object",
@@ -73,7 +74,7 @@ def _judge(
     out = require_object(judge.complete(prompt, system=_JUDGE_SYSTEM, schema=JUDGE_SCHEMA), "judge")
     by_id = {
         r.get("criterion_id"): r
-        for r in out.get("results", [])
+        for r in as_list(out.get("results"))
         if isinstance(r, dict)
     }
     results = []
@@ -170,10 +171,8 @@ def latest_run_id(project_dir: str | Path) -> str | None:
 def save_scorecard(project_dir: str | Path, card: Scorecard) -> Path:
     """Write scorecard.json + failures.jsonl under <project>/evals/<run-id>/."""
     d = Path(project_dir) / "evals" / card.run_id
-    d.mkdir(parents=True, exist_ok=True)
-    (d / "scorecard.json").write_text(json.dumps(card.model_dump(mode="json"), indent=2))
+    atomic_write_text(d / "scorecard.json", json.dumps(card.model_dump(mode="json"), indent=2))
     fails = [r for r in card.results if not r.passed]
-    (d / "failures.jsonl").write_text(
-        "".join(json.dumps(r.model_dump(mode="json")) + "\n" for r in fails)
-    )
+    atomic_write_text(d / "failures.jsonl",
+                      "".join(json.dumps(r.model_dump(mode="json")) + "\n" for r in fails))
     return d

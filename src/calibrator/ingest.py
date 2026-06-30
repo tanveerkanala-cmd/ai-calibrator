@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import rag
-from .coerce import as_opt_str, is_str
+from .coerce import as_list, as_opt_str, is_str
 from .engines.base import Engine, require_object
 from .models import Gap, Material, Project
 from .parsing import chunk_text, read_document
@@ -114,10 +114,10 @@ def extract_gaps(
         "Extract the facts and identify the gaps."
     )
     result = require_object(engine.complete(prompt, system=_EXTRACT_SYSTEM, schema=GAP_SCHEMA), "extractor")
-    facts = [str(f) for f in result.get("facts", [])]
+    facts = [str(f) for f in as_list(result.get("facts"))]
     gaps = [
         Gap(dimension=g["dimension"], why_it_matters=as_opt_str(g.get("why_it_matters")))
-        for g in result.get("gaps", [])
+        for g in as_list(result.get("gaps"))
         if isinstance(g, dict) and is_str(g.get("dimension"))
     ]
     return facts, gaps

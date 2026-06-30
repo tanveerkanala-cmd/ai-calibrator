@@ -57,6 +57,12 @@ class OllamaEngine(Engine):
                     f"Could not reach Ollama at {self.host}. Is it running?\n"
                     f"  Try:  ollama serve   (and)  ollama pull {self.model}"
                 ) from exc
-            return resp.json()["message"]["content"]
+            data = resp.json()
+            try:
+                return data["message"]["content"]
+            except (KeyError, TypeError) as exc:
+                raise RuntimeError(
+                    f"Unexpected Ollama response (missing message.content): {str(data)[:200]}"
+                ) from exc
 
         return call_json(_call) if schema is not None else _call()

@@ -11,7 +11,6 @@ from calibrator.compile import (
     generate_tests,
     rag_config,
     render_system_prompt,
-    rubric,
     synthesize_spec,
 )
 from calibrator.models import BehaviorSpec, EvalCriterion, InterviewItem, Material, Project, TaskType, Weight

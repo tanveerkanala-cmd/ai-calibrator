@@ -15,8 +15,9 @@ from pathlib import Path
 
 import yaml
 
-from .coerce import as_opt_str, as_str, is_str
+from .coerce import as_list, as_opt_str, as_str, is_str
 from .engines.base import Engine, require_object
+from .store import atomic_write_text
 from .models import (
     BehaviorSpec,
     EdgeCase,
@@ -24,6 +25,7 @@ from .models import (
     Example,
     Persona,
     Project,
+    TaskType,
     TestCase,
     Weight,
 )
@@ -175,6 +177,52 @@ def _qa_block(project: Project) -> str:
     return "\n\n".join(parts)
 
 
+def spec_from_dict(out: dict, *, goal: str, task_type: TaskType, knowledge_sources=()) -> BehaviorSpec:
+    """Map a schema-constrained engine response (SPEC_SCHEMA shape) into a
+    BehaviorSpec, coercing/skipping malformed fields. Shared by ``synthesize_spec``
+    (compile from interview) and ``reverse_spec`` (import an existing prompt)."""
+    persona = out.get("persona")
+    if not isinstance(persona, dict):
+        persona = {}
+    return BehaviorSpec(
+        goal=goal,
+        task_type=task_type,
+        persona=Persona(
+            voice=as_opt_str(persona.get("voice")),
+            reading_level=as_opt_str(persona.get("reading_level")),
+        ),
+        standards=[s for s in as_list(out.get("standards")) if is_str(s)],
+        do_not=[s for s in as_list(out.get("do_not")) if is_str(s)],
+        edge_cases=[
+            EdgeCase(situation=e["situation"], ruling=e["ruling"])
+            for e in as_list(out.get("edge_cases"))
+            if isinstance(e, dict) and is_str(e.get("situation")) and is_str(e.get("ruling"))
+        ],
+        format=as_opt_str(out.get("format")),
+        refusal_policy=as_opt_str(out.get("refusal_policy")),
+        knowledge_sources=list(knowledge_sources),
+        eval_criteria=[
+            EvalCriterion(
+                id=c["id"],
+                description=as_str(c.get("description")),
+                weight=_as_weight(c.get("weight")),
+            )
+            for c in as_list(out.get("eval_criteria"))
+            if isinstance(c, dict) and is_str(c.get("id"))
+        ],
+        examples=[
+            Example(
+                input=ex["input"],
+                good_output=as_opt_str(ex.get("good_output")),
+                bad_output=as_opt_str(ex.get("bad_output")),
+                why=as_opt_str(ex.get("why")),
+            )
+            for ex in as_list(out.get("examples"))
+            if isinstance(ex, dict) and is_str(ex.get("input"))
+        ],
+    )
+
+
 def synthesize_spec(project: Project, engine: Engine) -> BehaviorSpec:
     """Compiler engine: interview answers + facts → BehaviorSpec."""
     facts = "\n".join(f"- {f}" for f in project.facts) or "(none)"
@@ -186,46 +234,8 @@ def synthesize_spec(project: Project, engine: Engine) -> BehaviorSpec:
         "Produce the behavior specification."
     )
     out = require_object(engine.complete(prompt, system=_SPEC_SYSTEM, schema=SPEC_SCHEMA), "compiler")
-    persona = out.get("persona")
-    if not isinstance(persona, dict):
-        persona = {}
-    return BehaviorSpec(
-        goal=project.goal,
-        task_type=project.task_type,
-        persona=Persona(
-            voice=as_opt_str(persona.get("voice")),
-            reading_level=as_opt_str(persona.get("reading_level")),
-        ),
-        standards=[s for s in out.get("standards", []) if is_str(s)],
-        do_not=[s for s in out.get("do_not", []) if is_str(s)],
-        edge_cases=[
-            EdgeCase(situation=e["situation"], ruling=e["ruling"])
-            for e in out.get("edge_cases", [])
-            if isinstance(e, dict) and is_str(e.get("situation")) and is_str(e.get("ruling"))
-        ],
-        format=as_opt_str(out.get("format")),
-        refusal_policy=as_opt_str(out.get("refusal_policy")),
-        knowledge_sources=[m.path for m in project.materials],  # from materials, not the LLM
-        eval_criteria=[
-            EvalCriterion(
-                id=c["id"],
-                description=as_str(c.get("description")),
-                weight=_as_weight(c.get("weight")),
-            )
-            for c in out.get("eval_criteria", [])
-            if isinstance(c, dict) and is_str(c.get("id"))
-        ],
-        examples=[
-            Example(
-                input=ex["input"],
-                good_output=as_opt_str(ex.get("good_output")),
-                bad_output=as_opt_str(ex.get("bad_output")),
-                why=as_opt_str(ex.get("why")),
-            )
-            for ex in out.get("examples", [])
-            if isinstance(ex, dict) and is_str(ex.get("input"))
-        ],
-    )
+    return spec_from_dict(out, goal=project.goal, task_type=project.task_type,
+                          knowledge_sources=[m.path for m in project.materials])
 
 
 def generate_tests(spec: BehaviorSpec, engine: Engine) -> list[TestCase]:
@@ -239,13 +249,13 @@ def generate_tests(spec: BehaviorSpec, engine: Engine) -> list[TestCase]:
     out = require_object(engine.complete(prompt, system=_TESTS_SYSTEM, schema=TESTS_SCHEMA), "compiler")
     valid_ids = {c.id for c in spec.eval_criteria}
     tests: list[TestCase] = []
-    for i, t in enumerate(out.get("tests", []), start=1):
+    for i, t in enumerate(as_list(out.get("tests")), start=1):
         if not isinstance(t, dict) or not is_str(t.get("input")):
             continue
         # Drop criterion ids the model invented that aren't in the spec; an
         # empty list then falls back to "grade against all criteria" in run_eval
         # rather than producing an ungradeable test.
-        expects = [e for e in t.get("expects", []) if e in valid_ids]
+        expects = [e for e in as_list(t.get("expects")) if e in valid_ids]
         tests.append(
             TestCase(id=str(t.get("id") or f"t{i}"), input=t["input"],
                      expects=expects, notes=as_opt_str(t.get("notes")))
@@ -314,7 +324,7 @@ def write_build_bundle(spec: BehaviorSpec, tests: list[TestCase], project_dir: s
     files: list[str] = []
 
     def _write(name: str, content: str) -> None:
-        (build / name).write_text(content)
+        atomic_write_text(build / name, content)
         files.append(f"build/{name}")
 
     _write("spec.yaml", yaml.safe_dump(spec.model_dump(mode="json"), sort_keys=False))

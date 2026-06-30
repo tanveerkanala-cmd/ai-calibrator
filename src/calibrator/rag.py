@@ -39,7 +39,7 @@ def build_index(project_dir: str | Path, records: list[dict]) -> int | None:
 
     model = SentenceTransformer(EMBED_MODEL)
     vectors = model.encode([r["text"] for r in records]).tolist()
-    rows = [{"vector": vec, **rec} for vec, rec in zip(vectors, records)]
+    rows = [{"vector": vec, **rec} for vec, rec in zip(vectors, records, strict=True)]
 
     db = lancedb.connect(str(Path(project_dir) / "knowledge.lancedb"))
     db.create_table(TABLE, data=rows, mode="overwrite")

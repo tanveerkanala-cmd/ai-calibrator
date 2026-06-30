@@ -27,3 +27,14 @@ def as_opt_str(value: object) -> str | None:
 def as_str(value: object, default: str = "") -> str:
     """A required string field: the string if it is one, else ``default``."""
     return value if isinstance(value, str) else default
+
+
+def as_list(value: object) -> list:
+    """A list field, else ``[]``.
+
+    ``dict.get(key, [])`` returns ``None`` when the key is present with value
+    ``null`` (the default only applies to *missing* keys), and a non-compliant
+    engine can emit an array field as ``null``, a string, or an object. Iterating
+    those crashes (``None``) or silently misbehaves (string → chars, dict →
+    keys). Wrap every engine-output list access in this to get a real list."""
+    return value if isinstance(value, list) else []

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 
+from .coerce import as_list
 from .engines.base import Engine, require_object
 from .eval import next_run_id, run_eval, save_scorecard
 from .models import Project, Scorecard
@@ -50,7 +51,7 @@ def refine_spec(project: Project, scorecard: Scorecard, engine: Engine) -> list[
         "Propose additional standards to fix them."
     )
     out = require_object(engine.complete(prompt, system=_REFINE_SYSTEM, schema=REFINE_SCHEMA), "refiner")
-    return [s for s in out.get("new_standards", []) if isinstance(s, str) and s.strip()]
+    return [s for s in as_list(out.get("new_standards")) if isinstance(s, str) and s.strip()]
 
 
 def calibrate_loop(

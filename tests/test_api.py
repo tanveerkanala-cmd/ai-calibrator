@@ -360,6 +360,37 @@ def test_corrupt_project_yaml_returns_400_not_500(tmp_path):
     assert c.get("/api/projects/incomplete").status_code == 400
 
 
+def test_import_endpoint(tmp_path):
+    class RoleFake:
+        name = "fake@test"
+
+        def __init__(self, spec):
+            pass
+
+        def complete(self, prompt, *, system=None, schema=None):
+            props = (schema or {}).get("properties", {})
+            if "tests" in props:
+                return {"tests": [{"id": "t1", "input": "q", "expects": ["clarity"], "notes": ""}]}
+            return {"persona": {"voice": "concise"}, "standards": ["Be clear."], "do_not": [], "edge_cases": [],
+                    "format": "", "refusal_policy": "",
+                    "eval_criteria": [{"id": "clarity", "description": "d", "weight": "high"}], "examples": []}
+
+    app = create_app(tmp_path)
+    app.dependency_overrides[_engine_factory] = lambda: (lambda spec: RoleFake(spec))
+    c = TestClient(app)
+
+    r = c.post("/api/import", json={"name": "imported", "goal": "answer questions",
+                                    "prompt": "You are concise. Always be clear."})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["name"] == "imported" and body["has_spec"] is True and body["tests"] >= 1
+    # it's a real project now — coverage works on the extracted spec/tests
+    assert c.get("/api/projects/imported/coverage").json()["total_criteria"] >= 1
+    # duplicate → 409, empty prompt → 400
+    assert c.post("/api/import", json={"name": "imported", "goal": "g", "prompt": "x"}).status_code == 409
+    assert c.post("/api/import", json={"name": "blank", "goal": "g", "prompt": "   "}).status_code == 400
+
+
 def test_merge_endpoints(tmp_path):
     legal = Project(name="legal", goal="org goal")
     legal.spec = BehaviorSpec(goal="org goal", standards=["always add a disclaimer"])

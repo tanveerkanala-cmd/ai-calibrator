@@ -95,6 +95,20 @@ calibrate init my-support-ai \
 ```
 Creates a project folder with `project.yaml` and an empty `materials/` directory.
 
+### `calibrate import` ✅ — already have a system prompt? Start here.
+If you already wrote a system prompt and just want it **tested**, skip the
+interview entirely:
+```bash
+calibrate import my-ai --prompt ./system_prompt.txt \
+  --goal "Help customers with bookstore questions" --task-type support_assistant
+```
+It **reverse-engineers** the behavior spec your prompt implicitly encodes
+(standards, never-rules, edge cases, refusal policy, and measurable eval
+criteria), generates a test suite, and saves the original prompt for the record.
+The result is a normal project — run `calibrate eval`, `coverage`, `redteam`,
+`report`, or `drift` on it immediately. (`--engine model@provider` picks the
+engine for extraction and the created project; default is the standard binding.)
+
 ### `calibrate status` ✅
 ```bash
 calibrate status my-support-ai

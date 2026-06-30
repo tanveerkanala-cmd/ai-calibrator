@@ -95,6 +95,55 @@ def test_call_json_accepts_object():
     assert call_json(lambda: '{"x": 1}') == {"x": 1}
 
 
+def test_spec_from_dict_tolerates_null_and_wrongtyped_list_fields():
+    """An engine emitting a list field as null / string / dict must not crash —
+    `out.get(k, [])` returns None for explicit null. (audit: 8 findings, this class)"""
+    from calibrator.compile import spec_from_dict
+    from calibrator.models import TaskType
+
+    # explicit null for every list field (was: TypeError 'NoneType' is not iterable)
+    nulls = {"persona": None, "standards": None, "do_not": None, "edge_cases": None,
+             "format": None, "refusal_policy": None, "eval_criteria": None, "examples": None}
+    spec = spec_from_dict(nulls, goal="g", task_type=TaskType.ASSISTANT)  # must NOT raise
+    assert spec.standards == [] and spec.do_not == [] and spec.edge_cases == []
+    assert spec.eval_criteria == [] and spec.examples == []
+
+    # wrong-typed list fields: string (was iterated as chars), dict (as keys), int
+    wrong = {"standards": "abc", "do_not": {"k": "v"}, "edge_cases": 5, "eval_criteria": "x", "examples": 9}
+    spec2 = spec_from_dict(wrong, goal="g", task_type=TaskType.ASSISTANT)
+    assert spec2.standards == [] and spec2.do_not == [] and spec2.eval_criteria == []
+
+
+def test_stages_tolerate_null_list_fields():
+    """Every engine-output list access across the pipeline tolerates explicit null."""
+    from pathlib import Path
+
+    from calibrator.compile import generate_tests
+    from calibrator.ingest import extract_gaps
+    from calibrator.interview import generate_questions
+    from calibrator.models import (
+        BehaviorSpec, CriterionResult, EvalCriterion, Gap, Scorecard, TestResult, Weight,
+    )
+    from calibrator.pipeline import refine_spec
+    from calibrator.redteam import generate_probes
+
+    class NullEng:
+        name = "null@test"
+
+        def complete(self, prompt, *, system=None, schema=None):
+            return {k: None for k in (schema or {}).get("properties", {})}  # every array field → null
+
+    spec = BehaviorSpec(goal="g", standards=["s"], do_not=["d"],
+                        eval_criteria=[EvalCriterion(id="c1", description="d", weight=Weight.HIGH)])
+    assert generate_tests(spec, NullEng()) == []
+    assert generate_questions(Project(name="p", goal="g", gaps=[Gap(dimension="d")]), NullEng()) == []
+    assert extract_gaps("g", "assistant", [(Path("x.md"), "t")], NullEng()) == ([], [])
+    card = Scorecard(run_id="r", results=[TestResult(test_id="t", output="o",
+                     criteria=[CriterionResult(criterion_id="c1", passed=False)])])
+    assert refine_spec(Project(name="p", goal="g", spec=spec), card, NullEng()) == []
+    assert generate_probes(spec, NullEng()) == []
+
+
 def test_synthesize_spec_tolerates_non_string_fields():
     """Engine emits truthy NON-string values where strings are expected — the
     compiler must coerce/drop them, never raise a Pydantic ValidationError.

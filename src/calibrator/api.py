@@ -26,7 +26,7 @@ except ImportError as exc:  # pragma: no cover - depends on optional extra
     raise RuntimeError("The API needs the `api` extra:  pip install -e '.[api]'") from exc
 
 from .auth import all_status
-from .models import Project, TaskType
+from .models import EngineBinding, Project, TaskType
 from .store import load_project, project_lock, save_project
 
 WEB_DIR = Path(__file__).parent / "web"
@@ -100,6 +100,14 @@ class MergeApplyBody(BaseModel):
     goal: str | None = None
     drops: list[int] = Field(default_factory=list)
     additions: list[str] = Field(default_factory=list)
+
+
+class ImportBody(BaseModel):
+    name: str
+    goal: str
+    prompt: str
+    task_type: TaskType = TaskType.ASSISTANT
+    engine: str | None = None
 
 
 def _engine_factory():
@@ -498,6 +506,26 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             named[proj.name] = proj.spec
             first = first or proj
         return named, first
+
+    @app.post("/api/import")
+    def import_prompt(body: ImportBody, make_engine=Depends(_engine_factory)):
+        from .reverse import reverse_project
+        if not body.prompt.strip():
+            raise HTTPException(400, "prompt is empty")
+        name = _safe(body.name)
+        d = root / name
+        with project_lock(d):
+            if (d / "project.yaml").exists():
+                raise HTTPException(409, "project already exists")
+            try:
+                eng = make_engine(body.engine or EngineBinding().compiler)
+                project = reverse_project(name, body.goal, body.prompt, eng,
+                                          task_type=body.task_type, engine_spec=body.engine, project_dir=d)
+            except HTTPException:
+                raise
+            except Exception as exc:
+                raise HTTPException(400, str(exc))
+        return _state(project)
 
     @app.post("/api/merge/detect")
     def merge_detect(body: MergeDetectBody, make_engine=Depends(_engine_factory)):

@@ -15,8 +15,8 @@ import typer
 import yaml
 from pydantic import ValidationError
 
-from .models import Project, TaskType
-from .store import load_project, project_lock, save_project
+from .models import EngineBinding, Project, TaskType
+from .store import atomic_write_text, load_project, project_lock, save_project
 
 app = typer.Typer(
     add_completion=False,
@@ -79,6 +79,62 @@ def init(
     typer.echo(f"  goal: {goal}")
     typer.echo(f"  engine (all roles): {project.engines.interviewer}")
     typer.echo("\nNext:  add materials, then `calibrate ingest` (M1).")
+
+
+@app.command(name="import")
+def import_(
+    path: Path = typer.Argument(..., help="Project to create from the prompt."),
+    prompt: Path = typer.Option(..., "--prompt", "-p", help="Path to the existing system prompt (a text file)."),
+    goal: str = typer.Option(..., "--goal", "-g", help="One sentence: what should this AI do?"),
+    task_type: TaskType = typer.Option(TaskType.ASSISTANT, "--task-type", "-t", help="The kind of task."),
+    engine: Optional[str] = typer.Option(
+        None, "--engine", help="Engine for extraction + the created project (model@provider). Default: the standard binding."
+    ),
+) -> None:
+    """Reverse-calibrate: extract a tested behavior spec from an EXISTING system prompt. (M3+)"""
+    from .engines import get_engine
+    from .reverse import reverse_project
+
+    if not prompt.exists() or not prompt.is_file():
+        typer.secho(f"No prompt file at {prompt}.", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    try:
+        prompt_text = prompt.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        typer.secho(f"Could not read {prompt}: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    if not prompt_text.strip():
+        typer.secho("The prompt file is empty.", fg=typer.colors.YELLOW)
+        raise typer.Exit(code=1)
+
+    name = path.resolve().name or "project"
+    engine_spec = engine
+    try:
+        eng = get_engine(engine_spec or EngineBinding().compiler)
+    except (RuntimeError, ValueError, NotImplementedError) as exc:
+        typer.secho(str(exc), fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    with project_lock(path):
+        if (path / "project.yaml").exists():
+            typer.secho(f"A project already exists at {path}/.", fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+        typer.echo(f"Reverse-calibrating {prompt} with {eng.name} …")
+        try:
+            project = reverse_project(name, goal, prompt_text, eng,
+                                      task_type=task_type, engine_spec=engine_spec, project_dir=path)
+        except Exception as exc:
+            typer.secho(f"Import failed: {exc}", fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+
+    spec = project.spec
+    typer.secho(
+        f"✓ Imported → {path}/  ({len(spec.standards)} standard(s), {len(spec.do_not)} never-rule(s), "
+        f"{len(spec.eval_criteria)} criterion(s), {len(project.tests)} test(s) extracted).",
+        fg=typer.colors.GREEN,
+    )
+    typer.echo("  original prompt saved as imported_prompt.txt")
+    typer.echo("\nNext:  calibrate eval  (score it)  ·  calibrate coverage  ·  calibrate redteam")
 
 
 @app.command()
@@ -790,9 +846,8 @@ def merge(
             typer.secho(f"A project already exists at {out}/.", fg=typer.colors.RED)
             raise typer.Exit(code=1)
         save_project(merged, out)
-        (out / "reconciliation.yaml").write_text(
-            _yaml.safe_dump({"stakeholders": list(named), "conflicts": audit}, sort_keys=False)
-        )
+        atomic_write_text(out / "reconciliation.yaml",
+                          _yaml.safe_dump({"stakeholders": list(named), "conflicts": audit}, sort_keys=False))
     typer.secho(
         f"\n✓ Merged {len(named)} stakeholder(s) → {out}/  "
         f"({len(spec.standards)} standard(s), {len(spec.do_not)} never-rule(s); {len(conflicts)} conflict(s) reconciled).",
@@ -857,24 +912,24 @@ def train_engine_cmd(
             raise typer.Exit(code=1)
         typer.echo(f"Proving {candidate} against logged {role} decisions …")
         try:
-            result = prove_engine(path, role, cand, threshold=threshold)
+            proof = prove_engine(path, role, cand, threshold=threshold)
         except Exception as exc:
             typer.secho(f"Prove failed: {exc}", fg=typer.colors.RED)
             raise typer.Exit(code=1)
-        if result.samples == 0:
+        if proof.samples == 0:
             typer.secho(f"No logged {role} decisions. Run `calibrate log --on`, then `calibrate eval`, then retry.",
                         fg=typer.colors.YELLOW)
             raise typer.Exit(code=1)
         typer.secho(
-            f"agreement: {result.agreement:.0%} over {result.samples} sample(s) (threshold {threshold:.0%})",
-            fg=typer.colors.GREEN if result.passes else typer.colors.YELLOW, bold=True,
+            f"agreement: {proof.agreement:.0%} over {proof.samples} sample(s) (threshold {threshold:.0%})",
+            fg=typer.colors.GREEN if proof.passes else typer.colors.YELLOW, bold=True,
         )
-        if result.passes:
+        if proof.passes:
             typer.secho(f"✓ The local engine reproduces the cloud {role} — safe to set engines.{role} = {candidate}.",
                         fg=typer.colors.GREEN)
         else:
             typer.secho("✗ Not yet — keep the cloud engine, or train on more logged data.", fg=typer.colors.YELLOW)
-        raise typer.Exit(code=0 if result.passes else 1)
+        raise typer.Exit(code=0 if proof.passes else 1)
 
     if not read_log(path, role):
         typer.secho(

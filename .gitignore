@@ -8,6 +8,13 @@ dist/
 .venv/
 venv/
 
+# Tooling caches / reports
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
 # Project working data — the tool writes these into its project dir (the CWD by
 # default), so ignore them in case someone runs `calibrate` inside this repo.
 project.yaml

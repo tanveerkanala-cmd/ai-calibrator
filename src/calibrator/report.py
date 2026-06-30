@@ -14,7 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .coverage import CoverageReport
-from .models import Project, Scorecard
+from .models import BehaviorSpec, Project, Scorecard
 from .store import atomic_write_text
 
 
@@ -49,7 +49,7 @@ def report_dict(project: Project, coverage: CoverageReport, latest: Scorecard | 
 
 def render_report(project: Project, coverage: CoverageReport, latest: Scorecard | None) -> str:
     """Render the calibration report as Markdown."""
-    spec = project.spec
+    spec = project.spec or BehaviorSpec(goal=project.goal, task_type=project.task_type)
     pass_rate = latest.pass_rate if latest else 0.0
     conf = calibration_confidence(coverage.coverage_rate, pass_rate, latest is not None)
     L: list[str] = []

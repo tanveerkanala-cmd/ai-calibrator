@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .coerce import as_opt_str, as_str, is_str
+from .coerce import as_list, as_opt_str, as_str, is_str
 from .compile import render_system_prompt
 from .engines.base import Engine, require_object
 from .models import BehaviorSpec, Example, Project
@@ -84,7 +84,7 @@ def _generate_inputs(project: Project, engine: Engine, n: int) -> list[str]:
         f"Generate {n} user inputs to test this AI."
     )
     out = require_object(engine.complete(prompt, system=_INPUTS_SYSTEM, schema=INPUTS_SCHEMA), "input generator")
-    return [s for s in out.get("inputs", []) if is_str(s)][:n]
+    return [s for s in as_list(out.get("inputs")) if is_str(s)][:n]
 
 
 def propose_candidates(
@@ -124,8 +124,8 @@ def infer_standards(goal: str, judged: list[Judged], engine: Engine) -> dict:
     )
     out = require_object(engine.complete(prompt, system=_INFER_SYSTEM, schema=INFER_SCHEMA), "compiler")
     return {
-        "standards": [s for s in out.get("standards", []) if is_str(s)],
-        "do_not": [s for s in out.get("do_not", []) if is_str(s)],
+        "standards": [s for s in as_list(out.get("standards")) if is_str(s)],
+        "do_not": [s for s in as_list(out.get("do_not")) if is_str(s)],
     }
 
 
@@ -138,8 +138,8 @@ def apply_learned(project: Project, judged: list[Judged], learned: dict) -> Lear
         project.spec = BehaviorSpec(goal=project.goal, task_type=project.task_type)
     spec = project.spec
 
-    new_standards = [s for s in learned.get("standards", []) if is_str(s) and s not in spec.standards]
-    new_do_not = [s for s in learned.get("do_not", []) if is_str(s) and s not in spec.do_not]
+    new_standards = [s for s in as_list(learned.get("standards")) if is_str(s) and s not in spec.standards]
+    new_do_not = [s for s in as_list(learned.get("do_not")) if is_str(s) and s not in spec.do_not]
     spec.standards.extend(new_standards)
     spec.do_not.extend(new_do_not)
 

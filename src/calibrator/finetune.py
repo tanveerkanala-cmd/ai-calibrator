@@ -20,6 +20,7 @@ import yaml
 
 from .compile import render_system_prompt
 from .models import Project, Scorecard
+from .store import atomic_write_text
 
 DEFAULT_BASE = "Qwen/Qwen2.5-7B-Instruct"  # an open base you can actually LoRA
 
@@ -168,7 +169,7 @@ def export_finetune(project: Project, *, project_dir, base_model: str | None = N
     files: list[str] = []
 
     def _write(fn: str, content: str) -> None:
-        (out / fn).write_text(content)
+        atomic_write_text(out / fn, content)
         files.append(f"finetune/{fn}")
 
     _write("dataset.jsonl", "".join(json.dumps(r) + "\n" for r in rows))
