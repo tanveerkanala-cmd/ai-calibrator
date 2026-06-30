@@ -1,0 +1,45 @@
+:root {
+  --bg: #0f1115; --panel: #171a21; --line: #262b36; --text: #e7e9ee;
+  --muted: #8b93a3; --accent: #6ea8fe; --good: #57c785; --warn: #e0b341; --bad: #e0685f;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+}
+header {
+  display: flex; align-items: baseline; gap: 1rem;
+  padding: 0.8rem 1.2rem; border-bottom: 1px solid var(--line);
+}
+header h1 { font-size: 1.1rem; margin: 0; letter-spacing: 0.02em; }
+.auth { color: var(--muted); font-size: 0.82rem; }
+main { display: grid; grid-template-columns: 260px 1fr; gap: 1px; background: var(--line); min-height: calc(100vh - 50px); }
+aside, #panel { background: var(--bg); padding: 1rem 1.2rem; }
+aside h2, #panel h2 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+#projects { list-style: none; padding: 0; margin: 0 0 1rem; }
+#projects li { padding: 0.4rem 0.6rem; border-radius: 6px; cursor: pointer; }
+#projects li:hover { background: var(--panel); }
+#projects li.active { background: var(--panel); color: var(--accent); }
+form { display: flex; flex-direction: column; gap: 0.4rem; }
+input, textarea, select {
+  background: var(--panel); border: 1px solid var(--line); color: var(--text);
+  border-radius: 6px; padding: 0.45rem 0.6rem; font: inherit; width: 100%;
+}
+textarea { min-height: 3.2rem; resize: vertical; }
+button {
+  background: var(--accent); color: #07101f; border: 0; border-radius: 6px;
+  padding: 0.45rem 0.8rem; font: inherit; font-weight: 600; cursor: pointer;
+}
+button.ghost { background: var(--panel); color: var(--text); border: 1px solid var(--line); }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+.steps { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.8rem 0 1.2rem; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 0.8rem 1rem; margin-bottom: 0.8rem; }
+.muted { color: var(--muted); }
+.pill { display: inline-block; font-size: 0.72rem; padding: 0.1rem 0.45rem; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+.q .dim { color: var(--accent); font-size: 0.8rem; }
+.q .why { color: var(--muted); font-size: 0.85rem; }
+.banner { padding: 0.6rem 1.2rem; background: #3a2020; color: var(--bad); border-bottom: 1px solid var(--line); }
+.hidden { display: none; }
+.bar { height: 8px; background: var(--line); border-radius: 999px; overflow: hidden; }
+.bar > span { display: block; height: 100%; background: var(--good); }
+code { background: var(--panel); padding: 0.1rem 0.35rem; border-radius: 4px; }

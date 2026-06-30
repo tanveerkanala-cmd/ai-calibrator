@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Project working data — the tool writes these into its project dir (the CWD by
+# default), so ignore them in case someone runs `calibrate` inside this repo.
+project.yaml
+materials/
+build/
+evals/
+export/
+finetune/
+logs/
+trained-engines/
+knowledge.db
+*.lancedb/
+.lock
+project.yaml.*.tmp
+
+# Secrets — never commit keys (BYO-key lives in the OS keychain / local config)
+.env
+*.key
+secrets.*
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

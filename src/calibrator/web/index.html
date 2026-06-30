@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI Calibrator</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header>
+    <h1>AI&nbsp;Calibrator</h1>
+    <span id="auth" class="auth"></span>
+  </header>
+  <div id="banner" class="banner hidden"></div>
+  <main>
+    <aside>
+      <h2>Projects</h2>
+      <ul id="projects"></ul>
+      <form id="new-project">
+        <input name="name" placeholder="project name" required />
+        <input name="goal" placeholder="what should this AI do?" required />
+        <button type="submit">Create</button>
+      </form>
+    </aside>
+    <section id="panel">
+      <p class="muted">Select a project, or create one to begin.</p>
+    </section>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>

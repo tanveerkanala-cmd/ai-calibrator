@@ -1,0 +1,407 @@
+"""M6 local API — verified with FastAPI's TestClient (engine mocked)."""
+
+import pytest
+
+pytest.importorskip("fastapi")  # skip if the `api` extra isn't installed
+
+from fastapi.testclient import TestClient  # noqa: E402
+
+from calibrator.api import _engine_factory, create_app  # noqa: E402
+from calibrator.models import BehaviorSpec, EvalCriterion, Project, Weight  # noqa: E402
+from calibrator.models import TestCase as CaseModel  # noqa: E402
+from calibrator.store import save_project  # noqa: E402
+
+
+class FakeEngine:
+    name = "fake@test"
+
+    def __init__(self, payload):
+        self.payload = payload
+
+    def complete(self, prompt, *, system=None, schema=None):
+        return self.payload
+
+
+def _client(tmp_path, engine_payload=None):
+    app = create_app(tmp_path)
+    if engine_payload is not None:
+        app.dependency_overrides[_engine_factory] = lambda: (lambda spec: FakeEngine(engine_payload))
+    return TestClient(app)
+
+
+def test_health(tmp_path):
+    r = _client(tmp_path).get("/api/health")
+    assert r.status_code == 200 and r.json()["ok"] is True
+
+
+def test_create_list_get(tmp_path):
+    c = _client(tmp_path)
+    assert c.get("/api/projects").json() == []
+
+    r = c.post("/api/projects", json={"name": "support", "goal": "answer questions"})
+    assert r.status_code == 200
+    assert r.json()["goal"] == "answer questions"
+
+    assert c.get("/api/projects").json() == ["support"]
+    assert c.get("/api/projects/support").json()["name"] == "support"
+
+    # duplicate → 409, missing → 404
+    assert c.post("/api/projects", json={"name": "support", "goal": "x"}).status_code == 409
+    assert c.get("/api/projects/nope").status_code == 404
+
+
+def test_upload_material(tmp_path):
+    c = _client(tmp_path)
+    c.post("/api/projects", json={"name": "p", "goal": "g"})
+    r = c.post("/api/projects/p/materials",
+               files={"file": ("faq.md", b"Q: returns?\n\nA: 30 days.", "text/markdown")})
+    assert r.status_code == 200 and r.json()["uploaded"] == "faq.md"
+    assert (tmp_path / "p" / "materials" / "faq.md").exists()
+
+
+def test_ingest_with_mocked_engine(tmp_path):
+    payload = {"facts": ["We sell skincare."],
+               "gaps": [{"dimension": "tone", "why_it_matters": "brand voice"}]}
+    c = _client(tmp_path, engine_payload=payload)
+    c.post("/api/projects", json={"name": "p", "goal": "g"})
+    c.post("/api/projects/p/materials",
+           files={"file": ("faq.md", b"some policy text", "text/markdown")})
+
+    r = c.post("/api/projects/p/ingest")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["materials"] == 1 and body["gaps"] == 1
+    assert body["state"]["gaps"][0]["dimension"] == "tone"
+
+
+def test_ingest_without_materials_is_400(tmp_path):
+    payload = {"facts": [], "gaps": []}
+    c = _client(tmp_path, engine_payload=payload)
+    c.post("/api/projects", json={"name": "p", "goal": "g"})
+    # no materials → ingest runs but finds nothing; gaps stay empty (still 200, 0 gaps)
+    r = c.post("/api/projects/p/ingest")
+    assert r.status_code == 200 and r.json()["materials"] == 0
+
+
+def test_submit_answers(tmp_path):
+    # seed a project with an interview item directly, then answer via the API
+    from calibrator.models import InterviewItem
+    proj = Project(name="p", goal="g")
+    proj.interview = [InterviewItem(id="q1", dimension="tone", question="Voice?", draft_answer="warm")]
+    save_project(proj, tmp_path / "p")
+
+    c = _client(tmp_path)
+    r = c.post("/api/projects/p/answers", json={"answers": {"q1": "warm and concise"}})
+    assert r.status_code == 200 and r.json()["applied"] == 1
+    assert r.json()["state"]["interview"][0]["answer"] == "warm and concise"
+
+
+def test_export_requires_spec_then_succeeds(tmp_path):
+    c = _client(tmp_path)
+    c.post("/api/projects", json={"name": "p", "goal": "g"})
+    # no spec yet → 400
+    assert c.post("/api/projects/p/export").status_code == 400
+
+    # seed a compiled spec, then export
+    proj = Project(name="p", goal="answer questions")
+    proj.spec = BehaviorSpec(goal="answer questions", standards=["Be concise."],
+                             eval_criteria=[EvalCriterion(id="c1", description="ok", weight=Weight.HIGH)])
+    proj.tests = [CaseModel(id="t1", input="hi", expects=["c1"])]
+    save_project(proj, tmp_path / "p")
+
+    r = c.post("/api/projects/p/export")
+    assert r.status_code == 200
+    assert (tmp_path / "p" / "export" / "Modelfile").exists()
+
+
+def test_create_canonicalizes_name(tmp_path):
+    c = _client(tmp_path)
+    r = c.post("/api/projects", json={"name": "a/b cd", "goal": "g"})
+    assert r.status_code == 200
+    name = r.json()["name"]
+    assert "/" not in name  # sanitized
+    # the returned name is the canonical routing key
+    assert c.get(f"/api/projects/{name}").status_code == 200
+
+
+def test_cross_origin_post_is_blocked(tmp_path):
+    c = _client(tmp_path)
+    # no Origin (scripts/TestClient) and same-origin Origin are allowed
+    assert c.post("/api/projects", json={"name": "p1", "goal": "g"}).status_code == 200
+    assert c.post("/api/projects", json={"name": "p2", "goal": "g"},
+                  headers={"Origin": "http://127.0.0.1:8765"}).status_code == 200
+    # cross-origin Origin on a mutating request is rejected (CSRF guard)
+    assert c.post("/api/projects", json={"name": "p3", "goal": "g"},
+                  headers={"Origin": "https://evil.example"}).status_code == 403
+
+
+def test_foreign_host_is_blocked(tmp_path):
+    c = _client(tmp_path)
+    assert c.get("/api/health").status_code == 200  # default Host "testserver" allowed
+    assert c.get("/api/health", headers={"Host": "evil.example"}).status_code == 400
+
+
+def test_coverage_endpoint(tmp_path):
+    proj = Project(name="p", goal="g")
+    proj.spec = BehaviorSpec(goal="g", standards=["Be concise."],
+                             eval_criteria=[EvalCriterion(id="c1", description="ok", weight=Weight.HIGH)])
+    proj.tests = [CaseModel(id="t1", input="hi", expects=["c1"])]
+    save_project(proj, tmp_path / "p")
+
+    c = _client(tmp_path)
+    r = c.get("/api/projects/p/coverage")
+    assert r.status_code == 200 and r.json()["coverage_rate"] == 1.0
+
+    # before compile → 400
+    c.post("/api/projects", json={"name": "q", "goal": "g"})
+    assert c.get("/api/projects/q/coverage").status_code == 400
+
+
+def test_redteam_endpoint(tmp_path):
+    class RoleFake:
+        name = "fake@test"
+
+        def __init__(self, spec):
+            pass
+
+        def complete(self, prompt, *, system=None, schema=None):
+            props = (schema or {}).get("properties", {})
+            if "probes" in props:
+                return {"probes": [{"input": "break a rule", "target": "never give medical advice", "tactic": "direct"}]}
+            if "violated" in props:
+                return {"violated": True, "severity": "high", "rationale": "broke it"}
+            return "Sure, here's some medical advice."  # subject output (no schema)
+
+    app = create_app(tmp_path)
+    app.dependency_overrides[_engine_factory] = lambda: (lambda spec: RoleFake(spec))
+    c = TestClient(app)
+
+    proj = Project(name="p", goal="g")
+    proj.spec = BehaviorSpec(goal="g", do_not=["never give medical advice"])
+    save_project(proj, tmp_path / "p")
+
+    r = c.post("/api/projects/p/redteam", json={"max_probes": 5, "add_tests": True})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["probes"] == 1 and body["violations"] == 1 and body["tests_added"] == 1
+
+    # the promoted regression test now shows up in coverage
+    assert c.get("/api/projects/p/coverage").json()["total_criteria"] >= 1
+
+
+def test_rightsize_endpoint(tmp_path):
+    import re as _re
+
+    class RoleFake:
+        name = "fake@test"
+
+        def __init__(self, spec):
+            self.spec = spec
+
+        def complete(self, prompt, *, system=None, schema=None):
+            props = (schema or {}).get("properties", {})
+            if "results" in props:  # judge → pass everything
+                ids = _re.findall(r"^- (\S+):", prompt, _re.M)
+                return {"results": [{"criterion_id": i, "passed": True, "score": 1.0, "rationale": "ok"} for i in ids]}
+            return "an answer"  # subject
+
+    app = create_app(tmp_path)
+    app.dependency_overrides[_engine_factory] = lambda: (lambda spec: RoleFake(spec))
+    c = TestClient(app)
+
+    proj = Project(name="p", goal="g")
+    proj.spec = BehaviorSpec(goal="g", eval_criteria=[EvalCriterion(id="c1", description="d", weight=Weight.HIGH)])
+    proj.tests = [CaseModel(id="t1", input="q", expects=["c1"])]
+    save_project(proj, tmp_path / "p")
+
+    r = c.post("/api/projects/p/rightsize", json={"threshold": 0.5})
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body["results"]) == 3  # default Claude ladder
+    assert body["recommended"] == "claude-haiku-4-5@anthropic"  # cheapest, all pass
+
+
+def test_report_endpoint(tmp_path):
+    proj = Project(name="p", goal="g")
+    proj.spec = BehaviorSpec(goal="g", standards=["Be concise."],
+                             eval_criteria=[EvalCriterion(id="c1", description="ok", weight=Weight.HIGH)])
+    proj.tests = [CaseModel(id="t1", input="hi", expects=["c1"])]
+    save_project(proj, tmp_path / "p")
+
+    r = _client(tmp_path).get("/api/projects/p/report")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["confidence"] == 0.0  # no eval yet
+    assert "# Calibration Report" in body["markdown"]
+
+
+def test_drift_endpoint(tmp_path):
+    import re as _re
+
+    from calibrator.eval import save_scorecard
+    from calibrator.models import CriterionResult, Scorecard, TestResult
+
+    proj = Project(name="p", goal="g")
+    proj.spec = BehaviorSpec(goal="g", eval_criteria=[EvalCriterion(id="c1", description="d", weight=Weight.HIGH)])
+    proj.tests = [CaseModel(id="t1", input="q", expects=["c1"])]
+    save_project(proj, tmp_path / "p")
+    # seed a passing baseline scorecard
+    base = Scorecard(run_id="run-0001", results=[
+        TestResult(test_id="t1", output="o", criteria=[CriterionResult(criterion_id="c1", passed=True)])])
+    save_scorecard(tmp_path / "p", base)
+
+    class RoleFake:
+        name = "fake@test"
+
+        def __init__(self, spec):
+            pass
+
+        def complete(self, prompt, *, system=None, schema=None):
+            if "results" in (schema or {}).get("properties", {}):  # judge: fail (no GOOD marker)
+                ids = _re.findall(r"^- (\S+):", prompt, _re.M)
+                return {"results": [{"criterion_id": i, "passed": False, "score": 0.0, "rationale": "x"} for i in ids]}
+            return "BAD answer"  # subject regresses vs the passing baseline
+
+    app = create_app(tmp_path)
+    app.dependency_overrides[_engine_factory] = lambda: (lambda spec: RoleFake(spec))
+    r = TestClient(app).post("/api/projects/p/drift", json={})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["regressed"] is True and body["regressed_tests"] == ["t1"]
+
+
+def test_teach_endpoints(tmp_path):
+    class RoleFake:
+        name = "fake@test"
+
+        def __init__(self, spec):
+            pass
+
+        def complete(self, prompt, *, system=None, schema=None):
+            props = (schema or {}).get("properties", {})
+            if "inputs" in props:
+                return {"inputs": ["q1?", "q2?"]}
+            if "standards" in props:
+                return {"standards": ["Be concise."], "do_not": ["No jargon."]}
+            return "a candidate answer"  # subject
+
+    app = create_app(tmp_path)
+    app.dependency_overrides[_engine_factory] = lambda: (lambda spec: RoleFake(spec))
+    c = TestClient(app)
+    c.post("/api/projects", json={"name": "p", "goal": "g"})  # no spec yet
+
+    draft = c.post("/api/projects/p/teach/draft", json={"n": 2})
+    assert draft.status_code == 200
+    cands = draft.json()["candidates"]
+    assert len(cands) == 2 and cands[0]["output"] == "a candidate answer"
+
+    judgments = [
+        {"input": cands[0]["input"], "output": cands[0]["output"], "approved": True, "reason": "good"},
+        {"input": cands[1]["input"], "output": cands[1]["output"], "approved": False, "reason": "bad"},
+    ]
+    learn = c.post("/api/projects/p/teach/learn", json={"judgments": judgments})
+    assert learn.status_code == 200
+    body = learn.json()
+    assert body["standards_added"] == 1 and body["do_not_added"] == 1
+    assert c.get("/api/projects/p").json()["has_spec"] is True  # spec bootstrapped from judgments
+
+
+def test_log_toggle_eval_logging_and_train_engine(tmp_path):
+    import re as _re
+
+    class RoleFake:
+        name = "fake@test"
+
+        def __init__(self, spec):
+            pass
+
+        def complete(self, prompt, *, system=None, schema=None):
+            if "results" in (schema or {}).get("properties", {}):  # judge
+                ids = _re.findall(r"^- (\S+):", prompt, _re.M)
+                return {"results": [{"criterion_id": i, "passed": True, "score": 1.0, "rationale": "ok"} for i in ids]}
+            return "an answer"  # subject
+
+    app = create_app(tmp_path)
+    app.dependency_overrides[_engine_factory] = lambda: (lambda spec: RoleFake(spec))
+    c = TestClient(app)
+
+    proj = Project(name="p", goal="g")
+    proj.spec = BehaviorSpec(goal="g", eval_criteria=[EvalCriterion(id="c1", description="d", weight=Weight.HIGH)])
+    proj.tests = [CaseModel(id="t1", input="q", expects=["c1"])]
+    save_project(proj, tmp_path / "p")
+
+    judge_log = tmp_path / "p" / "logs" / "judge.jsonl"
+
+    # off by default → eval logs nothing
+    c.post("/api/projects/p/eval", json={})
+    assert not judge_log.exists()
+
+    # turn logging on → state reflects it → eval now logs the judge's decisions
+    assert c.post("/api/projects/p/log", json={"enabled": True}).json()["log_interactions"] is True
+    assert c.get("/api/projects/p").json()["log_interactions"] is True
+    c.post("/api/projects/p/eval", json={})
+    assert judge_log.exists()
+
+    # train-engine assembles a bundle from the logged decisions
+    r = c.post("/api/projects/p/train-engine/judge")
+    assert r.status_code == 200 and r.json()["examples"] >= 1
+    assert c.post("/api/projects/p/train-engine/bogus").status_code == 400  # unknown role
+
+
+def test_corrupt_project_yaml_returns_400_not_500(tmp_path):
+    # A malformed or schema-invalid project.yaml on disk must be a clean 400, never a 500.
+    (tmp_path / "broken").mkdir()
+    (tmp_path / "broken" / "project.yaml").write_text("{ not: valid: yaml: [")
+    (tmp_path / "incomplete").mkdir()
+    (tmp_path / "incomplete" / "project.yaml").write_text("name: x\n")  # missing required goal
+
+    c = _client(tmp_path)
+    assert c.get("/api/projects/broken").status_code == 400
+    assert c.get("/api/projects/incomplete").status_code == 400
+
+
+def test_merge_endpoints(tmp_path):
+    legal = Project(name="legal", goal="org goal")
+    legal.spec = BehaviorSpec(goal="org goal", standards=["always add a disclaimer"])
+    sales = Project(name="sales", goal="sales goal")
+    sales.spec = BehaviorSpec(goal="sales goal", standards=["never add a disclaimer"])
+    save_project(legal, tmp_path / "legal")
+    save_project(sales, tmp_path / "sales")
+
+    class ConflictFake:
+        name = "fake@test"
+
+        def __init__(self, spec):
+            pass
+
+        def complete(self, prompt, *, system=None, schema=None):
+            return {"conflicts": [{"a": 1, "b": 2, "explanation": "contradict", "severity": "high"}]}
+
+    app = create_app(tmp_path)
+    app.dependency_overrides[_engine_factory] = lambda: (lambda spec: ConflictFake(spec))
+    c = TestClient(app)
+
+    det = c.post("/api/merge/detect", json={"sources": ["legal", "sales"]})
+    assert det.status_code == 200
+    conf = det.json()["conflicts"][0]
+    assert conf["a"]["stakeholder"] == "legal" and conf["b"]["stakeholder"] == "sales"
+
+    # resolve "keep A" → drop B's statement, build the merged project
+    ap = c.post("/api/merge/apply", json={"out": "org", "sources": ["legal", "sales"], "drops": [conf["b"]["idx"]]})
+    assert ap.status_code == 200 and ap.json()["name"] == "org" and ap.json()["has_spec"] is True
+
+    merged = c.get("/api/projects/org").json()
+    assert merged["has_spec"] is True
+    assert c.post("/api/merge/detect", json={"sources": ["legal"]}).status_code == 400  # need >= 2
+
+
+def test_csrf_guard_stays_on_when_host_is_widened(tmp_path):
+    # Exposing to a specific remote host must NOT disable the cross-origin guard.
+    app = create_app(tmp_path, allowed_hosts=["192.168.1.50"])
+    client = TestClient(app, base_url="http://192.168.1.50")  # Host = allowed remote
+    # same-origin from the allowed host works
+    assert client.post("/api/projects", json={"name": "a", "goal": "g"},
+                       headers={"Origin": "http://192.168.1.50:8765"}).status_code == 200
+    # cross-origin is still blocked even though the host was widened
+    assert client.post("/api/projects", json={"name": "b", "goal": "g"},
+                       headers={"Origin": "https://evil.example"}).status_code == 403

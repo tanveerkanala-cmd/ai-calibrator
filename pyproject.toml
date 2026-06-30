@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ai-calibrator"
+version = "0.0.1"
+description = "Turn your knowledge and standards into a tested, reliable AI — by interview, not by prompting."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "the AI Calibrator authors" }]
+keywords = ["llm", "ai", "evaluation", "prompt-engineering", "fine-tuning", "calibration"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "pydantic>=2.6",
+    "typer>=0.12",
+    "httpx>=0.27",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+cloud = ["anthropic>=0.49", "openai>=1.40"]
+api = ["fastapi>=0.110", "uvicorn>=0.29", "python-multipart>=0.0.9"]
+rag = ["lancedb>=0.6", "sentence-transformers>=2.6"]
+docs = ["pypdf>=4.0", "python-docx>=1.1", "markdown-it-py>=3.0"]
+dev = ["pytest>=8.0", "fastapi>=0.110", "python-multipart>=0.0.9"]
+
+[project.scripts]
+calibrate = "calibrator.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/calibrator"]

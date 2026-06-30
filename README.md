@@ -1,0 +1,56 @@
+# AI Calibrator (working name: "Anvil")
+
+Turn your knowledge and standards into a **tested, reliable AI** — without
+writing prompts, code, or datasets. You bring your materials and answer
+questions; the tool builds, tests, and *proves* an AI that behaves the way you
+want.
+
+Think of it like onboarding a brilliant new hire: it **interviews** you about
+how you want the job done, writes the **playbook**, then **quizzes itself**
+against that playbook until it reliably passes.
+
+## How it works
+
+1. **State the goal** — what should this AI do?
+2. **Upload your materials** — docs, examples, policies. The tool indexes them
+   and finds the *gaps* they don't cover.
+3. **Answer a short interview** — only about the gaps; it drafts likely answers
+   for you to approve or correct.
+4. **It compiles** a behavior spec → system prompt + knowledge lookup (RAG) +
+   an eval rubric + test cases.
+5. **It tests and scores** the AI against your standards, fixes failures, and
+   loops until it passes.
+6. **You get a finished, runnable AI** plus the saved spec and tests.
+
+**Guided mode** (default) does all of this with configuration — runs on any
+machine. **Advanced mode** (opt-in, technical users) adds a fine-tuning
+toolchain on top, gated on actually beating the configured baseline.
+
+Bring-your-own-key: the engine defaults to **Claude** via *your own* API key,
+but works equally with **OpenAI** (`<model>@openai`, incl. OpenAI-compatible
+endpoints) or a **local Ollama** model (no key / offline). The app runs on your
+machine and **no secrets ship in this repo.**
+
+## Status
+
+Early. v0 (Guided mode) is under construction — see `docs/BUILD-PLAN.md`.
+Architecture: `docs/ARCHITECTURE.md`.
+
+## Quickstart (dev)
+
+```bash
+pip install -e '.[cloud]'
+export ANTHROPIC_API_KEY=sk-ant-...      # your own key; nothing is stored in the repo
+calibrate --help
+calibrate init my-support-ai --goal "Answer customer product questions in our voice."
+calibrate status my-support-ai
+```
+
+The engine defaults to **Claude** (cloud, bring-your-own key). To use **OpenAI**,
+set `OPENAI_API_KEY` and bind roles to `<model>@openai`; to run **locally** with
+no key, install [Ollama](https://ollama.com) (`ollama pull qwen2.5:14b`) and use
+`…@ollama`.
+
+**📖 Full walkthrough:** [`docs/USAGE.md`](docs/USAGE.md) — engine setup for
+Claude / OpenAI / local, the step-by-step workflow, and current build status.
+License: MIT.

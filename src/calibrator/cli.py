@@ -1,0 +1,1031 @@
+"""`calibrate` — the command-line front end over the Calibration Core.
+
+The CLI is a thin shell: every command maps to a pipeline stage on the Core, so
+the same logic later powers the local API and desktop UI. Stages not yet built
+print what they'll do and which milestone delivers them.
+"""
+
+from __future__ import annotations
+
+import math
+from pathlib import Path
+from typing import Optional
+
+import typer
+import yaml
+from pydantic import ValidationError
+
+from .models import Project, TaskType
+from .store import load_project, project_lock, save_project
+
+app = typer.Typer(
+    add_completion=False,
+    help="Turn your knowledge and standards into a tested, reliable AI.",
+)
+
+
+def _load(path: Path) -> Project:
+    try:
+        return load_project(path)
+    except FileNotFoundError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    except (yaml.YAMLError, ValidationError, ValueError) as exc:
+        # Corrupt or incomplete project.yaml (hand-edited, partially written by an
+        # old version, or truncated) — show a friendly message, not a traceback.
+        typer.secho(
+            f"The project at {path}/ is invalid or corrupted "
+            f"({Path(path) / 'project.yaml'}):",
+            fg=typer.colors.RED,
+        )
+        typer.secho(f"  {exc}", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def init(
+    name: str = typer.Argument(..., help="Project name (also the folder name)."),
+    goal: str = typer.Option(
+        ..., "--goal", "-g", help="One sentence: what should this AI do?"
+    ),
+    task_type: TaskType = typer.Option(
+        TaskType.ASSISTANT, "--task-type", "-t", help="The kind of task."
+    ),
+    path: Optional[Path] = typer.Option(
+        None, "--path", help="Where to create it (default: ./<name>)."
+    ),
+) -> None:
+    """Create a new calibration project."""
+    if not name or not name.strip():
+        typer.secho("Project name must not be empty.", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    if path is None:
+        p = Path(name)
+        if p.is_absolute() or len(p.parts) != 1 or p.parts[0] in ("..", "."):
+            typer.secho(
+                "Project name must be a simple folder name (no '/', '\\', or '..'). "
+                "Use --path to create the project in a specific location.",
+                fg=typer.colors.RED,
+            )
+            raise typer.Exit(code=1)
+    target = path or Path(name)
+    with project_lock(target):  # atomic against a concurrent `init` of the same path
+        if (target / "project.yaml").exists():
+            typer.secho(f"A project already exists at {target}/", fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+        project = Project(name=name, goal=goal, task_type=task_type)
+        save_project(project, target)
+    typer.secho(f"✓ Created project '{name}' at {target}/", fg=typer.colors.GREEN)
+    typer.echo(f"  goal: {goal}")
+    typer.echo(f"  engine (all roles): {project.engines.interviewer}")
+    typer.echo("\nNext:  add materials, then `calibrate ingest` (M1).")
+
+
+@app.command()
+def status(
+    path: Path = typer.Argument(Path("."), help="Project directory."),
+) -> None:
+    """Show a project's progress through the pipeline."""
+    project = _load(path)
+    typer.secho(f"{project.name}", bold=True)
+    typer.echo(f"  goal: {project.goal}")
+    typer.echo(f"  task: {project.task_type.value}")
+
+    stages = [
+        ("materials ingested", bool(project.materials)),
+        ("gaps identified", bool(project.gaps)),
+        ("interview answered", any(i.answer for i in project.interview)),
+        ("spec compiled", project.spec is not None),
+        ("tests generated", bool(project.tests)),
+    ]
+    typer.echo("\n  progress:")
+    for label, done in stages:
+        mark = typer.style("✓", fg=typer.colors.GREEN) if done else "·"
+        typer.echo(f"    {mark} {label}")
+
+
+@app.command()
+def engines(
+    path: Path = typer.Argument(Path("."), help="Project directory."),
+) -> None:
+    """Show which engine powers each role."""
+    project = _load(path)
+    typer.secho("engine bindings (role → model@provider):", bold=True)
+    for role, spec in project.engines.model_dump().items():
+        typer.echo(f"  {role:<12} {spec}")
+
+
+@app.command()
+def auth() -> None:
+    """Show how each engine provider signs in, and what looks configured."""
+    from .auth import all_status
+
+    typer.secho("engine sign-in status:", bold=True)
+    for st in all_status():
+        mark = typer.style("✓", fg=typer.colors.GREEN) if st.configured else "·"
+        typer.echo(f"  {mark} {st.provider:<14} {st.detail}")
+    typer.echo(
+        "\nClaude:  browser login (no key) →  calibrate login claude"
+        "\nOpenAI:  API key only →  set OPENAI_API_KEY (no third-party ChatGPT login)"
+        "\nLocal:   Ollama needs no auth"
+    )
+
+
+@app.command()
+def login(
+    provider: str = typer.Argument(..., help="Which engine to sign in to: claude | openai"),
+) -> None:
+    """Sign in to a cloud engine (Claude: browser/OAuth; OpenAI: key guidance)."""
+    p = provider.strip().lower()
+    if p in ("claude", "anthropic"):
+        from .auth import login_anthropic
+        try:
+            code = login_anthropic()
+        except RuntimeError as exc:
+            typer.secho(str(exc), fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+        raise typer.Exit(code=code)
+    if p in ("openai", "chatgpt", "gpt"):
+        typer.echo(
+            "OpenAI's API is key-based — there is no supported ChatGPT account "
+            "login for third-party tools.\n"
+            "Create a key at https://platform.openai.com/api-keys , then:\n"
+            "  export OPENAI_API_KEY=sk-..."
+        )
+        raise typer.Exit(code=0)
+    typer.secho(
+        f"Unknown provider {provider!r}. Use 'claude' or 'openai'.",
+        fg=typer.colors.RED,
+    )
+    raise typer.Exit(code=1)
+
+
+@app.command()
+def ingest(
+    path: Path = typer.Argument(Path("."), help="Project directory."),
+    source: Optional[Path] = typer.Option(
+        None, "--source", help="Materials dir (default: <project>/materials)."
+    ),
+    no_index: bool = typer.Option(
+        False, "--no-index", help="Skip building the retrieval (vector) index."
+    ),
+) -> None:
+    """Parse materials, extract the gap list, and build the retrieval index. (M1)"""
+    from .engines import get_engine
+    from .ingest import ingest_project
+
+    # Hold the project lock across load→mutate→save so a concurrent calibrate
+    # process can't lose this run's results.
+    with project_lock(path):
+        project = _load(path)
+        src = source or (Path(path) / "materials")
+        if not src.exists() or not any(src.iterdir()):
+            typer.secho(
+                f"No materials found in {src}/. Add files there, then re-run.",
+                fg=typer.colors.YELLOW,
+            )
+            raise typer.Exit(code=1)
+
+        try:
+            engine = get_engine(project.engines.extractor)
+        except (RuntimeError, ValueError, NotImplementedError) as exc:
+            typer.secho(str(exc), fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+
+        typer.echo(f"Ingesting {src}/ using {engine.name} …")
+        try:
+            result = ingest_project(
+                project, src, engine, project_dir=path, build_index=not no_index
+            )
+        except Exception as exc:  # network / auth / parse errors → friendly message
+            typer.secho(f"Ingest failed: {exc}", fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+
+        save_project(project, path)
+
+    typer.secho(
+        f"✓ Ingested {result.materials} file(s), {result.chunks} chunk(s), "
+        f"{result.facts} fact(s).",
+        fg=typer.colors.GREEN,
+    )
+    if result.indexed is None:
+        typer.echo("  retrieval index: skipped (install the `rag` extra to enable)")
+    else:
+        typer.echo(f"  retrieval index: {result.indexed} chunk(s) embedded")
+
+    typer.secho(f"\n{result.gaps} gap(s) to resolve in the interview:", bold=True)
+    for g in project.gaps:
+        typer.echo(f"  · {g.dimension}")
+    typer.echo("\nNext:  calibrate interview  (M2)")
+
+
+@app.command()
+def interview(
+    path: Path = typer.Argument(Path("."), help="Project directory."),
+    accept_drafts: bool = typer.Option(
+        False, "--accept-drafts",
+        help="Accept every drafted answer without prompting (non-interactive).",
+    ),
+    regenerate: bool = typer.Option(
+        False, "--regenerate", help="Re-generate the questions from the current gaps.",
+    ),
+) -> None:
+    """Ask adaptive, gap-driven questions (propose-and-ratify) and store answers. (M2)"""
+    from .engines import get_engine
+    from .interview import generate_questions
+
+    with project_lock(path):
+        project = _load(path)
+        if not project.gaps:
+            typer.secho("No gaps yet — run `calibrate ingest` first.", fg=typer.colors.YELLOW)
+            raise typer.Exit(code=1)
+
+        if regenerate or not project.interview:
+            try:
+                engine = get_engine(project.engines.interviewer)
+            except (RuntimeError, ValueError, NotImplementedError) as exc:
+                typer.secho(str(exc), fg=typer.colors.RED)
+                raise typer.Exit(code=1)
+            typer.echo(f"Generating questions with {engine.name} …")
+            try:
+                project.interview = generate_questions(project, engine)
+            except Exception as exc:
+                typer.secho(f"Question generation failed: {exc}", fg=typer.colors.RED)
+                raise typer.Exit(code=1)
+            save_project(project, path)
+
+    pending = [it for it in project.interview if not it.answer]
+    if not pending:
+        typer.secho("All questions answered. Next:  calibrate compile  (M3)",
+                    fg=typer.colors.GREEN)
+        raise typer.Exit(code=0)
+
+    mode = "auto-accepting drafts" if accept_drafts else "Enter = accept the draft"
+    typer.secho(f"{len(pending)} question(s) to answer ({mode}):\n", bold=True)
+    for item in pending:
+        if accept_drafts:
+            item.answer = item.draft_answer or ""
+        else:
+            typer.secho(f"[{item.dimension}] {item.question}", bold=True)
+            if item.rationale:
+                typer.echo(f"  why: {item.rationale}")
+            typer.echo(f"  draft: {item.draft_answer}")
+            resp = typer.prompt("  your answer (Enter to accept draft)",
+                                default="", show_default=False)
+            item.answer = resp.strip() or (item.draft_answer or "")
+            typer.echo("")
+        save_project(project, path)
+
+    answered = sum(1 for it in project.interview if it.answer)
+    typer.secho(f"✓ {answered}/{len(project.interview)} answered.", fg=typer.colors.GREEN)
+    typer.echo("Next:  calibrate compile  (M3)")
+
+
+@app.command()
+def compile(path: Path = typer.Argument(Path("."), help="Project directory.")) -> None:
+    """Synthesize the behavior spec + system prompt + RAG + rubric + tests. (M3)"""
+    from .compile import compile_project
+    from .engines import get_engine
+
+    with project_lock(path):
+        project = _load(path)
+        if not any(it.answer for it in project.interview):
+            typer.secho(
+                "No interview answers yet — run `calibrate interview` first.",
+                fg=typer.colors.YELLOW,
+            )
+            raise typer.Exit(code=1)
+
+        try:
+            engine = get_engine(project.engines.compiler)
+        except (RuntimeError, ValueError, NotImplementedError) as exc:
+            typer.secho(str(exc), fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+
+        typer.echo(f"Compiling the spec + artifacts with {engine.name} …")
+        try:
+            result = compile_project(project, engine, project_dir=path)
+        except Exception as exc:
+            typer.secho(f"Compile failed: {exc}", fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+
+        save_project(project, path)
+
+    typer.secho(
+        f"✓ Spec compiled: {result.standards} standard(s), {result.edge_cases} "
+        f"edge case(s), {result.criteria} eval criterion(s), {result.tests} test(s).",
+        fg=typer.colors.GREEN,
+    )
+    typer.echo(f"  bundle → {result.build_dir}/")
+    for f in result.files:
+        typer.echo(f"    {f}")
+    typer.echo("\nNext:  calibrate eval  (M4)")
+
+
+@app.command(name="eval")
+def eval_(
+    path: Path = typer.Argument(Path("."), help="Project directory."),
+    refine: bool = typer.Option(
+        False, "--refine", help="Loop: diagnose failures, refine the spec, re-run.",
+    ),
+    rounds: int = typer.Option(3, "--rounds", help="Max refine rounds."),
+    threshold: float = typer.Option(0.8, "--threshold", help="Target pass rate (0-1)."),
+) -> None:
+    """Run tests, grade against the rubric, score, and (optionally) refine. (M4)"""
+    from .engine_log import wrap_engine
+    from .engines import get_engine
+    from .eval import next_run_id, run_eval, save_scorecard
+
+    if refine and rounds < 1:
+        typer.secho("--rounds must be >= 1.", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    if not math.isfinite(threshold) or not (0.0 <= threshold <= 1.0):
+        typer.secho("--threshold must be a number between 0 and 1.", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    with project_lock(path):
+        project = _load(path)
+        if project.spec is None or not project.tests:
+            typer.secho("Nothing to evaluate — run `calibrate compile` first.", fg=typer.colors.YELLOW)
+            raise typer.Exit(code=1)
+
+        try:
+            log_on = project.log_interactions
+            subject = get_engine(project.engines.subject)
+            judge = wrap_engine(get_engine(project.engines.judge), "judge", path, enabled=log_on)
+            refiner = (wrap_engine(get_engine(project.engines.compiler), "compiler", path, enabled=log_on)
+                       if refine else None)
+        except (RuntimeError, ValueError, NotImplementedError) as exc:
+            typer.secho(str(exc), fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+
+        typer.echo(
+            f"Evaluating {len(project.tests)} test(s): subject={subject.name}, judge={judge.name}"
+            + (f", refiner={refiner.name}" if refiner else "") + " …"
+        )
+        try:
+            if refine:
+                from .compile import write_build_bundle
+                from .pipeline import calibrate_loop
+                cards = calibrate_loop(
+                    project, subject, judge, refiner,
+                    threshold=threshold, max_rounds=rounds, project_dir=path,
+                )
+                save_project(project, path)  # refined standards persist
+                write_build_bundle(project.spec, project.tests, path)  # refresh build/ to match
+            else:
+                card = run_eval(project, subject, judge, run_id=next_run_id(path))
+                save_scorecard(path, card)
+                cards = [card]
+        except Exception as exc:
+            typer.secho(f"Eval failed: {exc}", fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+
+    for i, card in enumerate(cards, 1):
+        graded = [r for r in card.results if r.criteria]
+        passed = sum(1 for r in graded if r.passed)
+        typer.echo(f"  round {i} [{card.run_id}]: {card.pass_rate:.0%} ({passed}/{len(graded)} graded)")
+
+    final = cards[-1]
+    ok = final.pass_rate >= threshold
+    typer.secho(
+        f"\nFinal pass rate: {final.pass_rate:.0%}",
+        fg=typer.colors.GREEN if ok else typer.colors.YELLOW,
+    )
+    for r in [r for r in final.results if not r.passed][:10]:
+        why = "; ".join(c.rationale or c.criterion_id for c in r.criteria if not c.passed) or "no criteria"
+        typer.echo(f"  · {r.test_id}: {why}")
+
+    typer.echo(f"\nScorecards saved under {Path(path)}/evals/.")
+    if ok:
+        typer.secho("Threshold met. Next:  calibrate export  (M5)", fg=typer.colors.GREEN)
+    elif not refine:
+        typer.echo("Below threshold — try:  calibrate eval --refine")
+
+
+@app.command()
+def coverage(path: Path = typer.Argument(Path("."), help="Project directory.")) -> None:
+    """Behavioral coverage: which spec criteria have targeted tests. (no engine, instant)"""
+    from .coverage import analyze_coverage
+
+    project = _load(path)
+    if project.spec is None:
+        typer.secho("Nothing to analyze — run `calibrate compile` first.", fg=typer.colors.YELLOW)
+        raise typer.Exit(code=1)
+
+    report = analyze_coverage(project.spec, project.tests)
+    typer.secho(
+        f"Behavioral coverage: {report.coverage_rate:.0%} "
+        f"({len(report.covered_criteria)}/{report.total_criteria} criteria targeted)",
+        bold=True,
+    )
+    for c in report.criteria:
+        mark = typer.style("✓", fg=typer.colors.GREEN) if c.covered else typer.style("·", fg=typer.colors.YELLOW)
+        targeted = ", ".join(c.targeted_by) if c.targeted_by else "— no targeted test"
+        typer.echo(f"  {mark} [{c.weight:<6}] {c.id}: {targeted}")
+    if report.broad_tests:
+        typer.echo(f"\n  broad grade-all tests (weak coverage): {', '.join(report.broad_tests)}")
+    for w in report.warnings:
+        typer.secho(f"  ⚠ {w}", fg=typer.colors.YELLOW)
+    if not report.warnings and report.coverage_rate == 1.0:
+        typer.secho("\n✓ Every criterion has a targeted test.", fg=typer.colors.GREEN)
+
+
+@app.command()
+def redteam(
+    path: Path = typer.Argument(Path("."), help="Project directory."),
+    max_probes: int = typer.Option(12, "--max-probes", help="Max adversarial probes to generate."),
+    add_tests: bool = typer.Option(
+        False, "--add-tests", help="Promote confirmed violations into the test suite as regressions.",
+    ),
+) -> None:
+    """Adversarially probe the configured AI to break its own rules. (M4+)"""
+    from .compile import write_build_bundle
+    from .engines import get_engine
+    from .redteam import promote_to_tests, run_redteam
+
+    if not (1 <= max_probes <= 50):
+        typer.secho("--max-probes must be between 1 and 50.", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    with project_lock(path):
+        project = _load(path)
+        if project.spec is None:
+            typer.secho("Nothing to red-team — run `calibrate compile` first.", fg=typer.colors.YELLOW)
+            raise typer.Exit(code=1)
+        try:
+            generator = get_engine(project.engines.compiler)
+            subject = get_engine(project.engines.subject)
+            judge = get_engine(project.engines.judge)
+        except (RuntimeError, ValueError, NotImplementedError) as exc:
+            typer.secho(str(exc), fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+
+        typer.echo(f"Red-teaming: subject={subject.name}, judge={judge.name} (≤{max_probes} probes) …")
+        try:
+            report = run_redteam(project, generator, subject, judge, project_dir=path, max_probes=max_probes)
+        except Exception as exc:
+            typer.secho(f"Red-team failed: {exc}", fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+
+        added = 0
+        if add_tests and report.violations:
+            added = promote_to_tests(project, report)
+            save_project(project, path)
+            write_build_bundle(project.spec, project.tests, path)
+
+    color = typer.colors.GREEN if not report.violations else typer.colors.RED
+    typer.secho(
+        f"\nHeld {report.hold_rate:.0%} — {len(report.violations)}/{report.probes} probe(s) caused a violation.",
+        fg=color, bold=True,
+    )
+    for r in report.violations:
+        typer.secho(f"  ✗ [{r.severity}] {r.target}", fg=typer.colors.RED)
+        typer.echo(f"     probe ({r.tactic}): {r.input[:100]}")
+        if r.rationale:
+            typer.echo(f"     why: {r.rationale}")
+    if add_tests and added:
+        typer.secho(f"\n+ Added {added} regression test(s). Run `calibrate eval --refine` to fix them.",
+                    fg=typer.colors.GREEN)
+    typer.echo(f"\nSaved → {Path(path)}/evals/{report.run_id}/redteam.json")
+
+
+@app.command()
+def rightsize(
+    path: Path = typer.Argument(Path("."), help="Project directory."),
+    models: Optional[str] = typer.Option(
+        None, "--models", help="Comma-separated model@provider candidates (default: the Claude tier ladder)."
+    ),
+    threshold: float = typer.Option(0.8, "--threshold", help="Pass-rate bar (0-1)."),
+) -> None:
+    """Find the cheapest model that still meets your pass bar — runs your tests across models. (M4+)"""
+    from .engines import get_engine
+    from .rightsize import DEFAULT_LADDER
+    from .rightsize import rightsize as run_rightsize
+
+    if not math.isfinite(threshold) or not (0.0 <= threshold <= 1.0):
+        typer.secho("--threshold must be a number between 0 and 1.", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    project = _load(path)
+    if project.spec is None or not project.tests:
+        typer.secho("Nothing to rightsize — run `calibrate compile` first.", fg=typer.colors.YELLOW)
+        raise typer.Exit(code=1)
+
+    specs = [s.strip() for s in models.split(",") if s.strip()] if models else list(DEFAULT_LADDER)
+    try:
+        judge = get_engine(project.engines.judge)
+    except (RuntimeError, ValueError, NotImplementedError) as exc:
+        typer.secho(str(exc), fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    typer.echo(f"Rightsizing across {len(specs)} model(s), judge={judge.name} (this runs your tests N× — may take a while) …")
+    report = run_rightsize(project, specs, judge, get_engine, threshold=threshold, project_dir=path)
+
+    typer.secho(f"\n  {'model':<28}{'pass':>6}  {'$ in/out':>10}  note", bold=True)
+    for r in report.results:
+        if r.error:
+            typer.secho(f"  {r.spec:<28}{'—':>6}  {'—':>10}  error: {r.error[:48]}", fg=typer.colors.YELLOW)
+            continue
+        price = f"{r.in_price}/{r.out_price}" if r.in_price is not None else "unknown"
+        meets = r.pass_rate >= threshold
+        note = "✓ meets bar" if meets else "below bar"
+        typer.secho(f"  {r.spec:<28}{r.pass_rate:>5.0%}  {price:>10}  {note}",
+                    fg=typer.colors.GREEN if meets else None)
+
+    rec = report.recommended
+    if rec:
+        typer.secho(f"\n→ Recommended: {rec.spec}  ({rec.pass_rate:.0%}, cheapest that meets {threshold:.0%})",
+                    fg=typer.colors.GREEN)
+        typer.echo(f"  to adopt: point engines.subject at {rec.spec} in project.yaml")
+    else:
+        typer.secho(f"\nNo candidate met the {threshold:.0%} bar — try `calibrate eval --refine` or lower --threshold.",
+                    fg=typer.colors.YELLOW)
+    typer.echo(f"\nSaved → {Path(path)}/evals/rightsize.json")
+
+
+@app.command()
+def drift(
+    path: Path = typer.Argument(Path("."), help="Project directory."),
+    baseline: Optional[str] = typer.Option(
+        None, "--baseline", help="Baseline run id (default: the latest saved scorecard)."
+    ),
+    tolerance: float = typer.Option(
+        0.0, "--tolerance", help="Allowed pass-rate drop before flagging drift (0-1)."
+    ),
+) -> None:
+    """Re-run the suite and flag behavior drift vs a baseline. Exits 2 on regression (CI-friendly). (M4+)"""
+    from .drift import load_scorecard, run_drift
+    from .engines import get_engine
+    from .eval import latest_run_id
+
+    if not math.isfinite(tolerance) or not (0.0 <= tolerance <= 1.0):
+        typer.secho("--tolerance must be a number between 0 and 1.", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    with project_lock(path):
+        project = _load(path)
+        if project.spec is None or not project.tests:
+            typer.secho("Nothing to check — run `calibrate compile` first.", fg=typer.colors.YELLOW)
+            raise typer.Exit(code=1)
+        base_id = baseline or latest_run_id(path)
+        if not base_id:
+            typer.secho("No baseline scorecard yet — run `calibrate eval` first to set one.", fg=typer.colors.YELLOW)
+            raise typer.Exit(code=1)
+        try:
+            base_card = load_scorecard(path, base_id)
+        except FileNotFoundError as exc:
+            typer.secho(str(exc), fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+        try:
+            subject = get_engine(project.engines.subject)
+            judge = get_engine(project.engines.judge)
+        except (RuntimeError, ValueError, NotImplementedError) as exc:
+            typer.secho(str(exc), fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+        typer.echo(f"Drift check vs baseline {base_id}: subject={subject.name}, judge={judge.name} …")
+        try:
+            report, _ = run_drift(project, subject, judge, baseline=base_card, project_dir=path, tolerance=tolerance)
+        except Exception as exc:
+            typer.secho(f"Drift check failed: {exc}", fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+
+    typer.secho(
+        f"\nbaseline {report.baseline_run}: {report.baseline_rate:.0%}  →  "
+        f"{report.candidate_run}: {report.candidate_rate:.0%}  (Δ {report.delta:+.0%})",
+        bold=True,
+    )
+    if report.regressed_tests:
+        typer.secho(f"  ✗ {len(report.regressed_tests)} regressed (pass→fail): "
+                    f"{', '.join(report.regressed_tests[:10])}", fg=typer.colors.RED)
+    if report.fixed_tests:
+        typer.secho(f"  ✓ {len(report.fixed_tests)} improved (fail→pass): "
+                    f"{', '.join(report.fixed_tests[:10])}", fg=typer.colors.GREEN)
+    if report.regressed:
+        typer.secho("\n⚠ DRIFT DETECTED — behavior regressed beyond tolerance.", fg=typer.colors.RED)
+        raise typer.Exit(code=2)
+    typer.secho("\n✓ No drift — behavior held within tolerance.", fg=typer.colors.GREEN)
+
+
+@app.command()
+def report(path: Path = typer.Argument(Path("."), help="Project directory.")) -> None:
+    """Generate a shareable calibration report (the AI's 'nutrition label'). (no engine)"""
+    from .coverage import analyze_coverage
+    from .drift import load_scorecard
+    from .eval import latest_run_id
+    from .report import calibration_confidence, render_report, save_report
+
+    project = _load(path)
+    if project.spec is None:
+        typer.secho("Nothing to report — run `calibrate compile` first.", fg=typer.colors.YELLOW)
+        raise typer.Exit(code=1)
+
+    cov = analyze_coverage(project.spec, project.tests)
+    latest = None
+    rid = latest_run_id(path)
+    if rid:
+        try:
+            latest = load_scorecard(path, rid)
+        except (FileNotFoundError, ValueError):
+            latest = None
+
+    markdown = render_report(project, cov, latest)
+    out = save_report(path, markdown)
+    conf = calibration_confidence(cov.coverage_rate, latest.pass_rate if latest else 0.0, latest is not None)
+    typer.secho(f"Calibration Confidence: {conf:.0%}", bold=True)
+    typer.echo(f"  coverage {cov.coverage_rate:.0%}"
+               + (f" × pass rate {latest.pass_rate:.0%}" if latest else "  (no eval yet — run `calibrate eval`)"))
+    typer.secho(f"✓ Report → {out}", fg=typer.colors.GREEN)
+
+
+@app.command()
+def teach(
+    path: Path = typer.Argument(Path("."), help="Project directory."),
+    n: int = typer.Option(5, "--n", help="How many sample outputs to judge."),
+) -> None:
+    """Calibrate by example: approve/reject sample outputs; the tool infers your standards. (M3+)"""
+    from .compile import write_build_bundle
+    from .engines import get_engine
+    from .teach import Judged, apply_learned, infer_standards, propose_candidates
+
+    if not (1 <= n <= 20):
+        typer.secho("--n must be between 1 and 20.", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    with project_lock(path):
+        project = _load(path)
+        try:
+            generator = get_engine(project.engines.compiler)
+            subject = get_engine(project.engines.subject)
+        except (RuntimeError, ValueError, NotImplementedError) as exc:
+            typer.secho(str(exc), fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+
+        typer.echo(f"Generating {n} sample output(s) to judge (subject={subject.name}) …")
+        try:
+            candidates = propose_candidates(project, generator, subject, n=n)
+        except Exception as exc:
+            typer.secho(f"Could not generate candidates: {exc}", fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+        if not candidates:
+            typer.secho("No candidates to judge.", fg=typer.colors.YELLOW)
+            raise typer.Exit(code=1)
+
+        judged: list[Judged] = []
+        for c in candidates:
+            typer.secho(f"\nINPUT:  {c.input}", bold=True)
+            typer.echo(f"OUTPUT: {c.output}")
+            approved = typer.confirm("  Approve this output?", default=True)
+            reason = typer.prompt("  Why? (optional, Enter to skip)", default="", show_default=False).strip() or None
+            judged.append(Judged(input=c.input, output=c.output, approved=approved, reason=reason))
+
+        typer.echo("\nInferring your standards from these judgments …")
+        try:
+            learned = infer_standards(project.goal, judged, generator)
+        except Exception as exc:
+            typer.secho(f"Inference failed: {exc}", fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+        result = apply_learned(project, judged, learned)
+        save_project(project, path)
+        if project.tests:  # refresh the build bundle if one exists
+            write_build_bundle(project.spec, project.tests, path)
+
+    typer.secho(
+        f"\n✓ Learned {result.standards_added} standard(s) + {result.do_not_added} never-rule(s) "
+        f"from {len(judged)} judgment(s); recorded {result.examples_recorded} example(s).",
+        fg=typer.colors.GREEN,
+    )
+    for s in result.standards:
+        typer.echo(f"  + standard: {s}")
+    for s in result.do_not:
+        typer.echo(f"  + never:    {s}")
+    typer.echo("\nNext:  calibrate compile  (regenerate tests/rubric)  or  calibrate eval")
+
+
+@app.command()
+def merge(
+    out: Path = typer.Argument(..., help="Path of the merged project to create."),
+    sources: list[Path] = typer.Option([], "--from", help="A stakeholder's project dir (repeat for each)."),
+    goal: Optional[str] = typer.Option(None, "--goal", help="Goal for the merged AI (default: the first source's)."),
+    report_only: bool = typer.Option(False, "--report-only", help="Detect + print conflicts; don't create the merged project."),
+) -> None:
+    """Merge multiple stakeholders' calibrated projects into one, reconciling conflicts. (org use)"""
+    import yaml as _yaml
+
+    from .engines import get_engine
+    from .stakeholders import build_merged_spec, conflict_dict, detect_conflicts, gather
+
+    if len(sources) < 2:
+        typer.secho("Need at least two --from projects to merge.", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    named: dict = {}
+    first = None
+    for src in sources:
+        proj = _load(src)
+        if proj.spec is None:
+            typer.secho(f"{src}/ has no spec — run `calibrate compile` there first.", fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+        if proj.name in named:
+            typer.secho(f"Duplicate stakeholder name {proj.name!r} across sources — rename one project.",
+                        fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+        named[proj.name] = proj.spec
+        first = first or proj
+
+    try:
+        engine = get_engine(first.engines.compiler)
+    except (RuntimeError, ValueError, NotImplementedError) as exc:
+        typer.secho(str(exc), fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    statements = gather(named)
+    typer.echo(f"Analyzing {len(statements)} rule(s) from {len(named)} stakeholder(s) for conflicts …")
+    try:
+        conflicts = detect_conflicts(statements, engine)
+    except Exception as exc:
+        typer.secho(f"Conflict detection failed: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    drops: set[int] = set()
+    additions: list[str] = []
+    audit: list[dict] = []
+    if conflicts:
+        typer.secho(f"\n{len(conflicts)} conflict(s) found:", bold=True)
+    else:
+        typer.secho("\nNo conflicts found — merging cleanly.", fg=typer.colors.GREEN)
+
+    for c in conflicts:
+        typer.secho(f"\n[{c.id}] ({c.severity})", fg=typer.colors.RED, bold=True)
+        typer.echo(f"  A [{c.a.stakeholder}]: {c.a.text}")
+        typer.echo(f"  B [{c.b.stakeholder}]: {c.b.text}")
+        typer.echo(f"  why: {c.explanation}")
+        if report_only:
+            continue
+        choice = typer.prompt("  keep (a)/(b) or (m)erge", default="a").strip().lower()[:1]
+        if choice == "b":
+            drops.add(c.a.idx)
+            ruling = f"keep B [{c.b.stakeholder}]"
+        elif choice == "m":
+            drops.update({c.a.idx, c.b.idx})
+            merged_text = typer.prompt("  merged rule").strip()
+            if merged_text:
+                additions.append(merged_text)
+            ruling = f"merge → {merged_text}"
+        else:
+            drops.add(c.b.idx)
+            ruling = f"keep A [{c.a.stakeholder}]"
+        rationale = typer.prompt("  rationale (optional)", default="", show_default=False).strip() or None
+        audit.append({"conflict": conflict_dict(c), "ruling": ruling, "rationale": rationale})
+
+    if report_only:
+        typer.echo("\n(report only — no project created. Re-run without --report-only to reconcile.)")
+        raise typer.Exit(code=0)
+
+    goal_final = goal or first.goal
+    spec = build_merged_spec(named, goal=goal_final, task_type=first.task_type, drops=drops, additions=additions)
+    merged = Project(name=out.name, goal=goal_final, task_type=first.task_type, spec=spec)
+    with project_lock(out):
+        if (out / "project.yaml").exists():
+            typer.secho(f"A project already exists at {out}/.", fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+        save_project(merged, out)
+        (out / "reconciliation.yaml").write_text(
+            _yaml.safe_dump({"stakeholders": list(named), "conflicts": audit}, sort_keys=False)
+        )
+    typer.secho(
+        f"\n✓ Merged {len(named)} stakeholder(s) → {out}/  "
+        f"({len(spec.standards)} standard(s), {len(spec.do_not)} never-rule(s); {len(conflicts)} conflict(s) reconciled).",
+        fg=typer.colors.GREEN,
+    )
+    typer.echo("  reconciliation audit → reconciliation.yaml")
+    typer.echo("\nNext:  calibrate compile  (regenerate tests/rubric for the merged spec)")
+
+
+@app.command(name="log")
+def log_cmd(
+    path: Path = typer.Argument(Path("."), help="Project directory."),
+    enable: Optional[bool] = typer.Option(
+        None, "--on/--off", help="Turn engine-decision logging on or off (omit to just show status)."
+    ),
+) -> None:
+    """Toggle local logging of engine decisions — the data the Engine-Trainer learns from."""
+    with project_lock(path):
+        project = _load(path)
+        if enable is not None:
+            project.log_interactions = enable
+            save_project(project, path)
+    state = "ON" if project.log_interactions else "OFF"
+    typer.secho(f"engine logging: {state}", fg=typer.colors.GREEN if project.log_interactions else None, bold=True)
+    if project.log_interactions:
+        typer.echo(f"  decisions append to {Path(path)}/logs/<role>.jsonl on each `calibrate eval`.")
+        typer.echo("  localize a role later with:  calibrate train-engine judge")
+    else:
+        typer.echo("  turn on with:  calibrate log --on   (stays local; off by default for privacy)")
+
+
+@app.command(name="train-engine")
+def train_engine_cmd(
+    role: str = typer.Argument(..., help="Tool role to localize: judge | compiler | extractor | interviewer | predictor"),
+    path: Path = typer.Argument(Path("."), help="Project directory."),
+    base: Optional[str] = typer.Option(None, "--base", help="Open base model to fine-tune."),
+    prove: bool = typer.Option(False, "--prove", help="Replay logged inputs through a candidate engine and measure agreement."),
+    candidate: Optional[str] = typer.Option(None, "--candidate", help="Candidate engine spec to prove (model@provider)."),
+    threshold: float = typer.Option(0.9, "--threshold", help="Min agreement to trust the local engine (0-1)."),
+) -> None:
+    """Localize a cloud role onto your own model from logged decisions — the autonomy loop. (v1)"""
+    from .train_engine import TRAINABLE_ROLES, export_engine_bundle, prove_engine, read_log
+
+    role = role.strip().lower()
+    if role not in TRAINABLE_ROLES:
+        typer.secho(f"role must be one of: {', '.join(sorted(TRAINABLE_ROLES))}.", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    _load(path)  # validate the project exists / is loadable
+
+    if prove:
+        if not candidate:
+            typer.secho("--prove needs --candidate <model@provider>.", fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+        if not math.isfinite(threshold) or not (0.0 <= threshold <= 1.0):
+            typer.secho("--threshold must be a number between 0 and 1.", fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+        from .engines import get_engine
+        try:
+            cand = get_engine(candidate)
+        except (RuntimeError, ValueError, NotImplementedError) as exc:
+            typer.secho(str(exc), fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+        typer.echo(f"Proving {candidate} against logged {role} decisions …")
+        try:
+            result = prove_engine(path, role, cand, threshold=threshold)
+        except Exception as exc:
+            typer.secho(f"Prove failed: {exc}", fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+        if result.samples == 0:
+            typer.secho(f"No logged {role} decisions. Run `calibrate log --on`, then `calibrate eval`, then retry.",
+                        fg=typer.colors.YELLOW)
+            raise typer.Exit(code=1)
+        typer.secho(
+            f"agreement: {result.agreement:.0%} over {result.samples} sample(s) (threshold {threshold:.0%})",
+            fg=typer.colors.GREEN if result.passes else typer.colors.YELLOW, bold=True,
+        )
+        if result.passes:
+            typer.secho(f"✓ The local engine reproduces the cloud {role} — safe to set engines.{role} = {candidate}.",
+                        fg=typer.colors.GREEN)
+        else:
+            typer.secho("✗ Not yet — keep the cloud engine, or train on more logged data.", fg=typer.colors.YELLOW)
+        raise typer.Exit(code=0 if result.passes else 1)
+
+    if not read_log(path, role):
+        typer.secho(
+            f"No logged {role} decisions yet. Turn on logging (`calibrate log --on`), run `calibrate eval`, then retry.",
+            fg=typer.colors.YELLOW,
+        )
+        raise typer.Exit(code=1)
+    result = export_engine_bundle(path, role, base_model=base)
+    typer.secho(
+        f"✓ Engine-training bundle → {result.bundle_dir}/  "
+        f"({result.examples} example(s) on {result.base_model})",
+        fg=typer.colors.GREEN,
+    )
+    for f in result.files:
+        typer.echo(f"    {f}")
+    typer.echo(
+        f"\nTrain on a GPU (see README), serve it, then prove it matches:\n"
+        f"  calibrate train-engine {role} --prove --candidate <your-model@ollama>"
+    )
+
+
+@app.command()
+def export(
+    path: Path = typer.Argument(Path("."), help="Project directory."),
+    name: Optional[str] = typer.Option(
+        None, "--name", help="Bundle / model name (default: from the project name)."
+    ),
+) -> None:
+    """Package the calibrated config into a runnable bundle (Ollama Modelfile + more). (M5)"""
+    from .export import export_bundle
+
+    project = _load(path)
+    if project.spec is None:
+        typer.secho("Nothing to export — run `calibrate compile` first.", fg=typer.colors.YELLOW)
+        raise typer.Exit(code=1)
+
+    result = export_bundle(project, project_dir=path, name=name)
+    typer.secho(f"✓ Exported calibrated AI → {result.bundle_dir}/", fg=typer.colors.GREEN)
+    for f in result.files:
+        typer.echo(f"    {f}")
+    typer.echo(
+        f"\nRun it locally with Ollama:\n"
+        f"  ollama pull {result.base_model}\n"
+        f"  ollama create {result.name} -f {result.bundle_dir}/Modelfile\n"
+        f"  ollama run {result.name}\n"
+        f"…or programmatically:  python {result.bundle_dir}/run.py \"your question\""
+    )
+
+
+@app.command()
+def serve(
+    host: str = typer.Option("127.0.0.1", "--host", help="Bind host (localhost by default)."),
+    port: int = typer.Option(8765, "--port", help="Port."),
+    projects: Optional[Path] = typer.Option(
+        None, "--projects", help="Projects root dir (default: ~/.ai-calibrator/projects)."
+    ),
+) -> None:
+    """Run the local API + web UI; open the printed URL in your browser. (M6)"""
+    if not (0 <= port <= 65535):
+        typer.secho(
+            f"--port must be between 0 and 65535 (got {port}).", fg=typer.colors.RED
+        )
+        raise typer.Exit(code=1)
+    try:
+        import uvicorn
+        from .api import create_app, default_projects_root
+    except (ImportError, RuntimeError):
+        typer.secho("The API needs the `api` extra:  pip install -e '.[api]'", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    root = projects or default_projects_root()
+    is_local = host in ("127.0.0.1", "localhost", "::1")
+    if not is_local:
+        typer.secho(
+            f"⚠  Binding to {host} exposes the (unauthenticated) API beyond localhost.\n"
+            "   The Host/Origin guard still applies — but there is NO authentication, so only do\n"
+            "   this on a trusted network. Bind a specific address (e.g. --host 192.168.1.50),\n"
+            "   not 0.0.0.0, so the guard can match the host you actually connect to.",
+            fg=typer.colors.RED,
+        )
+    application = create_app(root, allowed_hosts=None if is_local else [host])
+    typer.secho(f"AI Calibrator → http://{host}:{port}", fg=typer.colors.GREEN)
+    typer.echo(f"  projects in {root}")
+    uvicorn.run(application, host=host, port=port, log_level="warning")
+
+
+@app.command()
+def finetune(
+    path: Path = typer.Argument(Path("."), help="Project directory."),
+    base: Optional[str] = typer.Option(None, "--base", help="Open base model to fine-tune."),
+    gate: bool = typer.Option(False, "--gate", help="Compare two eval scorecards instead of building."),
+    baseline: Optional[str] = typer.Option(None, "--baseline", help="Baseline run id (with --gate)."),
+    candidate: Optional[str] = typer.Option(None, "--candidate", help="Candidate run id (with --gate)."),
+) -> None:
+    """Advanced tier: build a fine-tuning dataset + recipe, or run the prove-it gate. (v1)"""
+    import json as _json
+    from .models import Scorecard
+
+    project = _load(path)
+
+    if gate:
+        if not (baseline and candidate):
+            typer.secho("--gate needs --baseline <run-id> and --candidate <run-id>.", fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+        from .finetune import beats_baseline
+
+        def _card(rid: str) -> Scorecard:
+            f = Path(path) / "evals" / rid / "scorecard.json"
+            if not f.exists():
+                typer.secho(f"no scorecard at evals/{rid}/", fg=typer.colors.RED)
+                raise typer.Exit(code=1)
+            return Scorecard.model_validate(_json.loads(f.read_text()))
+
+        base_card, cand_card = _card(baseline), _card(candidate)
+        win = beats_baseline(base_card, cand_card)
+        typer.echo(f"baseline [{baseline}]: {base_card.pass_rate:.0%}    candidate [{candidate}]: {cand_card.pass_rate:.0%}")
+        if win:
+            typer.secho("✓ ACCEPT — the fine-tune beats the configured baseline. Keep it.", fg=typer.colors.GREEN)
+        else:
+            typer.secho("✗ REJECT — it doesn't beat the baseline. Stay on configuration.", fg=typer.colors.YELLOW)
+        raise typer.Exit(code=0 if win else 1)
+
+    if project.spec is None:
+        typer.secho("Nothing to fine-tune — run `calibrate compile` first.", fg=typer.colors.YELLOW)
+        raise typer.Exit(code=1)
+
+    from .finetune import export_finetune
+    result = export_finetune(project, project_dir=path, base_model=base)
+    if result.examples == 0:
+        typer.secho(
+            "⚠ No training examples yet. The Advanced tier needs human-authored / "
+            "corrected examples — add examples to the spec (or capture eval "
+            "corrections) before fine-tuning will help.",
+            fg=typer.colors.YELLOW,
+        )
+    typer.secho(
+        f"✓ Fine-tuning bundle → {result.bundle_dir}/  "
+        f"({result.examples} example(s), {result.method} on {result.base_model})",
+        fg=typer.colors.GREEN,
+    )
+    for f in result.files:
+        typer.echo(f"    {f}")
+    typer.echo(
+        "\nNext: train on a GPU (see finetune/README.md), then prove it wins:\n"
+        "  calibrate finetune --gate --baseline <run> --candidate <run>"
+    )
+
+
+def main() -> None:
+    app()
+
+
+if __name__ == "__main__":
+    main()

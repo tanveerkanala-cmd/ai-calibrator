@@ -1,0 +1,363 @@
+"""M3 — Compile: synthesize the behavior spec, then compile the artifact bundle.
+
+The expert's ratified interview answers + extracted facts are synthesized into a
+`BehaviorSpec` (the source of truth) by the compiler engine. Everything else is
+*compiled from the spec* — the system prompt, RAG config, and eval rubric are
+deterministic renders; the test cases are a second engine pass. Output lands in
+`<project>/build/`.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from pathlib import Path
+
+import yaml
+
+from .coerce import as_opt_str, as_str, is_str
+from .engines.base import Engine, require_object
+from .models import (
+    BehaviorSpec,
+    EdgeCase,
+    EvalCriterion,
+    Example,
+    Persona,
+    Project,
+    TestCase,
+    Weight,
+)
+from .rag import EMBED_MODEL, TABLE
+
+# --- Structured-output schemas (strict-compatible across providers) ---------
+
+SPEC_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "persona": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "voice": {"type": "string"},
+                "reading_level": {"type": "string"},
+            },
+            "required": ["voice", "reading_level"],
+        },
+        "standards": {"type": "array", "items": {"type": "string"}},
+        "do_not": {"type": "array", "items": {"type": "string"}},
+        "edge_cases": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "situation": {"type": "string"},
+                    "ruling": {"type": "string"},
+                },
+                "required": ["situation", "ruling"],
+            },
+        },
+        "format": {"type": "string"},
+        "refusal_policy": {"type": "string"},
+        "eval_criteria": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "id": {"type": "string"},
+                    "description": {"type": "string"},
+                    "weight": {"type": "string", "enum": ["low", "medium", "high"]},
+                },
+                "required": ["id", "description", "weight"],
+            },
+        },
+        "examples": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "input": {"type": "string"},
+                    "good_output": {"type": "string"},
+                    "bad_output": {"type": "string"},
+                    "why": {"type": "string"},
+                },
+                "required": ["input", "good_output", "bad_output", "why"],
+            },
+        },
+    },
+    "required": [
+        "persona", "standards", "do_not", "edge_cases",
+        "format", "refusal_policy", "eval_criteria", "examples",
+    ],
+}
+
+TESTS_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "tests": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "id": {"type": "string"},
+                    "input": {"type": "string"},
+                    "expects": {"type": "array", "items": {"type": "string"}},
+                    "notes": {"type": "string"},
+                },
+                "required": ["id", "input", "expects", "notes"],
+            },
+        }
+    },
+    "required": ["tests"],
+}
+
+_SPEC_SYSTEM = (
+    "You convert an expert's interview answers into a precise, implementable "
+    "behavior specification for an AI. Capture their voice, standards, hard "
+    "'never' rules, edge-case rulings, output format, and refusal policy "
+    "faithfully — never invent preferences they didn't express. Also define 3-8 "
+    "eval_criteria: concrete, independently checkable statements of correct "
+    "behavior, each with a short snake_case id and a weight. Give 1-3 good/bad "
+    "examples. Respond with JSON only, matching the provided schema."
+)
+
+_TESTS_SYSTEM = (
+    "You write test inputs that probe whether an AI follows its behavior spec. "
+    "Include normal cases and the tricky edge cases the spec calls out. For each "
+    "test, list the eval-criterion ids it should satisfy, give it a short stable "
+    "id (t1, t2, …), and a one-line note. Respond with JSON only, matching the "
+    "provided schema."
+)
+
+
+@dataclass
+class CompileResult:
+    standards: int
+    edge_cases: int
+    criteria: int
+    tests: int
+    build_dir: str
+    files: list[str]
+
+
+def _dedup(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for it in items:
+        if it not in seen:
+            seen.add(it)
+            out.append(it)
+    return out
+
+
+def _as_weight(value: object) -> Weight:
+    """Coerce a model-supplied weight to a valid enum, defaulting to MEDIUM.
+
+    The schema constrains this to low/medium/high, but a non-compliant engine
+    could emit anything; an unknown value must degrade gracefully rather than
+    raise ``ValueError`` deep in the compile step."""
+    try:
+        return Weight(str(value).lower())
+    except (ValueError, AttributeError):
+        return Weight.MEDIUM
+
+
+def _qa_block(project: Project) -> str:
+    parts = []
+    for it in project.interview:
+        if it.answer:
+            parts.append(f"[{it.dimension}] Q: {it.question}\nA: {it.answer}")
+    return "\n\n".join(parts)
+
+
+def synthesize_spec(project: Project, engine: Engine) -> BehaviorSpec:
+    """Compiler engine: interview answers + facts → BehaviorSpec."""
+    facts = "\n".join(f"- {f}" for f in project.facts) or "(none)"
+    prompt = (
+        f"GOAL: {project.goal}\n"
+        f"TASK TYPE: {project.task_type.value}\n\n"
+        f"KNOWN FACTS:\n{facts}\n\n"
+        f"EXPERT'S ANSWERS:\n{_qa_block(project)}\n\n"
+        "Produce the behavior specification."
+    )
+    out = require_object(engine.complete(prompt, system=_SPEC_SYSTEM, schema=SPEC_SCHEMA), "compiler")
+    persona = out.get("persona")
+    if not isinstance(persona, dict):
+        persona = {}
+    return BehaviorSpec(
+        goal=project.goal,
+        task_type=project.task_type,
+        persona=Persona(
+            voice=as_opt_str(persona.get("voice")),
+            reading_level=as_opt_str(persona.get("reading_level")),
+        ),
+        standards=[s for s in out.get("standards", []) if is_str(s)],
+        do_not=[s for s in out.get("do_not", []) if is_str(s)],
+        edge_cases=[
+            EdgeCase(situation=e["situation"], ruling=e["ruling"])
+            for e in out.get("edge_cases", [])
+            if isinstance(e, dict) and is_str(e.get("situation")) and is_str(e.get("ruling"))
+        ],
+        format=as_opt_str(out.get("format")),
+        refusal_policy=as_opt_str(out.get("refusal_policy")),
+        knowledge_sources=[m.path for m in project.materials],  # from materials, not the LLM
+        eval_criteria=[
+            EvalCriterion(
+                id=c["id"],
+                description=as_str(c.get("description")),
+                weight=_as_weight(c.get("weight")),
+            )
+            for c in out.get("eval_criteria", [])
+            if isinstance(c, dict) and is_str(c.get("id"))
+        ],
+        examples=[
+            Example(
+                input=ex["input"],
+                good_output=as_opt_str(ex.get("good_output")),
+                bad_output=as_opt_str(ex.get("bad_output")),
+                why=as_opt_str(ex.get("why")),
+            )
+            for ex in out.get("examples", [])
+            if isinstance(ex, dict) and is_str(ex.get("input"))
+        ],
+    )
+
+
+def generate_tests(spec: BehaviorSpec, engine: Engine) -> list[TestCase]:
+    """Compiler engine: spec → test cases that probe the eval criteria."""
+    ids = ", ".join(c.id for c in spec.eval_criteria) or "(none)"
+    prompt = (
+        f"BEHAVIOR SPEC:\n{render_system_prompt(spec)}\n\n"
+        f"EVAL CRITERION IDS: {ids}\n\n"
+        "Write 6-10 test inputs that probe these criteria, including edge cases."
+    )
+    out = require_object(engine.complete(prompt, system=_TESTS_SYSTEM, schema=TESTS_SCHEMA), "compiler")
+    valid_ids = {c.id for c in spec.eval_criteria}
+    tests: list[TestCase] = []
+    for i, t in enumerate(out.get("tests", []), start=1):
+        if not isinstance(t, dict) or not is_str(t.get("input")):
+            continue
+        # Drop criterion ids the model invented that aren't in the spec; an
+        # empty list then falls back to "grade against all criteria" in run_eval
+        # rather than producing an ungradeable test.
+        expects = [e for e in t.get("expects", []) if e in valid_ids]
+        tests.append(
+            TestCase(id=str(t.get("id") or f"t{i}"), input=t["input"],
+                     expects=expects, notes=as_opt_str(t.get("notes")))
+        )
+    return tests
+
+
+# --- Deterministic renders (compiled from the spec) -------------------------
+
+def render_system_prompt(spec: BehaviorSpec) -> str:
+    lines = [f"You are an AI for the following goal:\n{spec.goal}", ""]
+    if spec.persona and (spec.persona.voice or spec.persona.reading_level):
+        voice = spec.persona.voice or ""
+        rl = f" (reading level: {spec.persona.reading_level})" if spec.persona.reading_level else ""
+        lines += [f"VOICE: {voice}{rl}", ""]
+    if spec.standards:
+        lines.append("STANDARDS:")
+        lines += [f"- {s}" for s in spec.standards]
+        lines.append("")
+    if spec.do_not:
+        lines.append("NEVER:")
+        lines += [f"- {d}" for d in spec.do_not]
+        lines.append("")
+    if spec.edge_cases:
+        lines.append("EDGE CASES:")
+        lines += [f"- When {e.situation}: {e.ruling}" for e in spec.edge_cases]
+        lines.append("")
+    if spec.format:
+        lines += [f"FORMAT: {spec.format}", ""]
+    if spec.refusal_policy:
+        lines += [f"REFUSALS: {spec.refusal_policy}", ""]
+    if spec.knowledge_sources:
+        lines += [
+            "Ground answers in the provided knowledge base; do not invent facts "
+            "it does not support.",
+            "",
+        ]
+    return "\n".join(lines).strip() + "\n"
+
+
+def rubric(spec: BehaviorSpec) -> dict:
+    return {
+        "criteria": [
+            {"id": c.id, "description": c.description, "weight": c.weight.value}
+            for c in spec.eval_criteria
+        ]
+    }
+
+
+def rag_config(spec: BehaviorSpec) -> dict:
+    return {
+        "knowledge_sources": list(spec.knowledge_sources),
+        "index": "knowledge.lancedb",
+        "table": TABLE,
+        "embedder": EMBED_MODEL,
+        "top_k": 5,
+    }
+
+
+def write_build_bundle(spec: BehaviorSpec, tests: list[TestCase], project_dir: str | Path) -> list[str]:
+    """Deterministically (re)write the build/ artifacts from the spec — no engine
+    calls. Used by compile_project and to refresh build/ after the refine loop
+    mutates the spec, so build/ never goes stale."""
+    build = Path(project_dir) / "build"
+    build.mkdir(parents=True, exist_ok=True)
+    files: list[str] = []
+
+    def _write(name: str, content: str) -> None:
+        (build / name).write_text(content)
+        files.append(f"build/{name}")
+
+    _write("spec.yaml", yaml.safe_dump(spec.model_dump(mode="json"), sort_keys=False))
+    _write("system_prompt.txt", render_system_prompt(spec))
+    _write("rubric.yaml", yaml.safe_dump(rubric(spec), sort_keys=False))
+    _write("rag.config.yaml", yaml.safe_dump(rag_config(spec), sort_keys=False))
+    _write(
+        "tests.jsonl",
+        "".join(json.dumps(t.model_dump(mode="json")) + "\n" for t in tests),
+    )
+    return files
+
+
+def compile_project(project: Project, engine: Engine, *, project_dir: str | Path) -> CompileResult:
+    """Synthesize the spec + tests, write the build bundle, update the project.
+
+    Never loses rules already captured: standards / never-rules / examples on an
+    existing spec (e.g. authored via `calibrate teach`) are carried into the
+    recompiled spec. With no interview answers to synthesize from, the existing
+    spec is preserved as-is rather than overwritten by a spec synthesized from an
+    empty interview (which would silently discard taught standards)."""
+    prior = project.spec
+    if any(it.answer for it in project.interview):
+        spec = synthesize_spec(project, engine)
+        if prior is not None:
+            # Carry forward previously-captured rules so a recompile can't drop them.
+            spec.standards = _dedup(list(spec.standards) + list(prior.standards))
+            spec.do_not = _dedup(list(spec.do_not) + list(prior.do_not))
+            have = {ex.input for ex in spec.examples}
+            spec.examples = list(spec.examples) + [ex for ex in prior.examples if ex.input not in have]
+    else:
+        spec = prior or BehaviorSpec(goal=project.goal, task_type=project.task_type)
+    tests = generate_tests(spec, engine)
+    project.spec = spec
+    project.tests = tests
+
+    files = write_build_bundle(spec, tests, project_dir)
+
+    return CompileResult(
+        standards=len(spec.standards),
+        edge_cases=len(spec.edge_cases),
+        criteria=len(spec.eval_criteria),
+        tests=len(tests),
+        build_dir=str(Path(project_dir) / "build"),
+        files=files,
+    )
