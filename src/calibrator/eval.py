@@ -12,7 +12,7 @@ import json
 import math
 from pathlib import Path
 
-from .coerce import as_list, as_opt_str, as_str
+from .coerce import as_list, as_opt_str, as_str, is_str
 from .compile import render_system_prompt
 from .engines.base import Engine, require_object
 from .models import CriterionResult, Project, Scorecard, TestResult
@@ -91,14 +91,56 @@ def _judge(
     return results
 
 
+def _judge_consensus(judge: Engine, test_input: str, output: str,
+                     criteria: list[tuple[str, str]], passes: int) -> list[CriterionResult]:
+    """Grade with ``passes`` independent judge calls, majority-vote each criterion,
+    and record agreement as ``confidence`` — self-consistency over a noisy judge."""
+    runs = [_judge(judge, test_input, output, criteria) for _ in range(passes)]
+    results: list[CriterionResult] = []
+    for idx, (cid, _) in enumerate(criteria):
+        verdicts = [run[idx].passed for run in runs]
+        yes = sum(verdicts)
+        passed = yes * 2 > passes  # strict majority
+        agreement = max(yes, passes - yes) / passes
+        rationale = next((run[idx].rationale for run in runs if run[idx].passed == passed), None)
+        results.append(CriterionResult(
+            criterion_id=cid, passed=passed,
+            score=round(sum(r[idx].score for r in runs) / passes, 3),
+            rationale=rationale, confidence=round(agreement, 3),
+        ))
+    return results
+
+
+def _conversation_output(subject: Engine, system: str | None, user_turns: list[str]) -> str:
+    """Run a multi-turn conversation; return the full transcript (graded as the output).
+
+    History is encoded into each prompt (works across every engine without a
+    messages-based interface); the system prompt is held constant across turns."""
+    lines: list[str] = []
+    for turn in user_turns:
+        history = "\n".join(lines)
+        prompt = (history + "\n" if history else "") + f"User: {turn}\nAssistant:"
+        reply = as_str(subject.complete(prompt, system=system)).strip()
+        lines.append(f"User: {turn}")
+        lines.append(f"Assistant: {reply}")
+    return "\n".join(lines)
+
+
 def run_eval(
     project: Project,
     subject: Engine,
     judge: Engine,
     *,
     run_id: str = "run-0001",
+    judge_passes: int = 1,
 ) -> Scorecard:
-    """Run each test on the subject and grade the output against its criteria."""
+    """Run each test on the subject and grade the output against its criteria.
+
+    ``judge_passes > 1`` grades each criterion with that many independent judge
+    calls and majority-votes (self-consistency), recording per-criterion
+    confidence so split verdicts can be surfaced for human review."""
+    if not isinstance(judge_passes, int) or judge_passes < 1:
+        raise ValueError(f"judge_passes must be an integer >= 1 (got {judge_passes!r})")
     spec = project.spec
     if spec is None:
         raise ValueError("No behavior spec — run `calibrate compile` first.")
@@ -110,7 +152,11 @@ def run_eval(
         # Coerce defensively: a misbehaving subject can return a non-string
         # (despite the str contract); as_str makes that an empty output (caught
         # by the guard below) instead of an AttributeError on .strip().
-        output = as_str(subject.complete(test.input, system=system))
+        turns = [test.input] + [f for f in test.follow_ups if is_str(f)]
+        if len(turns) > 1:  # multi-turn conversation test
+            output = _conversation_output(subject, system, turns)
+        else:
+            output = as_str(subject.complete(test.input, system=system))
         expected = [cid for cid in (test.expects or list(crit_by_id)) if cid in crit_by_id]
         criteria = [(cid, crit_by_id[cid].description) for cid in expected]
 
@@ -122,12 +168,21 @@ def run_eval(
             ]
         elif not criteria:
             crs = []
+        elif judge_passes > 1:
+            crs = _judge_consensus(judge, test.input, output, criteria, judge_passes)
         else:
             crs = _judge(judge, test.input, output, criteria)
 
         results.append(TestResult(test_id=test.id, output=output, criteria=crs))
 
     return Scorecard(run_id=run_id, results=results)
+
+
+def low_confidence_results(card: Scorecard, *, threshold: float = 0.67) -> list[tuple[str, CriterionResult]]:
+    """(test_id, criterion) pairs where the judge was split below ``threshold`` —
+    the verdicts worth a human spot-check. Empty unless graded with judge_passes>1."""
+    return [(r.test_id, c) for r in card.results for c in r.criteria
+            if c.confidence is not None and c.confidence < threshold]
 
 
 def next_run_id(project_dir: str | Path) -> str:

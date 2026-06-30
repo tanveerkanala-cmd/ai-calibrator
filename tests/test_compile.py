@@ -107,6 +107,17 @@ def test_generate_tests_drops_unknown_expects():
     assert tests[1].expects == []        # all-invalid → empty → falls back to all criteria in eval
 
 
+def test_generate_tests_maps_follow_ups():
+    spec = BehaviorSpec(goal="g", eval_criteria=[EvalCriterion(id="c1", description="x", weight=Weight.HIGH)])
+    engine = SeqEngine([{"tests": [
+        {"id": "t1", "input": "hi", "expects": ["c1"], "notes": "", "follow_ups": ["and then?", "really?"]},
+        {"id": "t2", "input": "bye", "expects": ["c1"], "notes": "", "follow_ups": []},
+    ]}])
+    tests = generate_tests(spec, engine)
+    assert tests[0].follow_ups == ["and then?", "really?"]   # multi-turn test
+    assert tests[1].follow_ups == []                          # single-turn
+
+
 def test_render_system_prompt_includes_key_sections():
     spec = synthesize_spec(_project(), SeqEngine([SPEC_PAYLOAD]))
     sp = render_system_prompt(spec)

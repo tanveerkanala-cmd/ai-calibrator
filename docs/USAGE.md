@@ -140,13 +140,18 @@ then compiles the artifact bundle into `<project>/build/`: `spec.yaml`,
 `system_prompt.txt`, `rag.config.yaml`, `rubric.yaml`, and `tests.jsonl`. Needs a
 configured engine (see §3).
 
-### `calibrate eval [--refine] [--rounds N] [--threshold 0.8]` ✅
+### `calibrate eval [--refine] [--rounds N] [--threshold 0.8] [--judge-passes N]` ✅
 Runs each test on the configured AI (the `subject` engine), grades each output
 against the rubric with an LLM judge (plus a deterministic empty-output guard),
 and saves a scorecard under `<project>/evals/`. `--refine` loops: it diagnoses
 failures, adds standards to the spec, and re-runs until the pass rate clears
-`--threshold`. This testing step is what makes the result reliable instead of
-guesswork.
+`--threshold`. `--judge-passes N` (self-consistency) grades each criterion with
+`N` independent judge calls and majority-votes — then flags the verdicts the
+judge was **split** on, so you can spot-check where the noisy LLM-judge is
+unreliable. Tests can also be **multi-turn conversations** (a test's `follow_ups`
+are subsequent user turns); the subject answers each in context and the judge
+grades the whole exchange. This testing step is what makes the result reliable
+instead of guesswork.
 
 ### `calibrate export [--name NAME]` ✅
 Packages the calibrated config into `<project>/export/`: the system prompt,
@@ -169,6 +174,13 @@ one-line reason, and it **infers your standards** from the pattern — folding t
 into the spec and recording each judgment as a golden example. Ideal when you can
 *recognize* good output but struggle to *articulate* the rules. Can even bootstrap
 a spec from scratch (judge the raw model first, build from your verdicts).
+
+### `calibrate lint [--deep]` (no engine, unless `--deep`)
+Lints the **spec itself** for quality problems before you waste an eval run: no
+measurable criteria, criteria nothing tests, vague/unfalsifiable standards,
+duplicates, a missing refusal policy. `--deep` adds an engine pass that flags
+**self-contradictions** ("be concise" vs "always explain in depth"). Exits
+non-zero on errors (CI-friendly).
 
 ### `calibrate coverage` (no engine — instant)
 "Test coverage, but for behavior." Shows which eval criteria have a **targeted
@@ -193,12 +205,25 @@ the latest): the pass-rate delta and exactly which tests flipped pass↔fail.
 **CI-friendly** — exits code 2 when behavior regresses, so you can gate a deploy
 or catch a provider's silent model update.
 
+### `calibrate diff <before> <after>` (no engine — instant)
+Shows how the behavior **spec** changed between two projects — standards,
+never-rules, edge cases, and criteria added / removed / changed. (`drift`
+compares scorecards; `diff` compares the specs themselves.) Great for reviewing
+the effect of a refine, teach, or merge before you ship it.
+
 ### `calibrate report` (no engine — instant)
 Generates a shareable **calibration report** (`calibration-report.md`) — the AI's
 "nutrition label": a **Calibration Confidence** score (coverage × pass rate), the
 spec at a glance, coverage gaps, the latest eval's weak spots, and provenance (the
 ratified answers the spec was built from). For showing stakeholders, at a glance,
 how trustworthy the configured AI is.
+
+### `calibrate export-evals [--format promptfoo]` (no engine)
+Exports the generated test suite + rubric as a **promptfoo** config
+(`promptfooconfig.yaml`) — the provider-agnostic system prompt becomes a prompt,
+each test an input, each criterion an `llm-rubric` assertion. Run your
+calibrator suite inside promptfoo (`promptfoo eval -c promptfooconfig.yaml`)
+instead of being locked into `calibrate eval`. Anti-lock-in.
 
 ---
 

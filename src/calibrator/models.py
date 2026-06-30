@@ -97,9 +97,11 @@ class BehaviorSpec(BaseModel):
 
 class TestCase(BaseModel):
     id: str
-    input: str
-    expects: list[str] = Field(default_factory=list)   # EvalCriterion ids
+    input: str                                          # the first (or only) user turn
+    expects: list[str] = Field(default_factory=list)    # EvalCriterion ids
     notes: str | None = None
+    # Subsequent user turns for a multi-turn conversation test. Empty = single-turn.
+    follow_ups: list[str] = Field(default_factory=list)
 
 
 class CriterionResult(BaseModel):
@@ -107,6 +109,9 @@ class CriterionResult(BaseModel):
     passed: bool
     score: float = 0.0
     rationale: str | None = None
+    # Judge agreement when graded with multiple passes (self-consistency): the
+    # fraction of passes that agreed with the majority verdict. None = single pass.
+    confidence: float | None = None
 
 
 class TestResult(BaseModel):

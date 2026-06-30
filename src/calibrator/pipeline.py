@@ -62,6 +62,7 @@ def calibrate_loop(
     *,
     threshold: float = 0.8,
     max_rounds: int = 3,
+    judge_passes: int = 1,
     project_dir=None,
 ) -> list[Scorecard]:
     """Eval → (if below threshold) refine the spec → re-eval, up to max_rounds.
@@ -86,7 +87,7 @@ def calibrate_loop(
     cards: list[Scorecard] = []
     for rnd in range(1, max_rounds + 1):
         run_id = next_run_id(project_dir) if project_dir is not None else f"run-{rnd:04d}"
-        card = run_eval(project, subject, judge, run_id=run_id)
+        card = run_eval(project, subject, judge, run_id=run_id, judge_passes=judge_passes)
         if project_dir is not None:
             save_scorecard(project_dir, card)
         cards.append(card)

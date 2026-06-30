@@ -2,7 +2,9 @@
 
 import re
 
-from calibrator.eval import next_run_id, run_eval, save_scorecard
+import pytest
+
+from calibrator.eval import low_confidence_results, next_run_id, run_eval, save_scorecard
 from calibrator.models import (
     BehaviorSpec,
     EvalCriterion,
@@ -133,3 +135,61 @@ def test_run_eval_tolerates_non_string_subject_output():
 
     card = run_eval(_project(), WeirdSubject(), PassJudge(), run_id="run-0001")  # must NOT raise
     assert card.results[0].output == "" and card.pass_rate == 0.0
+
+
+class FlakyJudge:
+    """Returns pass, fail, pass on successive calls — a split (noisy) judge."""
+    name = "flaky@test"
+
+    def __init__(self):
+        self.n = 0
+
+    def complete(self, prompt, *, system=None, schema=None):
+        ids = re.findall(r"^- (\S+):", prompt, re.M)
+        self.n += 1
+        good = self.n % 2 == 1
+        return {"results": [{"criterion_id": i, "passed": good, "score": 1.0 if good else 0.0, "rationale": "x"}
+                            for i in ids]}
+
+
+def test_judge_consensus_majority_vote_and_confidence():
+    card = run_eval(_project(), GoodSubject(), FlakyJudge(), run_id="r", judge_passes=3)
+    cr = card.results[0].criteria[0]
+    assert cr.passed is True                    # verdicts pass/fail/pass → 2/3 majority pass
+    assert cr.confidence == round(2 / 3, 3)     # 2/3 agreement
+    low = low_confidence_results(card, threshold=0.9)
+    assert low and low[0][1].criterion_id == "c1"  # 0.67 < 0.9 → flagged for review
+
+
+def test_single_pass_has_no_confidence():
+    card = run_eval(_project(), GoodSubject(), PassJudge(), run_id="r")  # judge_passes default 1
+    assert card.results[0].criteria[0].confidence is None
+    assert low_confidence_results(card) == []
+
+
+def test_run_eval_rejects_bad_judge_passes():
+    for bad in (0, -1):
+        with pytest.raises(ValueError):
+            run_eval(_project(), GoodSubject(), PassJudge(), judge_passes=bad)
+
+
+def test_run_eval_multi_turn_conversation():
+    prompts_seen = []
+
+    class ConvoSubject:
+        name = "subject@test"
+
+        def complete(self, prompt, *, system=None, schema=None):
+            prompts_seen.append(prompt)
+            return f"reply{len(prompts_seen)}"
+
+    p = Project(name="p", goal="g")
+    p.spec = BehaviorSpec(goal="g", eval_criteria=[EvalCriterion(id="c1", description="d", weight=Weight.HIGH)])
+    p.tests = [CaseModel(id="t1", input="first?", expects=["c1"], follow_ups=["second?", "third?"])]
+
+    card = run_eval(p, ConvoSubject(), PassJudge(), run_id="r")
+    assert len(prompts_seen) == 3                              # 3 user turns → 3 subject calls
+    assert "first?" in prompts_seen[1] and "reply1" in prompts_seen[1]  # history carried forward
+    assert "third?" in prompts_seen[2]
+    out = card.results[0].output                              # graded output is the full transcript
+    assert "User: first?" in out and "Assistant: reply1" in out and "User: third?" in out

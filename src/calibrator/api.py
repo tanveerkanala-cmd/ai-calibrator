@@ -54,6 +54,7 @@ class EvalBody(BaseModel):
     # would silently misbehave).
     rounds: int = Field(default=3, ge=1, le=100)
     threshold: float = Field(default=0.8, ge=0.0, le=1.0, allow_inf_nan=False)
+    judge_passes: int = Field(default=1, ge=1, le=9)  # self-consistency: majority-vote over N judge calls
 
 
 class RedTeamBody(BaseModel):
@@ -108,6 +109,11 @@ class ImportBody(BaseModel):
     prompt: str
     task_type: TaskType = TaskType.ASSISTANT
     engine: str | None = None
+
+
+class DiffBody(BaseModel):
+    before: str
+    after: str
 
 
 def _engine_factory():
@@ -332,12 +338,14 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
                     from .pipeline import calibrate_loop
                     refiner = wrap_engine(make_engine(project.engines.compiler), "compiler", d, enabled=log_on)
                     cards = calibrate_loop(project, subject, judge, refiner,
-                                           threshold=body.threshold, max_rounds=body.rounds, project_dir=d)
+                                           threshold=body.threshold, max_rounds=body.rounds,
+                                           judge_passes=body.judge_passes, project_dir=d)
                     save_project(project, d)
                     from .compile import write_build_bundle
                     write_build_bundle(project.spec, project.tests, d)  # refresh build/ to match
                 else:
-                    card = run_eval(project, subject, judge, run_id=next_run_id(d))
+                    card = run_eval(project, subject, judge, run_id=next_run_id(d),
+                                    judge_passes=body.judge_passes)
                     save_scorecard(d, card)
                     cards = [card]
             except HTTPException:
@@ -377,6 +385,22 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             except Exception as exc:
                 raise HTTPException(400, str(exc))
         return rightsize_dict(report)
+
+    @app.get("/api/projects/{name}/promptfoo")
+    def promptfoo_(name: str):
+        from .interop import to_promptfoo
+        project = _load(name)
+        if project.spec is None or not project.tests:
+            raise HTTPException(400, "compile first")
+        return {"config": to_promptfoo(project)}
+
+    @app.get("/api/projects/{name}/lint")
+    def lint_(name: str):
+        from .lint import lint_dict, lint_spec
+        project = _load(name)
+        if project.spec is None:
+            raise HTTPException(400, "compile first")
+        return lint_dict(lint_spec(project.spec, project.tests))
 
     @app.get("/api/projects/{name}/coverage")
     def coverage_(name: str):
@@ -526,6 +550,14 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             except Exception as exc:
                 raise HTTPException(400, str(exc))
         return _state(project)
+
+    @app.post("/api/diff")
+    def diff_(body: DiffBody):
+        from .specdiff import diff_dict, diff_specs
+        pa, pb = _load(body.before), _load(body.after)
+        if pa.spec is None or pb.spec is None:
+            raise HTTPException(400, "both projects must have a compiled spec")
+        return diff_dict(diff_specs(pa.spec, pb.spec))
 
     @app.post("/api/merge/detect")
     def merge_detect(body: MergeDetectBody, make_engine=Depends(_engine_factory)):

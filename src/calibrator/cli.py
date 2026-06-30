@@ -386,17 +386,23 @@ def eval_(
     ),
     rounds: int = typer.Option(3, "--rounds", help="Max refine rounds."),
     threshold: float = typer.Option(0.8, "--threshold", help="Target pass rate (0-1)."),
+    judge_passes: int = typer.Option(
+        1, "--judge-passes", help="Grade each criterion N times and majority-vote (self-consistency)."
+    ),
 ) -> None:
     """Run tests, grade against the rubric, score, and (optionally) refine. (M4)"""
     from .engine_log import wrap_engine
     from .engines import get_engine
-    from .eval import next_run_id, run_eval, save_scorecard
+    from .eval import low_confidence_results, next_run_id, run_eval, save_scorecard
 
     if refine and rounds < 1:
         typer.secho("--rounds must be >= 1.", fg=typer.colors.RED)
         raise typer.Exit(code=1)
     if not math.isfinite(threshold) or not (0.0 <= threshold <= 1.0):
         typer.secho("--threshold must be a number between 0 and 1.", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    if not (1 <= judge_passes <= 9):
+        typer.secho("--judge-passes must be between 1 and 9.", fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
     with project_lock(path):
@@ -425,12 +431,12 @@ def eval_(
                 from .pipeline import calibrate_loop
                 cards = calibrate_loop(
                     project, subject, judge, refiner,
-                    threshold=threshold, max_rounds=rounds, project_dir=path,
+                    threshold=threshold, max_rounds=rounds, judge_passes=judge_passes, project_dir=path,
                 )
                 save_project(project, path)  # refined standards persist
                 write_build_bundle(project.spec, project.tests, path)  # refresh build/ to match
             else:
-                card = run_eval(project, subject, judge, run_id=next_run_id(path))
+                card = run_eval(project, subject, judge, run_id=next_run_id(path), judge_passes=judge_passes)
                 save_scorecard(path, card)
                 cards = [card]
         except Exception as exc:
@@ -452,11 +458,58 @@ def eval_(
         why = "; ".join(c.rationale or c.criterion_id for c in r.criteria if not c.passed) or "no criteria"
         typer.echo(f"  · {r.test_id}: {why}")
 
+    if judge_passes > 1:
+        low = low_confidence_results(final)
+        if low:
+            typer.secho(f"\n⚠ {len(low)} verdict(s) the judge was split on — worth a human check:",
+                        fg=typer.colors.YELLOW)
+            for tid, c in low[:10]:
+                typer.echo(f"  · {tid} / {c.criterion_id}: {c.confidence:.0%} agreement → {'pass' if c.passed else 'fail'}")
+
     typer.echo(f"\nScorecards saved under {Path(path)}/evals/.")
     if ok:
         typer.secho("Threshold met. Next:  calibrate export  (M5)", fg=typer.colors.GREEN)
     elif not refine:
         typer.echo("Below threshold — try:  calibrate eval --refine")
+
+
+@app.command()
+def lint(
+    path: Path = typer.Argument(Path("."), help="Project directory."),
+    deep: bool = typer.Option(False, "--deep", help="Also detect self-contradictions (uses an engine)."),
+) -> None:
+    """Lint the behavior spec for quality issues before you eval. Exits 1 on errors. (no engine unless --deep)"""
+    from .lint import lint_spec
+
+    project = _load(path)
+    if project.spec is None:
+        typer.secho("Nothing to lint — run `calibrate compile` (or `import`) first.", fg=typer.colors.YELLOW)
+        raise typer.Exit(code=1)
+
+    report = lint_spec(project.spec, project.tests)
+    if deep:
+        from .engines import get_engine
+        from .lint import lint_contradictions
+        try:
+            eng = get_engine(project.engines.compiler)
+            typer.echo("Checking for self-contradictions …")
+            report.issues.extend(lint_contradictions(project.spec, eng))
+        except (RuntimeError, ValueError, NotImplementedError) as exc:
+            typer.secho(str(exc), fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+        except Exception as exc:  # contradiction check is best-effort; don't fail the lint
+            typer.secho(f"  (contradiction check skipped: {exc})", fg=typer.colors.YELLOW)
+
+    colors = {"error": typer.colors.RED, "warn": typer.colors.YELLOW, "info": typer.colors.BLUE}
+    for i in report.issues:
+        typer.secho(f"  [{i.severity:<5}] {i.code}: {i.message}", fg=colors.get(i.severity))
+    if not report.issues:
+        typer.secho("✓ No lint issues — the spec looks well-formed.", fg=typer.colors.GREEN)
+    else:
+        n_info = len(report.issues) - len(report.errors) - len(report.warnings)
+        typer.secho(f"\n{len(report.errors)} error(s), {len(report.warnings)} warning(s), {n_info} info.",
+                    fg=typer.colors.RED if report.errors else typer.colors.YELLOW)
+    raise typer.Exit(code=1 if report.errors else 0)
 
 
 @app.command()
@@ -598,6 +651,45 @@ def rightsize(
         typer.secho(f"\nNo candidate met the {threshold:.0%} bar — try `calibrate eval --refine` or lower --threshold.",
                     fg=typer.colors.YELLOW)
     typer.echo(f"\nSaved → {Path(path)}/evals/rightsize.json")
+
+
+@app.command()
+def diff(
+    before: Path = typer.Argument(..., help="Baseline project."),
+    after: Path = typer.Argument(..., help="Project to compare against the baseline."),
+) -> None:
+    """Show how the behavior spec changed between two projects. (no engine)"""
+    from .specdiff import diff_specs
+
+    pa, pb = _load(before), _load(after)
+    if pa.spec is None or pb.spec is None:
+        typer.secho("Both projects need a compiled spec (run `calibrate compile` or `import`).", fg=typer.colors.YELLOW)
+        raise typer.Exit(code=1)
+    d = diff_specs(pa.spec, pb.spec)
+    if not d.changed:
+        typer.secho("No behavior change between the two specs.", fg=typer.colors.GREEN)
+        return
+
+    def _section(title: str, added: list[str], removed: list[str]) -> None:
+        if not added and not removed:
+            return
+        typer.secho(f"\n{title}:", bold=True)
+        for x in added:
+            typer.secho(f"  + {x}", fg=typer.colors.GREEN)
+        for x in removed:
+            typer.secho(f"  - {x}", fg=typer.colors.RED)
+
+    _section("Standards", d.standards_added, d.standards_removed)
+    _section("Never-rules", d.do_not_added, d.do_not_removed)
+    _section("Edge cases", d.edge_cases_added, d.edge_cases_removed)
+    if d.criteria_added or d.criteria_removed or d.criteria_changed:
+        typer.secho("\nCriteria:", bold=True)
+        for x in d.criteria_added:
+            typer.secho(f"  + {x}", fg=typer.colors.GREEN)
+        for x in d.criteria_removed:
+            typer.secho(f"  - {x}", fg=typer.colors.RED)
+        for x in d.criteria_changed:
+            typer.secho(f"  ~ {x} (description/weight changed)", fg=typer.colors.YELLOW)
 
 
 @app.command()
@@ -977,6 +1069,27 @@ def export(
         f"  ollama run {result.name}\n"
         f"…or programmatically:  python {result.bundle_dir}/run.py \"your question\""
     )
+
+
+@app.command(name="export-evals")
+def export_evals(
+    path: Path = typer.Argument(Path("."), help="Project directory."),
+    fmt: str = typer.Option("promptfoo", "--format", help="Eval harness format (currently: promptfoo)."),
+) -> None:
+    """Export the test suite + rubric to an external eval harness (promptfoo). (no engine)"""
+    project = _load(path)
+    if project.spec is None or not project.tests:
+        typer.secho("Nothing to export — run `calibrate compile` (or `import`) first.", fg=typer.colors.YELLOW)
+        raise typer.Exit(code=1)
+    if fmt != "promptfoo":
+        typer.secho(f"Unsupported format {fmt!r} (currently only: promptfoo).", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    from .interop import export_promptfoo
+
+    out = export_promptfoo(project, project_dir=path)
+    typer.secho(f"✓ Wrote {out}", fg=typer.colors.GREEN)
+    typer.echo("Run it with:  promptfoo eval -c promptfooconfig.yaml")
+    typer.echo("  (edit the `providers:` line to your model, and set the grader's API key)")
 
 
 @app.command()

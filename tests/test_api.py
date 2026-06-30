@@ -141,6 +141,34 @@ def test_foreign_host_is_blocked(tmp_path):
     assert c.get("/api/health", headers={"Host": "evil.example"}).status_code == 400
 
 
+def test_promptfoo_endpoint(tmp_path):
+    import yaml as _yaml
+    proj = Project(name="p", goal="answer questions")
+    proj.spec = BehaviorSpec(goal="answer questions", standards=["Be concise."],
+                             eval_criteria=[EvalCriterion(id="c1", description="is concise", weight=Weight.HIGH)])
+    proj.tests = [CaseModel(id="t1", input="hi", expects=["c1"])]
+    save_project(proj, tmp_path / "p")
+
+    body = _client(tmp_path).get("/api/projects/p/promptfoo").json()
+    cfg = _yaml.safe_load(body["config"])
+    assert cfg["tests"][0]["vars"]["input"] == "hi"
+    assert cfg["tests"][0]["assert"][0]["type"] == "llm-rubric"
+
+
+def test_lint_endpoint(tmp_path):
+    proj = Project(name="p", goal="g")
+    proj.spec = BehaviorSpec(goal="g", standards=["Be concise and specific."],
+                             eval_criteria=[EvalCriterion(id="c1", description="answer is concise", weight=Weight.HIGH)])
+    save_project(proj, tmp_path / "p")  # no tests → c1 untested (warning), but no errors
+
+    c = _client(tmp_path)
+    body = c.get("/api/projects/p/lint").json()
+    assert body["ok"] is True and any(i["code"] == "untested_criterion" for i in body["issues"])
+
+    c.post("/api/projects", json={"name": "q", "goal": "g"})
+    assert c.get("/api/projects/q/lint").status_code == 400  # before compile
+
+
 def test_coverage_endpoint(tmp_path):
     proj = Project(name="p", goal="g")
     proj.spec = BehaviorSpec(goal="g", standards=["Be concise."],
@@ -389,6 +417,24 @@ def test_import_endpoint(tmp_path):
     # duplicate → 409, empty prompt → 400
     assert c.post("/api/import", json={"name": "imported", "goal": "g", "prompt": "x"}).status_code == 409
     assert c.post("/api/import", json={"name": "blank", "goal": "g", "prompt": "   "}).status_code == 400
+
+
+def test_diff_endpoint(tmp_path):
+    a = Project(name="a", goal="g")
+    a.spec = BehaviorSpec(goal="g", standards=["keep", "drop"],
+                          eval_criteria=[EvalCriterion(id="c1", description="d", weight=Weight.HIGH)])
+    b = Project(name="b", goal="g")
+    b.spec = BehaviorSpec(goal="g", standards=["keep", "new"],
+                          eval_criteria=[EvalCriterion(id="c1", description="d", weight=Weight.HIGH)])
+    save_project(a, tmp_path / "a")
+    save_project(b, tmp_path / "b")
+
+    c = _client(tmp_path)
+    r = c.post("/api/diff", json={"before": "a", "after": "b"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["changed"] is True
+    assert body["standards"]["added"] == ["new"] and body["standards"]["removed"] == ["drop"]
 
 
 def test_merge_endpoints(tmp_path):
