@@ -206,6 +206,32 @@ def test_deterministic_check_is_graded_by_code_not_judge():
     assert card2.results[0].criteria[0].passed is False
 
 
+def test_mixed_criterion_order_is_preserved():
+    """Results must follow test.expects order even when checked + judged criteria mix
+    (regression: the deterministic/judged split used to reorder to [checked, judged])."""
+    from calibrator.models import Check
+
+    class Subject:
+        name = "subject@test"
+
+        def complete(self, prompt, *, system=None, schema=None):
+            return "ACCEPTABLE — our 30-day return policy is friendly"
+
+    p = Project(name="p", goal="g")
+    p.spec = BehaviorSpec(goal="g", eval_criteria=[
+        EvalCriterion(id="c1", description="is friendly", weight=Weight.MEDIUM),    # judged
+        EvalCriterion(id="c2", description="mentions 30-day", weight=Weight.HIGH,    # checked
+                      check=Check(kind="contains", value="30-day")),
+        EvalCriterion(id="c3", description="is concise", weight=Weight.LOW),         # judged
+    ])
+    p.tests = [CaseModel(id="t1", input="q", expects=["c1", "c2", "c3"])]
+
+    card = run_eval(p, Subject(), PassJudge(), run_id="r")
+    assert [c.criterion_id for c in card.results[0].criteria] == ["c1", "c2", "c3"]
+    c2 = next(c for c in card.results[0].criteria if c.criterion_id == "c2")
+    assert c2.passed is True and "30-day" in (c2.rationale or "")  # graded exactly by code
+
+
 def test_run_eval_multi_turn_conversation():
     prompts_seen = []
 

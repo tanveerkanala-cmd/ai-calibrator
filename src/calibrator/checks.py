@@ -4,13 +4,23 @@ A criterion with a ``check`` is graded by code, not the judge: free and perfectl
 reliable for objectively-verifiable behavior (a required or forbidden term, a
 length limit, a format/regex, non-empty). This is the reliability floor under the
 noisy LLM-judge — use it wherever a criterion can be made objective.
+
+Regex uses the third-party ``regex`` engine (not stdlib ``re``): it resists most
+catastrophic backtracking outright, and its cooperative ``timeout`` bounds the
+residual cases so an owner-authored pattern can never hang the eval (stdlib ``re``
+cannot be interrupted mid-backtrack).
 """
 
 from __future__ import annotations
 
-import re
+import regex
 
 from .models import Check
+
+# Wall-clock ceiling for a single regex check. A legitimate check matches in
+# microseconds; only catastrophic backtracking approaches this, and we fail it
+# with an actionable message rather than hang.
+REGEX_TIMEOUT = 1.0
 
 
 def _as_int(value: str) -> int | None:
@@ -33,9 +43,12 @@ def run_check(check: Check, output: str) -> tuple[bool, str]:
         return ok, f"{'absent' if ok else 'contains forbidden'} {value!r}"
     if kind == "regex":
         try:
-            ok = re.search(value, text) is not None
-        except re.error as exc:
+            ok = regex.search(value, text, timeout=REGEX_TIMEOUT) is not None
+        except regex.error as exc:
             return False, f"invalid regex {value!r}: {exc}"
+        except TimeoutError:
+            return False, (f"regex {value!r} timed out (>{REGEX_TIMEOUT:g}s) — likely catastrophic "
+                           "backtracking; simplify it (avoid nested quantifiers like (a+)+ or (a|aa)+)")
         return ok, f"regex {value!r} {'matched' if ok else 'did not match'}"
     if kind == "max_chars":
         limit = _as_int(value)

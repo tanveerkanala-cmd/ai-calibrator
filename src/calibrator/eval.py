@@ -159,7 +159,7 @@ def run_eval(
         else:
             output = as_str(subject.complete(test.input, system=system))
         expected = [cid for cid in (test.expects or list(crit_by_id)) if cid in crit_by_id]
-        crs: list[CriterionResult] = []
+        graded: dict[str, CriterionResult] = {}
 
         # §9 layer 1 — criteria with a deterministic check are graded exactly by
         # code (no judge), and run even on empty output.
@@ -167,19 +167,24 @@ def run_eval(
             chk = crit_by_id[cid].check
             if chk is not None:
                 passed, why = run_check(chk, output)
-                crs.append(CriterionResult(criterion_id=cid, passed=passed,
-                                           score=1.0 if passed else 0.0, rationale=why))
+                graded[cid] = CriterionResult(criterion_id=cid, passed=passed,
+                                              score=1.0 if passed else 0.0, rationale=why)
 
         # Remaining criteria go to the LLM judge (empty output fails them outright).
         judged = [(cid, crit_by_id[cid].description) for cid in expected if crit_by_id[cid].check is None]
         if judged and not output.strip():
-            crs.extend(CriterionResult(criterion_id=cid, passed=False, score=0.0, rationale="empty output")
-                       for cid, _ in judged)
+            for cid, _ in judged:
+                graded[cid] = CriterionResult(criterion_id=cid, passed=False, score=0.0, rationale="empty output")
         elif judged and judge_passes > 1:
-            crs.extend(_judge_consensus(judge, test.input, output, judged, judge_passes))
+            for cr in _judge_consensus(judge, test.input, output, judged, judge_passes):
+                graded[cr.criterion_id] = cr
         elif judged:
-            crs.extend(_judge(judge, test.input, output, judged))
+            for cr in _judge(judge, test.input, output, judged):
+                graded[cr.criterion_id] = cr
 
+        # Reassemble in requested order — test.expects is an ordered list, so the
+        # results must follow it; the checked/judged split is an internal detail.
+        crs = [graded[cid] for cid in expected if cid in graded]
         results.append(TestResult(test_id=test.id, output=output, criteria=crs))
 
     return Scorecard(run_id=run_id, results=results)
