@@ -473,6 +473,92 @@ def eval_(
         typer.echo("Below threshold — try:  calibrate eval --refine")
 
 
+@app.command(name="add-check")
+def add_check(
+    path: Path = typer.Argument(..., help="Project directory."),
+    criterion: str = typer.Argument(..., help="Eval-criterion id to attach the check to."),
+    kind: str = typer.Argument(..., help="contains | not_contains | regex | max_chars | min_chars | non_empty"),
+    value: str = typer.Argument("", help="The term / pattern / number (unused for non_empty)."),
+) -> None:
+    """Attach a deterministic check to a criterion — graded exactly by code, not the judge. (no engine)"""
+    from pydantic import ValidationError
+
+    from .compile import write_build_bundle
+    from .models import Check
+
+    with project_lock(path):
+        project = _load(path)
+        if project.spec is None:
+            typer.secho("Nothing to check — run `calibrate compile` (or `import`) first.", fg=typer.colors.YELLOW)
+            raise typer.Exit(code=1)
+        crit = next((c for c in project.spec.eval_criteria if c.id == criterion), None)
+        if crit is None:
+            ids = ", ".join(c.id for c in project.spec.eval_criteria) or "(none)"
+            typer.secho(f"No criterion {criterion!r}. Ids: {ids}", fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+        try:
+            crit.check = Check(kind=kind, value=value)
+        except ValidationError:
+            typer.secho("kind must be one of: contains, not_contains, regex, max_chars, min_chars, non_empty.",
+                        fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+        save_project(project, path)
+        if project.tests:
+            write_build_bundle(project.spec, project.tests, path)
+    typer.secho(f"✓ Criterion {criterion!r} is now graded deterministically: {kind} {value!r}.", fg=typer.colors.GREEN)
+    typer.echo("  it will be checked exactly (no judge) on the next `calibrate eval`.")
+
+
+@app.command(name="judge-check")
+def judge_check(
+    path: Path = typer.Argument(Path("."), help="Project directory."),
+    sample: int = typer.Option(10, "--sample", help="How many of the judge's verdicts to review."),
+) -> None:
+    """Calibrate the judge: confirm a sample of its verdicts and measure its agreement with you. (no engine)"""
+    from .drift import load_scorecard
+    from .eval import latest_run_id
+    from .judge_check import gradings, judge_agreement
+
+    if sample < 1:
+        typer.secho("--sample must be >= 1.", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    _load(path)
+    rid = latest_run_id(path)
+    if not rid:
+        typer.secho("No scorecard yet — run `calibrate eval` first.", fg=typer.colors.YELLOW)
+        raise typer.Exit(code=1)
+    card = load_scorecard(path, rid)
+    items = gradings(card)
+    if not items:
+        typer.secho("No graded verdicts in the latest scorecard.", fg=typer.colors.YELLOW)
+        raise typer.Exit(code=1)
+    items = items[:sample]
+
+    typer.echo(f"Reviewing {len(items)} of the judge's verdicts from {rid} — confirm or correct each:")
+    labels = []
+    for it in items:
+        typer.secho(f"\n[{it['criterion_id']}]  judge said {'PASS' if it['judge_passed'] else 'FAIL'}", bold=True)
+        if it["rationale"]:
+            typer.echo(f"  judge's reason: {it['rationale']}")
+        typer.echo(f"  output: {it['output'][:200]}")
+        agree = typer.confirm("  Do you agree with the judge?", default=True)
+        human_passed = it["judge_passed"] if agree else (not it["judge_passed"])
+        labels.append({"test_id": it["test_id"], "criterion_id": it["criterion_id"], "passed": human_passed})
+
+    ag = judge_agreement(card, labels)
+    rate = ag.agreement_rate
+    typer.secho(f"\nJudge agreement with you: {rate:.0%} ({ag.agreed}/{ag.total})",
+                fg=typer.colors.GREEN if rate >= 0.8 else typer.colors.YELLOW, bold=True)
+    for cid in ag.unreliable_criteria():
+        a, t = ag.by_criterion[cid]
+        typer.secho(f"  ⚠ {cid}: judge agreed only {a}/{t} — make this criterion more objective.",
+                    fg=typer.colors.YELLOW)
+    if rate < 0.8:
+        typer.echo("\nTrust this scorecard less; reword the flagged criteria, or grade with `eval --judge-passes 3`.")
+    else:
+        typer.secho("\nThe judge tracks your judgment well — the scorecard is trustworthy.", fg=typer.colors.GREEN)
+
+
 @app.command()
 def lint(
     path: Path = typer.Argument(Path("."), help="Project directory."),
@@ -753,6 +839,47 @@ def drift(
         typer.secho("\n⚠ DRIFT DETECTED — behavior regressed beyond tolerance.", fg=typer.colors.RED)
         raise typer.Exit(code=2)
     typer.secho("\n✓ No drift — behavior held within tolerance.", fg=typer.colors.GREEN)
+
+
+@app.command()
+def snapshot(
+    path: Path = typer.Argument(Path("."), help="Project directory."),
+    check: bool = typer.Option(False, "--check", help="Compare the latest outputs to the pinned golden; exit 2 if changed."),
+) -> None:
+    """Pin or check golden outputs — catch output changes the pass/fail rubric misses. (no engine)"""
+    from .drift import load_scorecard
+    from .eval import latest_run_id
+    from .snapshot import compare, load_golden, outputs_of, save_golden
+
+    _load(path)  # validate project
+    rid = latest_run_id(path)
+    if not rid:
+        typer.secho("No scorecard yet — run `calibrate eval` first.", fg=typer.colors.YELLOW)
+        raise typer.Exit(code=1)
+    latest = outputs_of(load_scorecard(path, rid))
+
+    if not check:
+        save_golden(path, latest)
+        typer.secho(f"✓ Pinned {len(latest)} golden output(s) from {rid} → golden.json.", fg=typer.colors.GREEN)
+        return
+
+    golden = load_golden(path)
+    if golden is None:
+        typer.secho("No golden yet — run `calibrate snapshot` (without --check) to pin one.", fg=typer.colors.YELLOW)
+        raise typer.Exit(code=1)
+    d = compare(golden, latest)
+    if not (d.changed or d.added or d.removed):
+        typer.secho("✓ Outputs match the golden.", fg=typer.colors.GREEN)
+        return
+    for t in d.changed:
+        typer.secho(f"  ~ {t}: output changed", fg=typer.colors.YELLOW)
+    for t in d.removed:
+        typer.secho(f"  - {t}: test missing from the latest run", fg=typer.colors.RED)
+    for t in d.added:
+        typer.echo(f"  + {t}: new test (not in golden)")
+    if d.drifted:
+        typer.secho(f"\n⚠ {len(d.changed)} output(s) changed vs golden.", fg=typer.colors.YELLOW)
+        raise typer.Exit(code=2)
 
 
 @app.command()
@@ -1069,6 +1196,27 @@ def export(
         f"  ollama run {result.name}\n"
         f"…or programmatically:  python {result.bundle_dir}/run.py \"your question\""
     )
+
+
+@app.command(name="examples-to-tests")
+def examples_to_tests(path: Path = typer.Argument(Path("."), help="Project directory.")) -> None:
+    """Turn the spec's good/bad examples into regression tests (§9 golden anchors). (no engine)"""
+    from .compile import tests_from_examples, write_build_bundle
+
+    with project_lock(path):
+        project = _load(path)
+        if project.spec is None:
+            typer.secho("Nothing to convert — run `calibrate compile` (or `import`) first.", fg=typer.colors.YELLOW)
+            raise typer.Exit(code=1)
+        new = tests_from_examples(project.spec, project.tests)
+        if not new:
+            typer.secho("No new example-derived tests to add.", fg=typer.colors.YELLOW)
+            raise typer.Exit(code=0)
+        project.tests.extend(new)
+        save_project(project, path)
+        write_build_bundle(project.spec, project.tests, path)
+    typer.secho(f"✓ Added {len(new)} regression test(s) from the spec's examples.", fg=typer.colors.GREEN)
+    typer.echo("Run `calibrate eval` to include them.")
 
 
 @app.command(name="export-evals")

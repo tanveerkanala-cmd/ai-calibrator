@@ -178,6 +178,21 @@ def test_compile_preserves_spec_when_no_interview_answers(tmp_path):
     assert project.spec.standards == ["BOOTSTRAPPED"]  # preserved, not overwritten
 
 
+def test_tests_from_examples():
+    from calibrator.compile import tests_from_examples
+    from calibrator.models import Example
+    from calibrator.models import TestCase as Case
+
+    spec = BehaviorSpec(goal="g", examples=[
+        Example(input="Can I return this?", good_output="Yes, within 30 days"),
+        Example(input="", good_output="x"),        # empty input → skipped
+        Example(input="dup", good_output="y"),      # already a test → skipped
+    ])
+    new = tests_from_examples(spec, [Case(id="t1", input="dup")])
+    assert [t.input for t in new] == ["Can I return this?"]
+    assert new[0].expects == [] and new[0].notes == "from spec example"
+
+
 def test_rag_config_shape():
     cfg = rag_config(BehaviorSpec(goal="g", knowledge_sources=["a.md"]))
     assert cfg["knowledge_sources"] == ["a.md"]

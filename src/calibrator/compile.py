@@ -269,6 +269,21 @@ def generate_tests(spec: BehaviorSpec, engine: Engine) -> list[TestCase]:
 
 # --- Deterministic renders (compiled from the spec) -------------------------
 
+def tests_from_examples(spec: BehaviorSpec, existing: list[TestCase] = ()) -> list[TestCase]:
+    """Turn the spec's examples into regression tests (§9 golden anchors).
+
+    Each example's input becomes a test graded against all criteria — so the exact
+    cases the expert cared about are pinned into the suite. Inputs already present
+    in ``existing`` are skipped (no duplicates)."""
+    seen = {t.input for t in existing}
+    out: list[TestCase] = []
+    for i, ex in enumerate(spec.examples, start=1):
+        if is_str(ex.input) and ex.input not in seen:
+            seen.add(ex.input)
+            out.append(TestCase(id=f"ex_{i}", input=ex.input, expects=[], notes="from spec example"))
+    return out
+
+
 def render_system_prompt(spec: BehaviorSpec) -> str:
     lines = [f"You are an AI for the following goal:\n{spec.goal}", ""]
     if spec.persona and (spec.persona.voice or spec.persona.reading_level):

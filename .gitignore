@@ -29,6 +29,11 @@ knowledge.db
 *.lancedb/
 .lock
 project.yaml.*.tmp
+golden.json
+calibration-report.md
+promptfooconfig.yaml
+reconciliation.yaml
+imported_prompt.txt
 
 # Secrets — never commit keys (BYO-key lives in the OS keychain / local config)
 .env

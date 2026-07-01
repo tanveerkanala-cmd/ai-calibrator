@@ -9,6 +9,7 @@ from it.
 from __future__ import annotations
 
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -73,10 +74,19 @@ class Example(BaseModel):
     why: str | None = None
 
 
+class Check(BaseModel):
+    """A deterministic (code-graded) check for a criterion — exact, no LLM (§9)."""
+    kind: Literal["contains", "not_contains", "regex", "max_chars", "min_chars", "non_empty"]
+    value: str = ""
+
+
 class EvalCriterion(BaseModel):
     id: str
     description: str
     weight: Weight = Weight.MEDIUM
+    # If set, the criterion is graded deterministically by this check instead of
+    # by the LLM judge — cheaper and exact for objectively-verifiable behavior.
+    check: Check | None = None
 
 
 class BehaviorSpec(BaseModel):

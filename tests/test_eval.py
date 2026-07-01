@@ -173,6 +173,39 @@ def test_run_eval_rejects_bad_judge_passes():
             run_eval(_project(), GoodSubject(), PassJudge(), judge_passes=bad)
 
 
+def test_deterministic_check_is_graded_by_code_not_judge():
+    from calibrator.models import Check
+
+    class SpyJudge(PassJudge):
+        called = False
+
+        def complete(self, *a, **k):
+            SpyJudge.called = True
+            return super().complete(*a, **k)
+
+    class Subject:
+        name = "subject@test"
+
+        def __init__(self, text):
+            self.text = text
+
+        def complete(self, prompt, *, system=None, schema=None):
+            return self.text
+
+    p = Project(name="p", goal="g")
+    p.spec = BehaviorSpec(goal="g", eval_criteria=[
+        EvalCriterion(id="c1", description="mentions 30-day", weight=Weight.HIGH,
+                      check=Check(kind="contains", value="30-day"))])
+    p.tests = [CaseModel(id="t1", input="q", expects=["c1"])]
+
+    card = run_eval(p, Subject("our 30-day return policy"), SpyJudge(), run_id="r")
+    assert card.results[0].criteria[0].passed is True
+    assert SpyJudge.called is False  # graded deterministically — the judge was never called
+
+    card2 = run_eval(p, Subject("no policy here"), PassJudge(), run_id="r2")
+    assert card2.results[0].criteria[0].passed is False
+
+
 def test_run_eval_multi_turn_conversation():
     prompts_seen = []
 

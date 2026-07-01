@@ -182,6 +182,26 @@ duplicates, a missing refusal policy. `--deep` adds an engine pass that flags
 **self-contradictions** ("be concise" vs "always explain in depth"). Exits
 non-zero on errors (CI-friendly).
 
+### `calibrate judge-check [--sample N]` (no engine)
+Calibrates the **judge** — the eval is only as trustworthy as the LLM doing the
+grading. Confirm or correct a sample of the judge's verdicts from the latest run;
+it reports how often the judge agreed with you, overall and **per criterion**, and
+flags the criteria where the judge is unreliable (too subjective — reword them, or
+grade with `eval --judge-passes`). The §9 "calibrate the judge" mitigation, made
+concrete.
+
+### `calibrate add-check <criterion> <kind> <value>` (no engine)
+Attach a **deterministic check** to a criterion so it's graded exactly by code —
+not the noisy LLM judge — for objectively-verifiable behavior. Kinds: `contains`,
+`not_contains`, `regex`, `max_chars`, `min_chars`, `non_empty`. e.g.
+`calibrate add-check my-ai cites contains "30-day"`. This is §9's layer-1
+(deterministic checks): the reliability floor under the judge.
+
+### `calibrate examples-to-tests` (no engine)
+Turns the spec's good/bad **examples** into regression tests (each example's input
+becomes a test graded against all criteria) — §9's "golden examples as regression
+anchors", so the exact cases you cared about stay pinned in the suite.
+
 ### `calibrate coverage` (no engine — instant)
 "Test coverage, but for behavior." Shows which eval criteria have a **targeted
 test** and which don't, flags HIGH-weight criteria with no test, and warns when a
@@ -210,6 +230,13 @@ Shows how the behavior **spec** changed between two projects — standards,
 never-rules, edge cases, and criteria added / removed / changed. (`drift`
 compares scorecards; `diff` compares the specs themselves.) Great for reviewing
 the effect of a refine, teach, or merge before you ship it.
+
+### `calibrate snapshot [--check]` (no engine — instant)
+Golden-output snapshot testing for AI. `calibrate snapshot` pins the latest run's
+outputs as a golden; `calibrate snapshot --check` flags any test whose **output
+text changed** since (exit 2 on change). Catches tone shifts and semantic drift
+that pass/fail grading is too coarse to notice — run it after an `eval` to see
+not just *whether* the score moved but *what the answers became*.
 
 ### `calibrate report` (no engine — instant)
 Generates a shareable **calibration report** (`calibration-report.md`) — the AI's

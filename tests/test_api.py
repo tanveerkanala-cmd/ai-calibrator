@@ -141,6 +141,19 @@ def test_foreign_host_is_blocked(tmp_path):
     assert c.get("/api/health", headers={"Host": "evil.example"}).status_code == 400
 
 
+def test_examples_to_tests_endpoint(tmp_path):
+    from calibrator.models import Example
+    proj = Project(name="p", goal="g")
+    proj.spec = BehaviorSpec(goal="g", examples=[Example(input="Can I return this?", good_output="yes")],
+                             eval_criteria=[EvalCriterion(id="c1", description="d", weight=Weight.HIGH)])
+    proj.tests = [CaseModel(id="t1", input="existing", expects=["c1"])]
+    save_project(proj, tmp_path / "p")
+
+    r = _client(tmp_path).post("/api/projects/p/examples-to-tests")
+    assert r.status_code == 200 and r.json()["added"] == 1
+    assert r.json()["state"]["tests"] == 2  # existing + the example-derived one
+
+
 def test_promptfoo_endpoint(tmp_path):
     import yaml as _yaml
     proj = Project(name="p", goal="answer questions")
@@ -153,6 +166,55 @@ def test_promptfoo_endpoint(tmp_path):
     cfg = _yaml.safe_load(body["config"])
     assert cfg["tests"][0]["vars"]["input"] == "hi"
     assert cfg["tests"][0]["assert"][0]["type"] == "llm-rubric"
+
+
+def test_judge_check_endpoints(tmp_path):
+    from calibrator.eval import save_scorecard
+    from calibrator.models import CriterionResult, Scorecard, TestResult
+
+    proj = Project(name="p", goal="g")
+    proj.spec = BehaviorSpec(goal="g", eval_criteria=[EvalCriterion(id="c1", description="d", weight=Weight.HIGH)])
+    proj.tests = [CaseModel(id="t1", input="q", expects=["c1"])]
+    save_project(proj, tmp_path / "p")
+    save_scorecard(tmp_path / "p", Scorecard(run_id="run-0001", results=[
+        TestResult(test_id="t1", output="o", criteria=[CriterionResult(criterion_id="c1", passed=True, rationale="ok")])]))
+
+    c = _client(tmp_path)
+    g = c.get("/api/projects/p/judge-check").json()
+    assert g["run_id"] == "run-0001" and len(g["gradings"]) == 1
+
+    # human disagrees with the judge → 0% agreement, c1 flagged unreliable
+    body = c.post("/api/projects/p/judge-check",
+                  json={"labels": [{"test_id": "t1", "criterion_id": "c1", "passed": False}]}).json()
+    assert body["agreement_rate"] == 0.0 and "c1" in body["unreliable_criteria"]
+
+    c.post("/api/projects", json={"name": "q", "goal": "g"})
+    assert c.get("/api/projects/q/judge-check").status_code == 400  # no scorecard
+
+
+def test_snapshot_endpoints(tmp_path):
+    from calibrator.eval import save_scorecard
+    from calibrator.models import Scorecard, TestResult
+
+    proj = Project(name="p", goal="g")
+    proj.spec = BehaviorSpec(goal="g", eval_criteria=[EvalCriterion(id="c1", description="d", weight=Weight.HIGH)])
+    proj.tests = [CaseModel(id="t1", input="q", expects=["c1"])]
+    save_project(proj, tmp_path / "p")
+    save_scorecard(tmp_path / "p", Scorecard(run_id="run-0001", results=[TestResult(test_id="t1", output="original")]))
+
+    c = _client(tmp_path)
+    assert c.post("/api/projects/p/snapshot").json()["pinned"] == 1        # pin golden
+    assert c.get("/api/projects/p/snapshot").json()["drifted"] is False    # same output → no drift
+
+    # a later run with a changed output → drift on t1
+    save_scorecard(tmp_path / "p", Scorecard(run_id="run-0002", results=[TestResult(test_id="t1", output="DIFFERENT")]))
+    body = c.get("/api/projects/p/snapshot").json()
+    assert body["drifted"] is True and body["changed"] == ["t1"]
+
+    # checking before any golden is pinned → 400
+    save_project(Project(name="q", goal="g"), tmp_path / "q")
+    save_scorecard(tmp_path / "q", Scorecard(run_id="run-0001", results=[TestResult(test_id="x", output="o")]))
+    assert c.get("/api/projects/q/snapshot").status_code == 400
 
 
 def test_lint_endpoint(tmp_path):

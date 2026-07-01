@@ -116,6 +116,11 @@ class DiffBody(BaseModel):
     after: str
 
 
+class JudgeLabelsBody(BaseModel):
+    labels: list[dict] = Field(default_factory=list)  # [{test_id, criterion_id, passed}]
+    run_id: str | None = None  # None → latest
+
+
 def _engine_factory():
     """Dependency: returns the engine builder (overridable in tests)."""
     from .engines import get_engine
@@ -386,6 +391,19 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
                 raise HTTPException(400, str(exc))
         return rightsize_dict(report)
 
+    @app.post("/api/projects/{name}/examples-to-tests")
+    def examples_to_tests_(name: str):
+        from .compile import tests_from_examples, write_build_bundle
+        with _locked(name) as d:
+            project = _load(name)
+            if project.spec is None:
+                raise HTTPException(400, "compile first")
+            new = tests_from_examples(project.spec, project.tests)
+            project.tests.extend(new)
+            save_project(project, d)
+            write_build_bundle(project.spec, project.tests, d)
+        return {"added": len(new), "state": _state(project)}
+
     @app.get("/api/projects/{name}/promptfoo")
     def promptfoo_(name: str):
         from .interop import to_promptfoo
@@ -393,6 +411,63 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         if project.spec is None or not project.tests:
             raise HTTPException(400, "compile first")
         return {"config": to_promptfoo(project)}
+
+    @app.get("/api/projects/{name}/judge-check")
+    def judge_check_sample_(name: str):
+        from .drift import load_scorecard
+        from .eval import latest_run_id
+        from .judge_check import gradings
+        _load(name)
+        d = _dir(name)
+        rid = latest_run_id(d)
+        if not rid:
+            raise HTTPException(400, "no scorecard — run eval first")
+        return {"run_id": rid, "gradings": gradings(load_scorecard(d, rid))}
+
+    @app.post("/api/projects/{name}/judge-check")
+    def judge_check_score_(name: str, body: JudgeLabelsBody):
+        from .drift import load_scorecard
+        from .eval import latest_run_id
+        from .judge_check import agreement_dict, judge_agreement
+        _load(name)
+        d = _dir(name)
+        rid = body.run_id or latest_run_id(d)
+        if not rid:
+            raise HTTPException(400, "no scorecard — run eval first")
+        try:
+            card = load_scorecard(d, rid)
+        except (FileNotFoundError, ValueError) as exc:
+            raise HTTPException(400, str(exc))
+        return agreement_dict(judge_agreement(card, body.labels))
+
+    @app.post("/api/projects/{name}/snapshot")
+    def snapshot_pin_(name: str):
+        from .drift import load_scorecard
+        from .eval import latest_run_id
+        from .snapshot import outputs_of, save_golden
+        _load(name)
+        d = _dir(name)
+        rid = latest_run_id(d)
+        if not rid:
+            raise HTTPException(400, "no scorecard — run eval first")
+        outs = outputs_of(load_scorecard(d, rid))
+        save_golden(d, outs)
+        return {"pinned": len(outs), "run_id": rid}
+
+    @app.get("/api/projects/{name}/snapshot")
+    def snapshot_check_(name: str):
+        from .drift import load_scorecard
+        from .eval import latest_run_id
+        from .snapshot import compare, load_golden, outputs_of, snapshot_dict
+        _load(name)
+        d = _dir(name)
+        golden = load_golden(d)
+        if golden is None:
+            raise HTTPException(400, "no golden — POST /snapshot to pin one first")
+        rid = latest_run_id(d)
+        if not rid:
+            raise HTTPException(400, "no scorecard — run eval first")
+        return snapshot_dict(compare(golden, outputs_of(load_scorecard(d, rid))))
 
     @app.get("/api/projects/{name}/lint")
     def lint_(name: str):
