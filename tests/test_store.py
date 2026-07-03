@@ -66,3 +66,57 @@ def test_save_scorecard_is_atomic(tmp_path, monkeypatch):
     d = tmp_path / "evals" / "run-0001"
     assert not (d / "scorecard.json").exists()     # never a truncated scorecard on disk
     assert list(d.glob("*.tmp")) == []
+
+
+def test_unknown_fields_survive_round_trip(tmp_path):
+    """Fields from a newer version (or a typo) must survive load→save, not vanish.
+    (audit finding: pydantic's default extra='ignore' silently destroyed them)"""
+    import yaml as _yaml
+
+    from calibrator.store import load_project, save_project
+
+    d = tmp_path / "p"
+    d.mkdir()
+    (d / "project.yaml").write_text(_yaml.safe_dump({
+        "name": "p", "goal": "g",
+        "future_top_level": {"nested": [1, 2]},               # top level
+        "spec": {"goal": "g", "spec_future": "keep me",       # spec level
+                 "eval_criteria": [{"id": "c1", "description": "d", "crit_future": 7}]},
+        "tests": [{"id": "t1", "input": "q", "test_future": True}],
+    }))
+    project = load_project(d)
+    save_project(project, d)                                   # round-trip
+    on_disk = _yaml.safe_load((d / "project.yaml").read_text())
+    assert on_disk["future_top_level"] == {"nested": [1, 2]}
+    assert on_disk["spec"]["spec_future"] == "keep me"
+    assert on_disk["spec"]["eval_criteria"][0]["crit_future"] == 7
+    assert on_disk["tests"][0]["test_future"] is True
+
+
+def test_yaml_tab_error_is_friendly(tmp_path):
+    """A trailing tab (classic hand-edit slip) must produce an actionable message
+    with the location and a tab hint — not a raw pyyaml ScannerError."""
+    import pytest as _pytest
+
+    from calibrator.store import load_project
+
+    d = tmp_path / "p"
+    d.mkdir()
+    (d / "project.yaml").write_text("name: Test Project\t\ngoal: g\n")
+    with _pytest.raises(ValueError) as err:
+        load_project(d)
+    msg = str(err.value)
+    assert "line 1" in msg and "not valid YAML" in msg
+    assert "tab" in msg.lower() and "spaces" in msg
+
+
+def test_write_project_gitignore(tmp_path):
+    from calibrator.store import write_project_gitignore
+
+    target = write_project_gitignore(tmp_path)
+    body = target.read_text()
+    assert "evals/" in body and ".env" in body and "*.key" in body
+    # never clobbers user edits
+    target.write_text("# mine\n")
+    write_project_gitignore(tmp_path)
+    assert target.read_text() == "# mine\n"

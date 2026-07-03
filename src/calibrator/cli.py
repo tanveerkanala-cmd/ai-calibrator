@@ -16,7 +16,7 @@ import yaml
 from pydantic import ValidationError
 
 from .models import EngineBinding, Project, TaskType
-from .store import atomic_write_text, load_project, project_lock, save_project
+from .store import atomic_write_text, load_project, project_lock, save_project, write_project_gitignore
 
 app = typer.Typer(
     add_completion=False,
@@ -75,9 +75,11 @@ def init(
             raise typer.Exit(code=1)
         project = Project(name=name, goal=goal, task_type=task_type)
         save_project(project, target)
+        write_project_gitignore(target)
     typer.secho(f"✓ Created project '{name}' at {target}/", fg=typer.colors.GREEN)
     typer.echo(f"  goal: {goal}")
-    typer.echo(f"  engine (all roles): {project.engines.interviewer}")
+    e = project.engines
+    typer.echo(f"  engines: {e.interviewer} (reasoning) · {e.judge} (judge) · {e.subject} (subject)")
     typer.echo("\nNext:  add materials, then `calibrate ingest` (M1).")
 
 
@@ -565,7 +567,7 @@ def lint(
     deep: bool = typer.Option(False, "--deep", help="Also detect self-contradictions (uses an engine)."),
 ) -> None:
     """Lint the behavior spec for quality issues before you eval. Exits 1 on errors. (no engine unless --deep)"""
-    from .lint import lint_spec
+    from .lint import lint_spec, lint_unknown_fields
 
     project = _load(path)
     if project.spec is None:
@@ -573,6 +575,7 @@ def lint(
         raise typer.Exit(code=1)
 
     report = lint_spec(project.spec, project.tests)
+    report.issues.extend(lint_unknown_fields(project))
     if deep:
         from .engines import get_engine
         from .lint import lint_contradictions

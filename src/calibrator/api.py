@@ -27,7 +27,7 @@ except ImportError as exc:  # pragma: no cover - depends on optional extra
 
 from .auth import all_status
 from .models import EngineBinding, Project, TaskType
-from .store import load_project, project_lock, save_project
+from .store import load_project, project_lock, save_project, write_project_gitignore
 
 WEB_DIR = Path(__file__).parent / "web"
 
@@ -229,6 +229,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             if (d / "project.yaml").exists():
                 raise HTTPException(409, "project already exists")
             save_project(project, d)
+            write_project_gitignore(d)
         return _state(project)
 
     @app.get("/api/projects/{name}")
@@ -471,11 +472,13 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
 
     @app.get("/api/projects/{name}/lint")
     def lint_(name: str):
-        from .lint import lint_dict, lint_spec
+        from .lint import lint_dict, lint_spec, lint_unknown_fields
         project = _load(name)
         if project.spec is None:
             raise HTTPException(400, "compile first")
-        return lint_dict(lint_spec(project.spec, project.tests))
+        report = lint_spec(project.spec, project.tests)
+        report.issues.extend(lint_unknown_fields(project))
+        return lint_dict(report)
 
     @app.get("/api/projects/{name}/coverage")
     def coverage_(name: str):

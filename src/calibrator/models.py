@@ -11,7 +11,18 @@ from __future__ import annotations
 from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+class PreservingModel(BaseModel):
+    """Base for every model persisted to disk (project.yaml / scorecard.json).
+
+    ``extra="allow"`` keeps unknown fields — a hand-edit typo, or a field written
+    by a NEWER calibrator version — through load→save instead of silently
+    destroying them (pydantic's default ``ignore`` drops extras on the next
+    save). The data is inert to this version but survives; ``calibrate lint``
+    flags it so a typo doesn't hide forever."""
+    model_config = ConfigDict(extra="allow")
 
 
 class TaskType(str, Enum):
@@ -32,20 +43,20 @@ class Weight(str, Enum):
 
 # --- Inputs gathered from the user -----------------------------------------
 
-class Material(BaseModel):
+class Material(PreservingModel):
     """A source file the user uploaded."""
     path: str
     kind: str = "document"
     summary: str | None = None
 
 
-class Gap(BaseModel):
+class Gap(PreservingModel):
     """A dimension the materials don't settle — a candidate interview topic."""
     dimension: str
     why_it_matters: str | None = None
 
 
-class InterviewItem(BaseModel):
+class InterviewItem(PreservingModel):
     """One adaptive question, its drafted answer, and the user's ratified answer."""
     id: str
     dimension: str
@@ -57,30 +68,30 @@ class InterviewItem(BaseModel):
 
 # --- The compiled behavior spec (source of truth) --------------------------
 
-class Persona(BaseModel):
+class Persona(PreservingModel):
     voice: str | None = None
     reading_level: str | None = None
 
 
-class EdgeCase(BaseModel):
+class EdgeCase(PreservingModel):
     situation: str
     ruling: str
 
 
-class Example(BaseModel):
+class Example(PreservingModel):
     input: str
     good_output: str | None = None
     bad_output: str | None = None
     why: str | None = None
 
 
-class Check(BaseModel):
+class Check(PreservingModel):
     """A deterministic (code-graded) check for a criterion — exact, no LLM (§9)."""
     kind: Literal["contains", "not_contains", "regex", "max_chars", "min_chars", "non_empty"]
     value: str = ""
 
 
-class EvalCriterion(BaseModel):
+class EvalCriterion(PreservingModel):
     id: str
     description: str
     weight: Weight = Weight.MEDIUM
@@ -89,7 +100,7 @@ class EvalCriterion(BaseModel):
     check: Check | None = None
 
 
-class BehaviorSpec(BaseModel):
+class BehaviorSpec(PreservingModel):
     goal: str
     task_type: TaskType = TaskType.ASSISTANT
     persona: Persona = Field(default_factory=Persona)
@@ -105,7 +116,7 @@ class BehaviorSpec(BaseModel):
 
 # --- Evaluation ------------------------------------------------------------
 
-class TestCase(BaseModel):
+class TestCase(PreservingModel):
     id: str
     input: str                                          # the first (or only) user turn
     expects: list[str] = Field(default_factory=list)    # EvalCriterion ids
@@ -114,7 +125,7 @@ class TestCase(BaseModel):
     follow_ups: list[str] = Field(default_factory=list)
 
 
-class CriterionResult(BaseModel):
+class CriterionResult(PreservingModel):
     criterion_id: str
     passed: bool
     score: float = 0.0
@@ -124,7 +135,7 @@ class CriterionResult(BaseModel):
     confidence: float | None = None
 
 
-class TestResult(BaseModel):
+class TestResult(PreservingModel):
     test_id: str
     output: str
     criteria: list[CriterionResult] = Field(default_factory=list)
@@ -134,7 +145,7 @@ class TestResult(BaseModel):
         return bool(self.criteria) and all(c.passed for c in self.criteria)
 
 
-class Scorecard(BaseModel):
+class Scorecard(PreservingModel):
     run_id: str
     results: list[TestResult] = Field(default_factory=list)
 
@@ -171,7 +182,7 @@ _JUDGE = "claude-haiku-4-5@anthropic"
 _SUBJECT = "claude-sonnet-4-6@anthropic"
 
 
-class EngineBinding(BaseModel):
+class EngineBinding(PreservingModel):
     """Which engine powers each role. Cloud (Claude) default, BYO key via
     ANTHROPIC_API_KEY; point any role at "<model>@ollama" to run locally."""
     extractor: str = _REASONING
@@ -186,7 +197,7 @@ class EngineBinding(BaseModel):
 
 # --- The project (everything, serializable) --------------------------------
 
-class Project(BaseModel):
+class Project(PreservingModel):
     name: str
     goal: str
     task_type: TaskType = TaskType.ASSISTANT

@@ -14,9 +14,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from pydantic import BaseModel
+
 from .coverage import analyze_coverage
 from .engines.base import Engine
-from .models import BehaviorSpec, TestCase
+from .models import BehaviorSpec, Project, TestCase
 
 # Vague, unfalsifiable words that make a standard hard to test objectively.
 _WEASEL_WORDS = {"good", "bad", "nice", "appropriate", "appropriately", "helpful",
@@ -101,6 +103,34 @@ def lint_spec(spec: BehaviorSpec, tests: list[TestCase]) -> LintReport:
         issues.append(LintIssue("no_refusal_policy", "info",
                                 "Spec has never-rules but no refusal policy — define how it should decline."))
     return LintReport(issues)
+
+
+def _walk_extras(value: object, path: str, out: list[tuple[str, str]]) -> None:
+    if isinstance(value, BaseModel):
+        for key in (value.model_extra or {}):
+            out.append((path, key))
+        for name in type(value).model_fields:
+            _walk_extras(getattr(value, name), f"{path}.{name}", out)
+    elif isinstance(value, list):
+        for i, item in enumerate(value):
+            _walk_extras(item, f"{path}[{i}]", out)
+
+
+def lint_unknown_fields(project: Project) -> list[LintIssue]:
+    """Flag fields in project.yaml this version doesn't recognize.
+
+    They're preserved through save (see models.PreservingModel) but ignored by
+    every computation — usually a hand-edit typo, sometimes a file written by a
+    newer calibrator. Either way the owner should know."""
+    found: list[tuple[str, str]] = []
+    _walk_extras(project, "project", found)
+    return [
+        LintIssue("unknown_field", "warn",
+                  f"Unrecognized field {key!r} at {path} — kept in the file but ignored "
+                  "by this version (a typo, or written by a newer calibrator?).",
+                  f"{path}.{key}")
+        for path, key in found
+    ]
 
 
 def lint_contradictions(spec: BehaviorSpec, engine: Engine) -> list[LintIssue]:

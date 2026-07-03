@@ -58,3 +58,21 @@ def test_lint_contradictions_reuses_conflict_detector():
     spec = BehaviorSpec(goal="g", standards=["Always be brief.", "Always explain in great detail."])
     issues = lint_contradictions(spec, ConflictEngine())
     assert len(issues) == 1 and issues[0].code == "self_contradiction" and issues[0].severity == "error"
+
+
+def test_lint_flags_unknown_fields():
+    """Preserved-but-unrecognized fields (typo / newer version) surface as warnings."""
+    from calibrator.lint import lint_unknown_fields
+    from calibrator.models import Project
+
+    project = Project.model_validate({
+        "name": "p", "goal": "g",
+        "standrds_typo": ["oops"],
+        "spec": {"goal": "g", "eval_criteria": [{"id": "c1", "description": "d", "wieght": "high"}]},
+    })
+    issues = lint_unknown_fields(project)
+    wheres = {i.where for i in issues}
+    assert {"project.standrds_typo", "project.spec.eval_criteria[0].wieght"} <= wheres
+    assert all(i.code == "unknown_field" and i.severity == "warn" for i in issues)
+    # and a clean project yields none
+    assert lint_unknown_fields(Project(name="p", goal="g")) == []

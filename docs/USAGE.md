@@ -54,7 +54,9 @@ calibrate login claude              # (a) browser login — NO API key (uses the
 export ANTHROPIC_API_KEY=sk-ant-... # (b) or an API key
 ```
 Reasoning roles default to `claude-opus-4-8`; the high-volume judge to
-`claude-haiku-4-5`. Run `calibrate auth` to see what's configured.
+`claude-haiku-4-5`; the **subject** — the AI being configured and tested — to
+`claude-sonnet-4-6`. Run `calibrate auth` to see what's configured and
+`calibrate engines` to see each role's binding (§5 shows how to change them).
 
 ### Option B — OpenAI
 ```bash
@@ -190,7 +192,7 @@ flags the criteria where the judge is unreliable (too subjective — reword them
 grade with `eval --judge-passes`). The §9 "calibrate the judge" mitigation, made
 concrete.
 
-### `calibrate add-check <criterion> <kind> <value>` (no engine)
+### `calibrate add-check <path> <criterion> <kind> <value>` (no engine)
 Attach a **deterministic check** to a criterion so it's graded exactly by code —
 not the noisy LLM judge — for objectively-verifiable behavior. Kinds: `contains`,
 `not_contains`, `regex`, `max_chars`, `min_chars`, `non_empty`. e.g.
@@ -260,12 +262,17 @@ instead of being locked into `calibrate eval`. Anti-lock-in.
 ```bash
 pip install -e '.[api]'
 calibrate serve                 # → http://127.0.0.1:8765
+calibrate serve --port 9000     # if 8765 is taken
 ```
+Flags: `--port PORT` (default `8765`), `--projects DIR` (where projects live;
+default `~/.ai-calibrator/projects`), and `--host HOST` (default `127.0.0.1`,
+i.e. reachable only from your machine — binding anything else prints a warning,
+since the API has no authentication).
+
 Open that URL to create a project, upload materials, and run
 ingest → interview → compile → eval → export from the browser — the same Guided
 loop, with a UI and a scorecard view. The **Teach, Coverage, Report, Red-team,
-Rightsize, and Drift** actions (§4a) are surfaced there too. Projects live in
-`~/.ai-calibrator/projects` (`--projects DIR` to change). A native desktop
+Rightsize, and Drift** actions (§4a) are surfaced there too. A native desktop
 wrapper (Tauri) around this same UI is a packaging step on the roadmap.
 
 ## 5. Your project on disk
@@ -302,10 +309,12 @@ Each value is a `model@provider` string. Providers: `anthropic`, `openai`,
 For technical users, when evals show configuration alone isn't enough:
 ```bash
 calibrate finetune                 # → <project>/finetune/ : dataset.jsonl, recipe.yaml, train.py, README
+calibrate finetune --base mistralai/Mistral-7B-Instruct-v0.3   # pick the open base model
 ```
 It assembles a chat-format dataset from your spec's examples (human-authored /
-corrected — never the model's own output), recommends a LoRA recipe, and emits a
-runnable training script. You train on a GPU (local ~16 GB+, or a rented cloud
+corrected — never the model's own output), recommends a LoRA recipe for the base
+model (`--base`, a Hugging Face model id; default `Qwen/Qwen2.5-7B-Instruct`),
+and emits a runnable training script. You train on a GPU (local ~16 GB+, or a rented cloud
 GPU), then run the **prove-it gate** — keep the fine-tune *only* if it beats your
 configured baseline on the same evals:
 ```bash
@@ -328,6 +337,8 @@ calibrate log --on              # opt-in; logs to <project>/logs/<role>.jsonl (s
 calibrate eval                  # run normally — the judge's decisions are now logged
 calibrate train-engine judge    # → <project>/trained-engines/judge/ : dataset, LoRA recipe, train.py, README
 ```
+(`--base <hf-model-id>` picks the open base model for the LoRA recipe, as in
+`calibrate finetune`.)
 
 Train that bundle on a GPU (see its README), serve the result (e.g. `ollama
 create`), then **prove it matches** before trusting it:

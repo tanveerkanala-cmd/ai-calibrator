@@ -106,3 +106,14 @@ def test_init_accepts_plain_name_and_explicit_path(tmp_path):
         os.chdir(cwd)
     # --path stays free-form for explicit locations (like `git init <path>`)
     assert runner.invoke(app, ["init", "anyname", "--goal", "g", "--path", str(tmp_path / "loc")]).exit_code == 0
+
+
+def test_init_writes_gitignore_and_honest_engines_line(tmp_path):
+    """init must protect a future `git init` (audit: no .gitignore template) and must
+    not claim one engine covers 'all roles' when judge/subject differ (audit)."""
+    r = runner.invoke(app, ["init", "proj", "--goal", "g", "--path", str(tmp_path / "proj")])
+    assert r.exit_code == 0
+    gi = (tmp_path / "proj" / ".gitignore").read_text()
+    assert "evals/" in gi and ".env" in gi and "*.key" in gi
+    assert "all roles" not in r.output          # the misleading phrasing is gone
+    assert "(judge)" in r.output and "(subject)" in r.output
