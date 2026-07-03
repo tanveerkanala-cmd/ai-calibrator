@@ -180,3 +180,68 @@ def test_cli_train_engine_validations(tmp_path):
     # --prove without --candidate
     r2 = runner.invoke(app, ["train-engine", "judge", str(tmp_path), "--prove"])
     assert r2.exit_code == 1 and "needs --candidate" in r2.output
+
+
+# --- human ground truth from judge-check labels --------------------------------
+
+def _seed_labeled_project(tmp_path):
+    """Project + scorecard + one human label that CONTRADICTS the logged judge."""
+    from calibrator.eval import JUDGE_SYSTEM, judge_prompt, save_scorecard
+    from calibrator.judge_check import save_labels
+    from calibrator.models import BehaviorSpec, CriterionResult, EvalCriterion, Scorecard, TestCase, TestResult, Weight
+
+    p = Project(name="p", goal="g")
+    p.spec = BehaviorSpec(goal="g", eval_criteria=[
+        EvalCriterion(id="c1", description="cites the policy", weight=Weight.HIGH)])
+    p.tests = [TestCase(id="t1", input="can I return this?", expects=["c1"])]
+    save_project(p, tmp_path)
+
+    card = Scorecard(run_id="run-0001", results=[TestResult(test_id="t1", output="the answer", criteria=[
+        CriterionResult(criterion_id="c1", passed=True, score=1.0)])])   # judge said PASS
+    save_scorecard(tmp_path, card)
+    save_labels(tmp_path, "run-0001", [{"test_id": "t1", "criterion_id": "c1", "passed": False}])  # human: FAIL
+
+    # the logged judge row asks the exact same single-criterion question (conflict)
+    prompt = judge_prompt("can I return this?", "the answer", [("c1", "cites the policy")])
+    (tmp_path / "logs").mkdir(exist_ok=True)
+    (tmp_path / "logs" / "judge.jsonl").write_text(json.dumps({
+        "role": "judge", "prompt": prompt, "system": JUDGE_SYSTEM,
+        "output": {"results": [{"criterion_id": "c1", "passed": True, "score": 1.0, "rationale": "judge"}]},
+    }) + "\n")
+    return prompt
+
+
+def test_human_judge_rows_built_from_labels(tmp_path):
+    from calibrator.train_engine import human_judge_rows
+
+    expected_prompt = _seed_labeled_project(tmp_path)
+    rows = human_judge_rows(tmp_path)
+    assert len(rows) == 1
+    msgs = rows[0]["messages"]
+    assert msgs[1]["content"] == expected_prompt            # byte-identical judge format
+    target = json.loads(msgs[2]["content"])
+    assert target["results"][0]["passed"] is False          # the HUMAN verdict, not the judge's
+
+
+def test_export_bundle_ground_truth_overrides_conflicting_log_row(tmp_path):
+    expected_prompt = _seed_labeled_project(tmp_path)
+    result = export_engine_bundle(tmp_path, "judge")
+    assert result.examples == 1 and result.human_examples == 1   # log row dropped, human row kept
+
+    row = json.loads((tmp_path / "trained-engines" / "judge" / "dataset.jsonl").read_text().splitlines()[0])
+    assert row["messages"][1]["content"] == expected_prompt
+    assert json.loads(row["messages"][2]["content"])["results"][0]["passed"] is False
+    assert "ground-truth" in (tmp_path / "trained-engines" / "judge" / "README.md").read_text()
+
+
+def test_export_bundle_skips_stale_labels(tmp_path):
+    """Labels for vanished tests/criteria are skipped, never mis-built."""
+    from calibrator.judge_check import save_labels
+
+    _seed_labeled_project(tmp_path)
+    save_labels(tmp_path, "run-0001", [
+        {"test_id": "ghost", "criterion_id": "c1", "passed": True},   # test gone
+        {"test_id": "t1", "criterion_id": "ghost", "passed": True},   # criterion gone
+    ])
+    result = export_engine_bundle(tmp_path, "judge")
+    assert result.human_examples == 1  # still just the valid label

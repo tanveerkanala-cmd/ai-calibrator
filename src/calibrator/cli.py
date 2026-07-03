@@ -484,6 +484,68 @@ def eval_(
         typer.echo("Below threshold — try:  calibrate eval --refine")
 
 
+@app.command()
+def ci(
+    path: Path = typer.Argument(Path("."), help="Project directory."),
+    threshold: float = typer.Option(0.8, "--threshold", help="Min pass rate for the eval stage (0-1)."),
+    tolerance: float = typer.Option(0.0, "--tolerance", help="Allowed pass-rate drop before drift fails."),
+    judge_passes: int = typer.Option(1, "--judge-passes", help="Judge self-consistency passes (1-9)."),
+    baseline: Optional[str] = typer.Option(None, "--baseline", help="Run id to drift against (default: previous run)."),
+    as_json: bool = typer.Option(False, "--json", help="Print a machine-readable JSON result."),
+) -> None:
+    """The whole gate in one command: lint → eval → drift → snapshot.
+
+    Exit codes: 0 = gate passed, 1 = couldn't gate (spec/engine problems), 2 = the AI failed the gate.
+    """
+    import json as _json
+
+    from .ci import ci_dict, run_ci
+    from .engine_log import wrap_engine
+    from .engines import get_engine
+
+    if not math.isfinite(threshold) or not (0.0 <= threshold <= 1.0):
+        typer.secho("--threshold must be a number between 0 and 1.", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    if not math.isfinite(tolerance) or tolerance < 0:
+        typer.secho("--tolerance must be a number >= 0.", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    if not (1 <= judge_passes <= 9):
+        typer.secho("--judge-passes must be between 1 and 9.", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    with project_lock(path):
+        project = _load(path)
+        if project.spec is None or not project.tests:
+            typer.secho("Nothing to gate — run `calibrate compile` (or `import`) first.", fg=typer.colors.YELLOW)
+            raise typer.Exit(code=1)
+        # Factories: engines are acquired only if lint passes — a lint-broken spec
+        # shouldn't demand credentials, and an engine problem shouldn't mask lint.
+        log_on = project.log_interactions
+        subject = lambda: get_engine(project.engines.subject)  # noqa: E731
+        judge = lambda: wrap_engine(get_engine(project.engines.judge), "judge", path, enabled=log_on)  # noqa: E731
+        try:
+            result = run_ci(project, subject, judge, project_dir=path, threshold=threshold,
+                            tolerance=tolerance, judge_passes=judge_passes, baseline=baseline)
+        except Exception as exc:
+            typer.secho(f"CI gate could not run: {exc}", fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+
+    if as_json:
+        typer.echo(_json.dumps(ci_dict(result), indent=2))
+    else:
+        marks = {"pass": ("✓", typer.colors.GREEN), "fail": ("✗", typer.colors.RED),
+                 "skip": ("-", typer.colors.YELLOW)}
+        for s in result.stages:
+            mark, color = marks[s.status]
+            typer.secho(f" {mark} {s.name:<9}{s.detail}", fg=color)
+        typer.secho(f"\nCI gate: {'PASS' if result.ok else 'FAIL'}",
+                    fg=typer.colors.GREEN if result.ok else typer.colors.RED, bold=True)
+
+    if not result.ok:
+        lint_failed = any(s.name == "lint" and s.status == "fail" for s in result.stages)
+        raise typer.Exit(code=1 if lint_failed else 2)
+
+
 @app.command(name="add-check")
 def add_check(
     path: Path = typer.Argument(..., help="Project directory."),
@@ -528,7 +590,7 @@ def judge_check(
     """Calibrate the judge: confirm a sample of its verdicts and measure its agreement with you. (no engine)"""
     from .drift import load_scorecard
     from .eval import latest_run_id
-    from .judge_check import gradings, judge_agreement
+    from .judge_check import gradings, judge_agreement, save_labels
 
     if sample < 1:
         typer.secho("--sample must be >= 1.", fg=typer.colors.RED)
@@ -556,6 +618,7 @@ def judge_check(
         human_passed = it["judge_passed"] if agree else (not it["judge_passed"])
         labels.append({"test_id": it["test_id"], "criterion_id": it["criterion_id"], "passed": human_passed})
 
+    save_labels(path, rid, labels)  # ground truth is an asset: feeds train-engine
     ag = judge_agreement(card, labels)
     rate = ag.agreement_rate
     typer.secho(f"\nJudge agreement with you: {rate:.0%} ({ag.agreed}/{ag.total})",
@@ -568,6 +631,8 @@ def judge_check(
         typer.echo("\nTrust this scorecard less; reword the flagged criteria, or grade with `eval --judge-passes 3`.")
     else:
         typer.secho("\nThe judge tracks your judgment well — the scorecard is trustworthy.", fg=typer.colors.GREEN)
+    typer.echo(f"Labels saved to evals/{rid}/human-labels.json — `calibrate train-engine judge` "
+               "uses them as ground truth.")
 
 
 @app.command()

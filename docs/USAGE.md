@@ -198,7 +198,20 @@ grading. Confirm or correct a sample of the judge's verdicts from the latest run
 it reports how often the judge agreed with you, overall and **per criterion**, and
 flags the criteria where the judge is unreliable (too subjective — reword them, or
 grade with `eval --judge-passes`). The §9 "calibrate the judge" mitigation, made
-concrete.
+concrete. Your answers are saved to `evals/<run>/human-labels.json` — they're an
+asset: `calibrate train-engine judge` uses them as **ground truth** (§6b).
+
+### `calibrate ci [--threshold 0.8] [--tolerance 0] [--baseline RUN] [--judge-passes N] [--json]`
+The whole verification surface as **one gate** for pipelines and cron:
+**lint → eval → drift → snapshot**, cheap-to-expensive. Lint errors stop the gate
+before any engine call is spent; a stage that can't run yet (no baseline run, no
+pinned golden) reports *skip* — never a silent pass. `--baseline RUN` drifts
+against a blessed run instead of the previous one; `--json` prints a
+machine-readable result. Exit codes: `0` gate passed, `1` couldn't gate
+(spec/engine problems), `2` the AI failed the gate.
+```bash
+calibrate ci my-ai --threshold 0.9 --tolerance 0.05   # e.g. nightly, or on every spec change
+```
 
 ### `calibrate add-check <path> <criterion> <kind> <value>` (no engine)
 Attach a **deterministic check** to a criterion so it's graded exactly by code —
@@ -347,6 +360,12 @@ calibrate train-engine judge    # → <project>/trained-engines/judge/ : dataset
 ```
 (`--base <hf-model-id>` picks the open base model for the LoRA recipe, as in
 `calibrate finetune`.)
+
+For the **judge** role the dataset is upgraded with **human ground truth**: every
+verdict you confirmed or corrected in `calibrate judge-check` becomes a training
+row of what the judge *should* have said — and where a logged row asks the exact
+same question, the human answer replaces it. Imitating the cloud judge copies its
+mistakes; your labels train past them. (The bundle README shows the split.)
 
 Train that bundle on a GPU (see its README), serve the result (e.g. `ollama
 create`), then **prove it matches** before trusting it:

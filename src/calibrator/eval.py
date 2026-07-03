@@ -41,12 +41,26 @@ JUDGE_SCHEMA = {
     "required": ["results"],
 }
 
-_JUDGE_SYSTEM = (
+JUDGE_SYSTEM = (
     "You are a strict grader. Judge the AI output against each listed criterion "
     "independently. Pass a criterion only if the output clearly satisfies it. "
     "Give a 0-1 score and a one-line rationale per criterion. Respond with JSON "
     "only, matching the schema."
 )
+_JUDGE_SYSTEM = JUDGE_SYSTEM  # back-compat alias
+
+
+def judge_prompt(test_input: str, output: str, criteria: list[tuple[str, str]]) -> str:
+    """The exact prompt the judge grades with.
+
+    Public because the Engine-Trainer builds *ground-truth* training rows from
+    human judge-check labels — those must use the identical format the judge role
+    sees at inference time, or the fine-tune learns the wrong distribution."""
+    block = "\n".join(f"- {cid}: {desc}" for cid, desc in criteria)
+    return (
+        f"INPUT:\n{test_input}\n\nAI OUTPUT:\n{output}\n\nCRITERIA:\n{block}\n\n"
+        "Grade each criterion."
+    )
 
 
 def _as_float(value: object) -> float:
@@ -67,11 +81,7 @@ def _judge(
     output: str,
     criteria: list[tuple[str, str]],
 ) -> list[CriterionResult]:
-    block = "\n".join(f"- {cid}: {desc}" for cid, desc in criteria)
-    prompt = (
-        f"INPUT:\n{test_input}\n\nAI OUTPUT:\n{output}\n\nCRITERIA:\n{block}\n\n"
-        "Grade each criterion."
-    )
+    prompt = judge_prompt(test_input, output, criteria)
     out = require_object(judge.complete(prompt, system=_JUDGE_SYSTEM, schema=JUDGE_SCHEMA), "judge")
     by_id = {
         r.get("criterion_id"): r

@@ -544,3 +544,52 @@ def test_csrf_guard_stays_on_when_host_is_widened(tmp_path):
     # cross-origin is still blocked even though the host was widened
     assert client.post("/api/projects", json={"name": "b", "goal": "g"},
                        headers={"Origin": "https://evil.example"}).status_code == 403
+
+
+def test_ci_endpoint(tmp_path):
+    import re as _re
+
+    class RoleFake:
+        name = "fake@test"
+
+        def __init__(self, spec):
+            self.spec = spec
+
+        def complete(self, prompt, *, system=None, schema=None):
+            props = (schema or {}).get("properties", {})
+            if "results" in props:  # judge → pass everything
+                ids = _re.findall(r"^- (\S+):", prompt, _re.M)
+                return {"results": [{"criterion_id": i, "passed": True, "score": 1.0, "rationale": "ok"} for i in ids]}
+            return "an answer"  # subject
+
+    app = create_app(tmp_path)
+    app.dependency_overrides[_engine_factory] = lambda: (lambda spec: RoleFake(spec))
+    c = TestClient(app)
+
+    proj = Project(name="p", goal="g")
+    proj.spec = BehaviorSpec(goal="g", standards=["Always answer with the documented policy."],
+                             refusal_policy="decline medical questions",
+                             eval_criteria=[EvalCriterion(id="c1", description="matches the documented policy",
+                                                          weight=Weight.HIGH)])
+    proj.tests = [CaseModel(id="t1", input="q", expects=["c1"])]
+    save_project(proj, tmp_path / "p")
+
+    r = c.post("/api/projects/p/ci", json={})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True and body["run_id"] == "run-0001"
+    assert {s["name"]: s["status"] for s in body["stages"]} == {
+        "lint": "pass", "eval": "pass", "drift": "skip", "snapshot": "skip"}
+
+    # second run: drift now has a baseline
+    r2 = c.post("/api/projects/p/ci", json={"threshold": 0.5}).json()
+    assert {s["name"]: s["status"] for s in r2["stages"]}["drift"] == "pass"
+
+    # validation: bad threshold → 422 from pydantic
+    assert c.post("/api/projects/p/ci", json={"threshold": 7}).status_code == 422
+
+    # labels persist via judge-check POST
+    r3 = c.post("/api/projects/p/judge-check",
+                json={"labels": [{"test_id": "t1", "criterion_id": "c1", "passed": False}]})
+    assert r3.status_code == 200 and r3.json()["labels_saved"].endswith("human-labels.json")
+    assert (tmp_path / "p" / "evals" / r2["run_id"] / "human-labels.json").exists()

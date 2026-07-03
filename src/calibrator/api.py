@@ -121,6 +121,13 @@ class JudgeLabelsBody(BaseModel):
     run_id: str | None = None  # None → latest
 
 
+class CiBody(BaseModel):
+    threshold: float = Field(0.8, ge=0.0, le=1.0)
+    tolerance: float = Field(0.0, ge=0.0)
+    judge_passes: int = Field(1, ge=1, le=9)
+    baseline: str | None = None
+
+
 def _engine_factory():
     """Dependency: returns the engine builder (overridable in tests)."""
     from .engines import get_engine
@@ -364,6 +371,28 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             for c in cards
         ]}
 
+    @app.post("/api/projects/{name}/ci")
+    def ci_(name: str, body: CiBody, make_engine=Depends(_engine_factory)):
+        from .ci import ci_dict, run_ci
+        from .engine_log import wrap_engine
+        with _locked(name) as d:
+            project = _load(name)
+            if project.spec is None or not project.tests:
+                raise HTTPException(400, "compile first")
+            try:
+                # factories: engines resolve only after the lint stage passes
+                subject = lambda: make_engine(project.engines.subject)  # noqa: E731
+                judge = lambda: wrap_engine(make_engine(project.engines.judge), "judge", d,  # noqa: E731
+                                            enabled=project.log_interactions)
+                result = run_ci(project, subject, judge, project_dir=d, threshold=body.threshold,
+                                tolerance=body.tolerance, judge_passes=body.judge_passes,
+                                baseline=body.baseline)
+            except HTTPException:
+                raise
+            except Exception as exc:
+                raise HTTPException(400, str(exc))
+        return ci_dict(result)
+
     @app.post("/api/projects/{name}/export")
     def export(name: str):
         from .export import export_bundle
@@ -429,7 +458,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
     def judge_check_score_(name: str, body: JudgeLabelsBody):
         from .drift import load_scorecard
         from .eval import latest_run_id
-        from .judge_check import agreement_dict, judge_agreement
+        from .judge_check import agreement_dict, judge_agreement, save_labels
         _load(name)
         d = _dir(name)
         rid = body.run_id or latest_run_id(d)
@@ -437,9 +466,12 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             raise HTTPException(400, "no scorecard — run eval first")
         try:
             card = load_scorecard(d, rid)
+            save_labels(d, rid, body.labels)  # persist: feeds train-engine as ground truth
         except (FileNotFoundError, ValueError) as exc:
             raise HTTPException(400, str(exc))
-        return agreement_dict(judge_agreement(card, body.labels))
+        out = agreement_dict(judge_agreement(card, body.labels))
+        out["labels_saved"] = f"evals/{rid}/human-labels.json"
+        return out
 
     @app.post("/api/projects/{name}/snapshot")
     def snapshot_pin_(name: str):
