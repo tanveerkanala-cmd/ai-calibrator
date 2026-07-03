@@ -53,7 +53,10 @@ def save_labels(project_dir: str | Path, run_id: str, labels: list[dict]) -> Pat
 
 
 def load_labels(project_dir: str | Path, run_id: str) -> list[dict]:
-    """Labels saved for one run ([] if none / unreadable — labels are advisory)."""
+    """Labels saved for one run ([] if none / unreadable — labels are advisory).
+
+    Applies the same required-field filter as ``save_labels`` so a hand-edited
+    file can't feed half-formed labels downstream."""
     path = _labels_path(project_dir, run_id)
     if not path.exists():
         return []
@@ -62,7 +65,10 @@ def load_labels(project_dir: str | Path, run_id: str) -> list[dict]:
     except (ValueError, OSError):
         return []
     labels = data.get("labels") if isinstance(data, dict) else None
-    return [x for x in labels if isinstance(x, dict)] if isinstance(labels, list) else []
+    if not isinstance(labels, list):
+        return []
+    return [x for x in labels
+            if isinstance(x, dict) and x.get("test_id") and x.get("criterion_id")]
 
 
 def all_labels(project_dir: str | Path) -> list[tuple[str, list[dict]]]:

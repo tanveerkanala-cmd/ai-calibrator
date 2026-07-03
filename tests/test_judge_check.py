@@ -75,3 +75,23 @@ def test_labels_reject_traversal_run_id(tmp_path):
     for bad in ["../x", "a/b", "", "  "]:
         with _pytest.raises(ValueError):
             save_labels(tmp_path, bad, [])
+
+
+def test_load_labels_filters_half_formed_entries(tmp_path):
+    """A hand-edited labels file can't feed entries missing test_id/criterion_id
+    downstream — load applies the same filter as save. (audit finding)"""
+    import json as _json
+
+    from calibrator.judge_check import load_labels
+
+    d = tmp_path / "evals" / "run-0001"
+    d.mkdir(parents=True)
+    (d / "human-labels.json").write_text(_json.dumps({"run_id": "run-0001", "labels": [
+        {"test_id": "t1", "criterion_id": "c1", "passed": True},   # valid
+        {"criterion_id": "c1", "passed": True},                    # no test_id → dropped
+        {"test_id": "t2", "passed": False},                        # no criterion_id → dropped
+        {"test_id": "", "criterion_id": "c1"},                     # empty id → dropped
+        "not a dict",                                              # dropped
+    ]}))
+    labels = load_labels(tmp_path, "run-0001")
+    assert labels == [{"test_id": "t1", "criterion_id": "c1", "passed": True}]
