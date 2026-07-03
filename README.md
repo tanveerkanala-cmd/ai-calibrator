@@ -33,8 +33,17 @@ machine and **no secrets ship in this repo.**
 
 ## Status
 
-Early. v0 (Guided mode) is under construction — see `docs/BUILD-PLAN.md`.
-Architecture: `docs/ARCHITECTURE.md`.
+Alpha (`0.0.1`, no releases yet) — but the whole pipeline is built and tested:
+the Guided loop (`init → ingest → interview → compile → eval → export`, CLI +
+local web UI), a deep verification surface (spec lint, deterministic checks,
+LLM-judge with self-consistency + human judge calibration, coverage, red-team,
+drift, golden snapshots, weighted scoring — composed into one `calibrate ci`
+gate), and the Advanced tier (fine-tuning + Engine-Trainer with prove-it gates).
+The test suite runs engine-free with fakes; the pipeline is also verified
+end-to-end against a real local model via Ollama.
+
+Roadmap: `docs/BUILD-PLAN.md` · Architecture: `docs/ARCHITECTURE.md` ·
+Contributing: [`CONTRIBUTING.md`](CONTRIBUTING.md)
 
 ## Quickstart (dev)
 
