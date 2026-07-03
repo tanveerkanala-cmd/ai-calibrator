@@ -155,6 +155,14 @@ are subsequent user turns); the subject answers each in context and the judge
 grades the whole exchange. This testing step is what makes the result reliable
 instead of guesswork.
 
+Alongside the pass rate you get a **weighted score** — criteria count high=3 /
+medium=2 / low=1, so it says how much of what *matters* passed (a test that
+missed only a low-weight criterion scores 0.85, not 0). Pass/fail itself stays
+strict: any failing criterion fails its test. Failures are listed highest-weight
+first, tagged `[high]` / `[medium]` / `[low]`, and each verdict records the
+weight it was graded under, so old scorecards stay honest even after you reweight
+the spec.
+
 ### `calibrate export [--name NAME]` ✅
 Packages the calibrated config into `<project>/export/`: the system prompt,
 spec/rubric/tests, an Ollama **`Modelfile`** (`ollama create … -f Modelfile`

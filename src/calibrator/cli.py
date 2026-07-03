@@ -453,11 +453,20 @@ def eval_(
     final = cards[-1]
     ok = final.pass_rate >= threshold
     typer.secho(
-        f"\nFinal pass rate: {final.pass_rate:.0%}",
+        f"\nFinal pass rate: {final.pass_rate:.0%}   (weighted score: {final.weighted_score:.0%})",
         fg=typer.colors.GREEN if ok else typer.colors.YELLOW,
     )
-    for r in [r for r in final.results if not r.passed][:10]:
-        why = "; ".join(c.rationale or c.criterion_id for c in r.criteria if not c.passed) or "no criteria"
+    # Triage order: tests whose HIGH-weight criteria failed come first.
+    from .models import Weight
+
+    def _worst(r):  # highest weight among this test's failed criteria
+        return max(((c.weight or Weight.MEDIUM).numeric for c in r.criteria if not c.passed), default=0)
+
+    for r in sorted([r for r in final.results if not r.passed], key=_worst, reverse=True)[:10]:
+        why = "; ".join(
+            f"[{(c.weight or Weight.MEDIUM).value}] " + (c.rationale or c.criterion_id)
+            for c in r.criteria if not c.passed
+        ) or "no criteria"
         typer.echo(f"  · {r.test_id}: {why}")
 
     if judge_passes > 1:

@@ -40,6 +40,11 @@ class Weight(str, Enum):
     MEDIUM = "medium"
     HIGH = "high"
 
+    @property
+    def numeric(self) -> int:
+        """Scoring weight for the weighted score: high=3, medium=2, low=1."""
+        return {"low": 1, "medium": 2, "high": 3}[self.value]
+
 
 # --- Inputs gathered from the user -----------------------------------------
 
@@ -133,6 +138,10 @@ class CriterionResult(PreservingModel):
     # Judge agreement when graded with multiple passes (self-consistency): the
     # fraction of passes that agreed with the majority verdict. None = single pass.
     confidence: float | None = None
+    # The criterion's weight AT GRADING TIME — recorded so the scorecard stays
+    # self-contained (honest) even if the spec's weights change later.
+    # None = graded by a version that didn't record weights (treated as medium).
+    weight: Weight | None = None
 
 
 class TestResult(PreservingModel):
@@ -143,6 +152,19 @@ class TestResult(PreservingModel):
     @property
     def passed(self) -> bool:
         return bool(self.criteria) and all(c.passed for c in self.criteria)
+
+    @property
+    def weighted_score(self) -> float:
+        """Weight-honest score in [0,1]: Σ(weight·score)/Σ(weight) over the
+        test's criteria (high=3, medium=2, low=1; unrecorded → medium).
+
+        Pass/fail stays binary — ANY failing criterion fails the test — but this
+        says HOW it failed: 0.85 means only low-weight criteria missed; 0.25
+        means the important ones did."""
+        if not self.criteria:
+            return 0.0
+        weights = [(c.weight or Weight.MEDIUM).numeric for c in self.criteria]
+        return sum(w * c.score for w, c in zip(weights, self.criteria, strict=True)) / sum(weights)
 
 
 class Scorecard(PreservingModel):
@@ -169,6 +191,15 @@ class Scorecard(PreservingModel):
         if not graded:
             return 0.0
         return sum(1 for r in graded if r.passed) / len(graded)
+
+    @property
+    def weighted_score(self) -> float:
+        """Mean weighted_score over graded tests — the weight-honest companion to
+        pass_rate (which stays the binary headline number)."""
+        graded = [r for r in self.results if r.criteria]
+        if not graded:
+            return 0.0
+        return sum(r.weighted_score for r in graded) / len(graded)
 
 
 # --- Engine bindings (role -> "model@provider") ----------------------------

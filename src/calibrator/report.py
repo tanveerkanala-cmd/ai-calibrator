@@ -36,6 +36,7 @@ def report_dict(project: Project, coverage: CoverageReport, latest: Scorecard | 
         "confidence": calibration_confidence(coverage.coverage_rate, pass_rate, latest is not None),
         "coverage_rate": coverage.coverage_rate,
         "pass_rate": pass_rate if latest else None,
+        "weighted_score": latest.weighted_score if latest else None,
         "latest_run": latest.run_id if latest else None,
         "standards": len(spec.standards) if spec else 0,
         "do_not": len(spec.do_not) if spec else 0,
@@ -62,6 +63,8 @@ def render_report(project: Project, coverage: CoverageReport, latest: Scorecard 
           f"({len(coverage.covered_criteria)}/{coverage.total_criteria} criteria targeted by a test)"]
     if latest:
         L += [f"- Latest pass rate: **{pass_rate:.0%}** (run `{latest.run_id}`)"]
+        L += [f"- Weighted score: **{latest.weighted_score:.0%}** "
+              "(criteria weighted high=3 / medium=2 / low=1 — how much of what *matters* passed)"]
         L += ["- Confidence = coverage × pass rate."]
     else:
         L += ["- Latest pass rate: — (no eval yet — run `calibrate eval`)"]

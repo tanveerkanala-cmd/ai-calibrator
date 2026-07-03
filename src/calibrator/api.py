@@ -359,7 +359,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             except Exception as exc:
                 raise HTTPException(400, str(exc))
         return {"rounds": [
-            {"run_id": c.run_id, "pass_rate": c.pass_rate,
+            {"run_id": c.run_id, "pass_rate": c.pass_rate, "weighted_score": c.weighted_score,
              "results": [r.model_dump(mode="json") for r in c.results]}
             for c in cards
         ]}

@@ -184,7 +184,13 @@ def run_eval(
 
         # Reassemble in requested order — test.expects is an ordered list, so the
         # results must follow it; the checked/judged split is an internal detail.
-        crs = [graded[cid] for cid in expected if cid in graded]
+        # Stamp each verdict with the weight it was graded under, so the scorecard
+        # stays honest even if the spec's weights change later.
+        crs: list[CriterionResult] = []
+        for cid in expected:
+            if cid in graded:
+                graded[cid].weight = crit_by_id[cid].weight
+                crs.append(graded[cid])
         results.append(TestResult(test_id=test.id, output=output, criteria=crs))
 
     return Scorecard(run_id=run_id, results=results)

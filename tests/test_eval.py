@@ -252,3 +252,55 @@ def test_run_eval_multi_turn_conversation():
     assert "third?" in prompts_seen[2]
     out = card.results[0].output                              # graded output is the full transcript
     assert "User: first?" in out and "Assistant: reply1" in out and "User: third?" in out
+
+
+def test_weighted_score_hand_math_and_weight_stamping():
+    """Weighted score = Σ(w·score)/Σ(w), and each verdict records the weight it
+    was graded under (scorecard stays honest if spec weights change later)."""
+    class Judge:
+        name = "j@test"
+
+        def complete(self, prompt, *, system=None, schema=None):
+            ids = re.findall(r"^- (\S+):", prompt, re.M)
+            # c_high fails (score 0), everything else passes (score 1)
+            return {"results": [
+                {"criterion_id": i, "passed": i != "c_high", "score": 0.0 if i == "c_high" else 1.0,
+                 "rationale": "r"} for i in ids]}
+
+    class Subject:
+        name = "s@test"
+
+        def complete(self, prompt, *, system=None, schema=None):
+            return "output"
+
+    p = Project(name="p", goal="g")
+    p.spec = BehaviorSpec(goal="g", eval_criteria=[
+        EvalCriterion(id="c_high", description="d", weight=Weight.HIGH),
+        EvalCriterion(id="c_med", description="d", weight=Weight.MEDIUM),
+        EvalCriterion(id="c_low", description="d", weight=Weight.LOW),
+    ])
+    p.tests = [CaseModel(id="t1", input="q", expects=["c_high", "c_med", "c_low"])]
+
+    card = run_eval(p, Subject(), Judge(), run_id="r")
+    r = card.results[0]
+    assert [c.weight for c in r.criteria] == [Weight.HIGH, Weight.MEDIUM, Weight.LOW]  # stamped
+    # hand math: (3*0 + 2*1 + 1*1) / (3+2+1) = 3/6 = 0.5
+    assert r.weighted_score == pytest.approx(0.5)
+    assert card.weighted_score == pytest.approx(0.5)
+    assert r.passed is False                     # binary pass/fail unchanged
+    # scorecard round-trips the weight
+    from calibrator.models import Scorecard
+    again = Scorecard.model_validate_json(card.model_dump_json())
+    assert again.results[0].criteria[0].weight == Weight.HIGH
+    assert again.weighted_score == pytest.approx(0.5)
+
+
+def test_weighted_score_backward_compat_unweighted_scorecard():
+    """Old scorecards (no recorded weight) score as all-medium — same relative math."""
+    from calibrator.models import CriterionResult, Scorecard, TestResult
+    old = Scorecard(run_id="r", results=[TestResult(test_id="t", output="o", criteria=[
+        CriterionResult(criterion_id="a", passed=True, score=1.0),   # weight=None
+        CriterionResult(criterion_id="b", passed=False, score=0.0),
+    ])])
+    assert old.results[0].weighted_score == pytest.approx(0.5)  # (2*1+2*0)/4
+    assert Scorecard(run_id="r", results=[]).weighted_score == 0.0
