@@ -135,3 +135,47 @@ def test_ci_explicit_baseline(tmp_path):
     # a bogus explicit baseline must fail loudly, not silently skip
     r2 = run_ci(p, Subject("GOOD"), Judge(), project_dir=tmp_path, baseline="nope")
     assert next(s for s in r2.stages if s.name == "drift").status == "fail"
+
+
+def test_gate_record_persisted_and_certification_status(tmp_path):
+    """ci persists its verdict (pass AND fail); `run`'s boot gate reads it."""
+    from calibrator.ci import certification_status, config_hash, latest_gate
+
+    p = _project()
+    assert certification_status(p, tmp_path)[0] == "none"        # never gated
+
+    r = run_ci(p, Subject("GOOD"), Judge(), project_dir=tmp_path)
+    assert r.ok
+    gate = latest_gate(tmp_path)
+    assert gate["ok"] is True and gate["run_id"] == "run-0001"
+    assert gate["config_hash"] == config_hash(p) and gate["finished_at"]
+    assert certification_status(p, tmp_path)[0] == "pass"
+
+    # spec change → the old certification is STALE, not still-green
+    p.spec.standards.append("Always answer in French.")
+    status, detail = certification_status(p, tmp_path)
+    assert status == "stale" and "re-run" in detail
+
+    # failing gate is recorded too — a red gate is a fact, not a secret
+    run_ci(p, Subject("BAD"), Judge(), project_dir=tmp_path)
+    status, detail = certification_status(p, tmp_path)
+    assert status == "fail" and "eval" in detail
+
+
+def test_gate_record_survives_lint_fail(tmp_path):
+    from calibrator.ci import latest_gate
+
+    p = _project()
+    p.spec.eval_criteria = []
+    run_ci(p, Subject("x"), Judge(), project_dir=tmp_path)
+    gate = latest_gate(tmp_path)
+    assert gate["ok"] is False and gate["run_id"] is None
+
+
+def test_gate_file_does_not_confuse_run_listing(tmp_path):
+    """evals/last-gate.json (a FILE) must not break latest_run_id's dir scan."""
+    from calibrator.eval import latest_run_id
+
+    p = _project()
+    run_ci(p, Subject("GOOD"), Judge(), project_dir=tmp_path)
+    assert latest_run_id(tmp_path) == "run-0001"

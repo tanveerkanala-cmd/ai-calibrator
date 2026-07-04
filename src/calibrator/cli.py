@@ -546,6 +546,58 @@ def ci(
         raise typer.Exit(code=1 if lint_failed else 2)
 
 
+@app.command()
+def run(
+    path: Path = typer.Argument(Path("."), help="Project directory."),
+    host: str = typer.Option("127.0.0.1", "--host", help="Bind host (localhost by default)."),
+    port: int = typer.Option(8600, "--port", help="Port."),
+    guard: bool = typer.Option(False, "--guard", help="Re-check every live answer against the spec's deterministic checks."),
+    force: bool = typer.Option(False, "--force", help="Serve even if the last `ci` gate FAILED."),
+) -> None:
+    """Serve the calibrated AI itself — an OpenAI-compatible endpoint that won't boot on a red gate.
+
+    Point any OpenAI-protocol client at http://HOST:PORT/v1 (model name = project name).
+    """
+    from .ci import certification_status
+
+    project = _load(path)
+    if project.spec is None:
+        typer.secho("Nothing to serve — run `calibrate compile` (or `import`) first.", fg=typer.colors.YELLOW)
+        raise typer.Exit(code=1)
+
+    # The boot gate: an AI that can't prove it follows its rules shouldn't serve.
+    status, detail = certification_status(project, path)
+    if status == "pass":
+        typer.secho(f"✓ Certified: {detail}", fg=typer.colors.GREEN)
+    elif status == "fail" and not force:
+        typer.secho(f"✗ REFUSING TO SERVE — {detail}", fg=typer.colors.RED, bold=True)
+        typer.echo("  (--force to serve anyway, clearly at your own risk)")
+        raise typer.Exit(code=2)
+    else:
+        color = typer.colors.RED if status == "fail" else typer.colors.YELLOW
+        typer.secho(f"⚠ UNCERTIFIED ({status}): {detail}", fg=color, bold=True)
+
+    try:
+        from .runtime import create_ai_app
+        application = create_ai_app(path, guard=guard)
+        import uvicorn
+    except (RuntimeError, ValueError, NotImplementedError) as exc:
+        typer.secho(str(exc), fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    except ImportError:
+        typer.secho("Serving needs the `api` extra:  pip install -e '.[api]'", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        typer.secho(f"⚠  Binding to {host} exposes the (unauthenticated) AI beyond localhost.",
+                    fg=typer.colors.YELLOW)
+    typer.echo(f"Serving '{project.name}' (subject: {project.engines.subject}"
+               + (", guard ON" if guard else "") + f") at http://{host}:{port}/v1")
+    typer.echo(f'  try:  curl -s http://{host}:{port}/v1/chat/completions -H "Content-Type: application/json" '
+               f'-d \'{{"model":"{project.name}","messages":[{{"role":"user","content":"hello"}}]}}\'')
+    uvicorn.run(application, host=host, port=port, log_level="warning")
+
+
 @app.command(name="add-check")
 def add_check(
     path: Path = typer.Argument(..., help="Project directory."),
@@ -960,7 +1012,11 @@ def snapshot(
 
 
 @app.command()
-def report(path: Path = typer.Argument(Path("."), help="Project directory.")) -> None:
+def report(
+    path: Path = typer.Argument(Path("."), help="Project directory."),
+    html: bool = typer.Option(False, "--html", help="Also write a shareable single-file HTML certificate."),
+    badge: bool = typer.Option(False, "--badge", help="Also write badge.json (shields.io endpoint format)."),
+) -> None:
     """Generate a shareable calibration report (the AI's 'nutrition label'). (no engine)"""
     from .coverage import analyze_coverage
     from .drift import load_scorecard
@@ -988,6 +1044,16 @@ def report(path: Path = typer.Argument(Path("."), help="Project directory.")) ->
     typer.echo(f"  coverage {cov.coverage_rate:.0%}"
                + (f" × pass rate {latest.pass_rate:.0%}" if latest else "  (no eval yet — run `calibrate eval`)"))
     typer.secho(f"✓ Report → {out}", fg=typer.colors.GREEN)
+    if html:
+        from .report import render_html_report, save_html_report
+        out_html = save_html_report(path, render_html_report(project, cov, latest, path))
+        typer.secho(f"✓ Certificate → {out_html}", fg=typer.colors.GREEN)
+    if badge:
+        from .report import badge_dict, save_badge
+        b = badge_dict(project, path)
+        out_badge = save_badge(path, b)
+        typer.secho(f"✓ Badge → {out_badge}   [{b['label']}: {b['message']} · {b['color']}]", fg=typer.colors.GREEN)
+        typer.echo("  README embed: https://img.shields.io/endpoint?url=<public URL of badge.json>")
 
 
 @app.command()

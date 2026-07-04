@@ -520,6 +520,22 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             raise HTTPException(400, "compile first")
         return coverage_dict(analyze_coverage(project.spec, project.tests))
 
+    @app.get("/api/projects/{name}/badge")
+    def badge_(name: str):
+        """shields.io endpoint JSON — embed the live badge with
+        https://img.shields.io/endpoint?url=<this URL> (host must be reachable by shields)."""
+        from .report import badge_dict
+        project = _load(name)
+        return badge_dict(project, _dir(name))
+
+    @app.get("/api/projects/{name}/certification")
+    def certification_(name: str):
+        from .ci import certification_status, latest_gate
+        project = _load(name)
+        d = _dir(name)
+        status, detail = certification_status(project, d)
+        return {"status": status, "detail": detail, "gate": latest_gate(d)}
+
     @app.get("/api/projects/{name}/report")
     def report_(name: str):
         from .coverage import analyze_coverage

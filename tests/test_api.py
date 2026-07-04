@@ -593,3 +593,18 @@ def test_ci_endpoint(tmp_path):
                 json={"labels": [{"test_id": "t1", "criterion_id": "c1", "passed": False}]})
     assert r3.status_code == 200 and r3.json()["labels_saved"].endswith("human-labels.json")
     assert (tmp_path / "p" / "evals" / r2["run_id"] / "human-labels.json").exists()
+
+
+def test_badge_and_certification_endpoints(tmp_path):
+    c = _client(tmp_path)
+    proj = Project(name="p", goal="g")
+    proj.spec = BehaviorSpec(goal="g", eval_criteria=[EvalCriterion(id="c1", description="d", weight=Weight.HIGH)])
+    save_project(proj, tmp_path / "p")
+
+    b = c.get("/api/projects/p/badge")
+    assert b.status_code == 200
+    assert b.json() == {"schemaVersion": 1, "label": "calibrated",
+                        "message": "uncalibrated", "color": "lightgrey"}
+    cert = c.get("/api/projects/p/certification").json()
+    assert cert["status"] == "none" and cert["gate"] is None
+    assert c.get("/api/projects/nope/badge").status_code == 404

@@ -14,16 +14,23 @@ run (no baseline yet, no golden pinned) reports *skip*, never a silent pass.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Union
 
+from .compile import render_system_prompt
 from .drift import compare_scorecards, load_scorecard
 from .engines.base import Engine
 from .eval import latest_run_id, next_run_id, run_eval, save_scorecard
 from .lint import lint_spec, lint_unknown_fields
 from .models import Project, Scorecard
 from .snapshot import compare, load_golden, outputs_of
+from .store import atomic_write_text
+
+GATE_FILE = "last-gate.json"  # under <project>/evals/
 
 # An engine, or a zero-arg factory for one. Factories are resolved only AFTER
 # lint passes — a lint-broken spec must not demand credentials/engines it will
@@ -83,6 +90,7 @@ def run_ci(
         result.stages.append(CiStage("eval", "skip", "skipped — fix lint errors first"))
         result.stages.append(CiStage("drift", "skip", "skipped — fix lint errors first"))
         result.stages.append(CiStage("snapshot", "skip", "skipped — fix lint errors first"))
+        save_gate(project, result, project_dir)
         return result
     result.stages.append(CiStage("lint", "pass", detail))
 
@@ -105,6 +113,8 @@ def run_ci(
 
     # 4. snapshot — vs the pinned golden outputs.
     result.stages.append(_snapshot_stage(project_dir, card))
+
+    save_gate(project, result, project_dir)  # the record `calibrate run` boots against
     return result
 
 
@@ -148,3 +158,59 @@ def ci_dict(result: CiResult) -> dict:
         "weighted_score": result.weighted_score,
         "stages": [{"name": s.name, "status": s.status, "detail": s.detail} for s in result.stages],
     }
+
+
+# --- the persisted gate record (what `calibrate run` boots against) ----------
+
+def config_hash(project: Project) -> str:
+    """Fingerprint of what a gate certifies: the compiled system prompt + the
+    subject binding. If either changes, a previous certification is STALE."""
+    if project.spec is None:
+        return ""
+    material = render_system_prompt(project.spec) + "\n@@subject=" + project.engines.subject
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def save_gate(project: Project, result: CiResult, project_dir: str | Path) -> Path:
+    """Persist the gate verdict (pass AND fail — a red gate is a fact, not a secret)."""
+    record = ci_dict(result)
+    record["config_hash"] = config_hash(project)
+    record["finished_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return atomic_write_text(Path(project_dir) / "evals" / GATE_FILE,
+                             json.dumps(record, indent=2, ensure_ascii=False))
+
+
+def latest_gate(project_dir: str | Path) -> dict | None:
+    """The most recent persisted gate verdict, or None if `ci` has never run."""
+    f = Path(project_dir) / "evals" / GATE_FILE
+    if not f.exists():
+        return None
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def certification_status(project: Project, project_dir: str | Path) -> tuple[str, str]:
+    """(status, detail) for serving: pass | fail | stale | none.
+
+    - pass:  the latest gate passed AND certifies the CURRENT config
+    - stale: a gate exists but the spec/subject changed since it ran
+    - fail:  the latest gate failed (and still matches the current config)
+    - none:  `calibrate ci` has never been run"""
+    gate = latest_gate(project_dir)
+    if gate is None:
+        return "none", "no gate on record — run `calibrate ci` to certify this AI"
+    run = gate.get("run_id") or "?"
+    when = gate.get("finished_at") or "unknown time"
+    if gate.get("config_hash") != config_hash(project):
+        return "stale", (f"the last gate ({run}, {when}) certified a DIFFERENT spec/subject — "
+                         "re-run `calibrate ci`")
+    if gate.get("ok"):
+        rate = gate.get("pass_rate")
+        detail = f"gate {run} passed at {when}" + (f" ({rate:.0%} pass rate)" if isinstance(rate, (int, float)) else "")
+        return "pass", detail
+    failed = [s["name"] for s in gate.get("stages", []) if isinstance(s, dict) and s.get("status") == "fail"]
+    return "fail", (f"gate {run} FAILED at {when}" + (f" ({', '.join(failed)})" if failed else "")
+                    + " — fix and re-run `calibrate ci`")

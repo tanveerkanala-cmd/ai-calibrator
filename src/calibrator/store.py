@@ -171,6 +171,8 @@ logs/
 trained-engines/
 knowledge.db
 *.lancedb/
+calibration-report.*
+badge.json
 
 # never commit credentials
 .env

@@ -30,7 +30,8 @@ knowledge.db
 .lock
 project.yaml.*.tmp
 golden.json
-calibration-report.md
+calibration-report.*
+badge.json
 promptfooconfig.yaml
 reconciliation.yaml
 imported_prompt.txt

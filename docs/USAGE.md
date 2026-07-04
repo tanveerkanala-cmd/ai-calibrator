@@ -261,12 +261,21 @@ text changed** since (exit 2 on change). Catches tone shifts and semantic drift
 that pass/fail grading is too coarse to notice — run it after an `eval` to see
 not just *whether* the score moved but *what the answers became*.
 
-### `calibrate report` (no engine — instant)
+### `calibrate report [--html] [--badge]` (no engine — instant)
 Generates a shareable **calibration report** (`calibration-report.md`) — the AI's
 "nutrition label": a **Calibration Confidence** score (coverage × pass rate), the
 spec at a glance, coverage gaps, the latest eval's weak spots, and provenance (the
 ratified answers the spec was built from). For showing stakeholders, at a glance,
 how trustworthy the configured AI is.
+
+`--html` also writes a single-file **calibration certificate**
+(`calibration-report.html`) you can publish next to your bot. `--badge` writes
+`badge.json` in the shields.io *endpoint* format — embed
+`https://img.shields.io/endpoint?url=<public URL of badge.json>` in a README and
+the project wears its calibration the way a repo wears CI:
+**calibrated | 97% · 12 tests**. Colors are honest: green only for a *passing*
+gate that certifies the *current* spec/subject; orange for ungated or stale; red
+for a failing gate. (The API also serves it live: `GET /api/projects/<name>/badge`.)
 
 ### `calibrate export-evals [--format promptfoo]` (no engine)
 Exports the generated test suite + rubric as a **promptfoo** config
@@ -274,6 +283,40 @@ Exports the generated test suite + rubric as a **promptfoo** config
 each test an input, each criterion an `llm-rubric` assertion. Run your
 calibrator suite inside promptfoo (`promptfoo eval -c promptfooconfig.yaml`)
 instead of being locked into `calibrate eval`. Anti-lock-in.
+
+---
+
+## 4a-bis. Serve the calibrated AI itself — `calibrate run` ✅
+
+The export bundle is a file; this is the **live** thing. `calibrate run` serves
+your calibrated AI as an **OpenAI-compatible endpoint** — point any chat UI, SDK,
+or tool that speaks the OpenAI protocol at it and you're done wiring:
+
+```bash
+calibrate ci my-ai          # certify first
+calibrate run my-ai         # → http://127.0.0.1:8600/v1  (model name = project name)
+```
+
+Three properties make it more than a proxy:
+
+- **The boot gate.** It checks the last `ci` verdict before serving: a **failing
+  gate refuses to boot** (exit 2; `--force` to override), a stale gate (the spec
+  or subject changed since certification) or a missing one serves with a loud
+  UNCERTIFIED warning, and a passing gate prints its certificate. An AI that
+  can't prove it follows your rules shouldn't quietly pretend it does.
+- **What you tested is what you serve.** The system prompt is compiled from your
+  spec, and live conversations are transcript-encoded with the *same function*
+  the eval harness uses for multi-turn tests.
+- **`--guard`** re-runs the spec's deterministic checks on every **live** answer:
+  a violating answer is retried once; still-failing responses are returned but
+  flagged (`x-calibrate-guard: failed:<criteria>` header) and logged to
+  `logs/guard.jsonl` — the tests never stop running.
+
+`GET /` self-describes the certification; `GET /v1/models` lists the project;
+client `system` messages are ignored by design (the calibrated spec is the
+authority). Flags: `--host` (default `127.0.0.1`; no auth — keep it local),
+`--port` (default `8600`), `--guard`, `--force`. Streaming (`"stream": true`)
+is supported, so standard chat UIs work unchanged.
 
 ---
 

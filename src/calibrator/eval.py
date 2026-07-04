@@ -122,6 +122,16 @@ def _judge_consensus(judge: Engine, test_input: str, output: str,
     return results
 
 
+def conversation_prompt(history_lines: list[str], user_turn: str) -> str:
+    """The exact transcript-encoded prompt for the next turn of a conversation.
+
+    Public because the runtime (`calibrate run`) must encode live chats the SAME
+    way the eval harness encodes multi-turn tests — what you tested is what you
+    serve. ``history_lines`` alternate ``User: …`` / ``Assistant: …``."""
+    history = "\n".join(history_lines)
+    return (history + "\n" if history else "") + f"User: {user_turn}\nAssistant:"
+
+
 def _conversation_output(subject: Engine, system: str | None, user_turns: list[str]) -> str:
     """Run a multi-turn conversation; return the full transcript (graded as the output).
 
@@ -129,8 +139,7 @@ def _conversation_output(subject: Engine, system: str | None, user_turns: list[s
     messages-based interface); the system prompt is held constant across turns."""
     lines: list[str] = []
     for turn in user_turns:
-        history = "\n".join(lines)
-        prompt = (history + "\n" if history else "") + f"User: {turn}\nAssistant:"
+        prompt = conversation_prompt(lines, turn)
         reply = as_str(subject.complete(prompt, system=system)).strip()
         lines.append(f"User: {turn}")
         lines.append(f"Assistant: {reply}")
