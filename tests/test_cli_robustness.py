@@ -152,3 +152,13 @@ def test_snapshot_on_corrupt_scorecard_is_friendly(tmp_path):
     (run / "scorecard.json").write_text("{ truncated json")
     r = runner.invoke(app, ["snapshot", str(d)])
     assert r.exit_code == 1 and "Could not read scorecard" in r.output and _has_no_traceback(r.output)
+
+
+def test_eval_rounds_bounds_validated_before_project(tmp_path):
+    """Parity with API EvalBody (ge=1 le=100): a bad --rounds is a validation
+    error, not masked by a 'nothing to evaluate' state message."""
+    d = tmp_path / "p"; d.mkdir()
+    (d / "project.yaml").write_text("name: p\ngoal: g\n")   # no spec/tests
+    for bad in ("0", "101"):
+        r = runner.invoke(app, ["eval", str(d), f"--rounds={bad}"])
+        assert r.exit_code == 1 and "between 1 and 100" in r.output and _has_no_traceback(r.output)

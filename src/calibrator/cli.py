@@ -204,6 +204,10 @@ def engines(
             typer.secho(str(exc), fg=typer.colors.RED)
             raise typer.Exit(code=1)
 
+    if all_roles is not None and (role is not None or model is not None):
+        typer.secho("Use EITHER `--all <model>` OR a `<role> <model>` pair — not both.",
+                    fg=typer.colors.RED)
+        raise typer.Exit(code=1)
     if all_roles is not None or (role is not None and model is not None):
         with project_lock(path):
             project = _load(path)
@@ -473,8 +477,8 @@ def eval_(
     from .engines import get_engine
     from .eval import low_confidence_results, next_run_id, run_eval, save_scorecard
 
-    if refine and rounds < 1:
-        typer.secho("--rounds must be >= 1.", fg=typer.colors.RED)
+    if not (1 <= rounds <= 100):  # bounds match the API (EvalBody), always validated
+        typer.secho("--rounds must be between 1 and 100.", fg=typer.colors.RED)
         raise typer.Exit(code=1)
     if not math.isfinite(threshold) or not (0.0 <= threshold <= 1.0):
         typer.secho("--threshold must be a number between 0 and 1.", fg=typer.colors.RED)

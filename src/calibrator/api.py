@@ -300,9 +300,12 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         from .ingest import ingest_project
         with _locked(name) as d:
             project = _load(name)
+            materials = d / "materials"
+            if not materials.exists() or not any(materials.iterdir()):
+                raise HTTPException(400, "No materials to ingest — upload documents first.")
             try:
                 engine = make_engine(project.engines.extractor)
-                result = ingest_project(project, d / "materials", engine, project_dir=d)
+                result = ingest_project(project, materials, engine, project_dir=d)
             except HTTPException:
                 raise
             except Exception as exc:
@@ -614,6 +617,8 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         """Rebind role→model@provider. Body: {all} or {role, model}."""
         from .engines.base import validate_engine_spec
         from .models import EngineBinding
+        if body.all is not None and (body.role or body.model):
+            raise HTTPException(400, "use either `all` or a `role`+`model` pair, not both")
         with _locked(name) as d:
             project = _load(name)
             try:

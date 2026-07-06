@@ -75,12 +75,13 @@ def test_ingest_with_mocked_engine(tmp_path):
 
 
 def test_ingest_without_materials_is_400(tmp_path):
+    """Parity with the CLI: ingesting with no materials is a friendly 400, not a
+    silent 200/0 (the CLI already exited 1 with 'No materials found')."""
     payload = {"facts": [], "gaps": []}
     c = _client(tmp_path, engine_payload=payload)
     c.post("/api/projects", json={"name": "p", "goal": "g"})
-    # no materials → ingest runs but finds nothing; gaps stay empty (still 200, 0 gaps)
     r = c.post("/api/projects/p/ingest")
-    assert r.status_code == 200 and r.json()["materials"] == 0
+    assert r.status_code == 400 and "No materials" in r.json()["detail"]
 
 
 def test_submit_answers(tmp_path):
@@ -697,3 +698,20 @@ def test_set_engines_endpoint(tmp_path):
     assert c.put("/api/projects/p/engines", json={"role": "judge", "model": "x@bogus"}).status_code == 400
     assert c.put("/api/projects/p/engines", json={"role": "wizard", "model": "x@openai"}).status_code == 400
     assert c.put("/api/projects/p/engines", json={}).status_code == 400
+
+
+def test_set_engines_rejects_all_plus_role(tmp_path):
+    c = _client(tmp_path)
+    c.post("/api/projects", json={"name": "p", "goal": "g"})
+    r = c.put("/api/projects/p/engines",
+              json={"all": "gemma4:e4b@ollama", "role": "subject", "model": "gpt-4o@openai"})
+    assert r.status_code == 400 and "not both" in r.json()["detail"]
+
+
+def test_ingest_with_materials_succeeds(tmp_path):
+    """Complement to the no-materials 400: with a file present, ingest runs."""
+    payload = {"facts": ["x"], "gaps": [{"dimension": "tone", "why_it_matters": "w"}]}
+    c = _client(tmp_path, engine_payload=payload)
+    c.post("/api/projects", json={"name": "p", "goal": "g"})
+    c.post("/api/projects/p/materials", files={"file": ("f.md", b"policy text", "text/markdown")})
+    assert c.post("/api/projects/p/ingest").status_code == 200
