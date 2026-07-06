@@ -277,8 +277,8 @@ async function startTeach(name, projName) {
       approved: r.sel.value === "approve", reason: r.reason.value || null,
     }));
     const res = await api("POST", `/projects/${name}/teach/learn`, { judgments });
+    await selectProject(projName);  // reload first — its action() clears the banner
     banner(`Learned ${res.standards_added} standard(s) + ${res.do_not_added} never-rule(s).`);
-    selectProject(projName);
   });
   card.appendChild(learn);
 }
@@ -296,11 +296,14 @@ async function startFlywheel(name, projName) {
   card.appendChild(pendingLine);
   const absorbBtn = document.createElement("button");
   absorbBtn.textContent = "Absorb into spec & tests";
+  absorbBtn.disabled = true;  // until the pending count arrives — never absorb blind
   absorbBtn.onclick = () => action(async () => {
     const r = await api("POST", `/projects/${name}/absorb`);
+    // reload FIRST — selectProject's own action() clears the banner, so
+    // announcing before the reload made the message flash and vanish
+    await selectProject(projName);
     banner(`Absorbed ${r.ups + r.downs} record(s): +${r.examples_added} example(s), ` +
            `+${r.tests_added} pinned test(s)${r.tests_added ? " — re-run Eval/ci to re-certify" : ""}.`);
-    selectProject(projName);
   });
   card.appendChild(absorbBtn);
 
