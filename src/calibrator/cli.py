@@ -181,12 +181,57 @@ def status(
 @app.command()
 def engines(
     path: Path = typer.Argument(Path("."), help="Project directory."),
+    role: Optional[str] = typer.Argument(None, help="Role to rebind (e.g. subject, judge). Omit to just show bindings."),
+    model: Optional[str] = typer.Argument(None, help="model@provider (e.g. gpt-4o-mini@openai, gemma4:e4b@ollama)."),
+    all_roles: Optional[str] = typer.Option(None, "--all", help="Point EVERY role at this model@provider."),
 ) -> None:
-    """Show which engine powers each role."""
-    project = _load(path)
-    typer.secho("engine bindings (role → model@provider):", bold=True)
-    for role, spec in project.engines.model_dump().items():
-        typer.echo(f"  {role:<12} {spec}")
+    """Show — or set — which engine powers each role. (no engine)
+
+    Examples:
+      calibrate engines                                 # show current bindings
+      calibrate engines . subject gpt-4o-mini@openai    # rebind one role
+      calibrate engines . --all gemma4:e4b@ollama       # rebind every role
+    """
+    from .engines.base import validate_engine_spec
+    from .models import EngineBinding
+
+    valid_roles = list(EngineBinding.model_fields)
+
+    def _check_spec(spec: str) -> str:
+        try:
+            return validate_engine_spec(spec)
+        except ValueError as exc:
+            typer.secho(str(exc), fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+
+    if all_roles is not None or (role is not None and model is not None):
+        with project_lock(path):
+            project = _load(path)
+            if all_roles is not None:
+                spec = _check_spec(all_roles)
+                for r in valid_roles:
+                    setattr(project.engines, r, spec)
+                changed = f"all roles → {spec}"
+            else:
+                if role not in valid_roles:
+                    typer.secho(f"Unknown role {role!r}. Valid: {', '.join(valid_roles)}.", fg=typer.colors.RED)
+                    raise typer.Exit(code=1)
+                spec = _check_spec(model)
+                setattr(project.engines, role, spec)
+                changed = f"{role} → {spec}"
+            save_project(project, path)
+        typer.secho(f"✓ Rebound {changed}", fg=typer.colors.GREEN)
+    elif role is not None or model is not None:
+        typer.secho("To set a binding, give BOTH a role and a model "
+                    "(e.g. `calibrate engines . subject gpt-4o-mini@openai`), or use `--all`.",
+                    fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    else:
+        project = _load(path)
+
+    typer.secho("\nengine bindings (role → model@provider):", bold=True)
+    for r, spec in project.engines.model_dump().items():
+        typer.echo(f"  {r:<12} {spec}")
 
 
 @app.command()

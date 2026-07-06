@@ -678,3 +678,22 @@ def test_overlong_project_name_is_400_not_500(tmp_path):
     assert r.status_code == 400 and "too long" in r.json()["detail"]
     # and every routed endpoint rejects it the same way (name is the routing key)
     assert c.get(f"/api/projects/{'a' * 1000}").status_code == 400
+
+
+def test_set_engines_endpoint(tmp_path):
+    from calibrator.store import load_project
+    c = _client(tmp_path)
+    c.post("/api/projects", json={"name": "p", "goal": "g"})
+
+    r = c.put("/api/projects/p/engines", json={"all": "gemma4:e4b@ollama"})
+    assert r.status_code == 200
+    assert all(v == "gemma4:e4b@ollama" for v in r.json()["engines"].values())
+
+    r2 = c.put("/api/projects/p/engines", json={"role": "judge", "model": "gpt-4o-mini@openai"})
+    assert r2.status_code == 200 and r2.json()["engines"]["judge"] == "gpt-4o-mini@openai"
+    assert load_project(tmp_path / "p").engines.judge == "gpt-4o-mini@openai"
+
+    # validation
+    assert c.put("/api/projects/p/engines", json={"role": "judge", "model": "x@bogus"}).status_code == 400
+    assert c.put("/api/projects/p/engines", json={"role": "wizard", "model": "x@openai"}).status_code == 400
+    assert c.put("/api/projects/p/engines", json={}).status_code == 400

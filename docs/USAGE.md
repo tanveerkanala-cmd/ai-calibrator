@@ -84,8 +84,8 @@ default 120s request timeout — raise it with `CALIBRATOR_OLLAMA_TIMEOUT=300`
 (seconds) in the environment.
 
 > You can **mix** engines per role — e.g. Claude for the interviewer, a cheap
-> local model for the judge. (A per-role CLI command is 🔜; for now set bindings
-> in `project.yaml` — see §5.)
+> local model for the judge — with `calibrate engines` (see §5), or by editing
+> `project.yaml` directly.
 
 ---
 
@@ -121,11 +121,17 @@ calibrate status my-support-ai
 ```
 Shows the goal and a checklist of how far the project has progressed.
 
-### `calibrate engines` ✅
+### `calibrate engines [ROLE MODEL] [--all MODEL]` ✅ (no engine)
 ```bash
-calibrate engines my-support-ai
+calibrate engines my-support-ai                              # show every role's binding
+calibrate engines my-support-ai subject gpt-4o-mini@openai   # rebind one role
+calibrate engines my-support-ai --all gemma4:e4b@ollama      # point every role at one model
 ```
-Shows which engine powers each role.
+Shows — or sets — which engine powers each role. `model@provider` uses
+`anthropic` / `openai` / `ollama` (bare `model` defaults to local Ollama). The
+binding is validated (known provider, non-empty model) without contacting the
+provider, so it never needs a key just to configure. (Also `PUT
+/api/projects/<name>/engines`.)
 
 ### `calibrate ingest [--source DIR] [--no-index]` ✅
 Drop your materials — product docs, past replies, policies, FAQs — into
@@ -388,8 +394,9 @@ my-support-ai/
   materials/        # the documents you upload
 ```
 
-To choose or mix engines today, edit the `engines:` block in `project.yaml`
-(a per-role CLI command is 🔜):
+Set engine bindings with `calibrate engines <role> <model@provider>` (or
+`--all <model@provider>` for every role at once). You can also edit the
+`engines:` block in `project.yaml` directly:
 
 ```yaml
 engines:

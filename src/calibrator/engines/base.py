@@ -147,6 +147,23 @@ def parse_engine_spec(spec: str) -> tuple[str, str]:
     return spec.strip(), "ollama"
 
 
+VALID_PROVIDERS = ("anthropic", "openai", "ollama")
+
+
+def validate_engine_spec(spec: str) -> str:
+    """Validate a ``model@provider`` string WITHOUT constructing the engine
+    (no SDK import, no key needed) — for rebinding roles. Returns ``spec`` or
+    raises ValueError with an actionable message."""
+    model, provider = parse_engine_spec(spec)
+    if not model:
+        raise ValueError(f"Invalid engine spec {spec!r}: no model name. Use `model@provider` "
+                         "(e.g. `gpt-4o-mini@openai`) or just `model` for local Ollama.")
+    if provider not in VALID_PROVIDERS:
+        raise ValueError(f"Unknown provider {provider!r} in {spec!r}. "
+                         f"Valid providers: {', '.join(VALID_PROVIDERS)}.")
+    return spec
+
+
 def get_engine(spec: str) -> Engine:
     """Build an Engine from a ``model@provider`` spec."""
     model, provider = parse_engine_spec(spec)

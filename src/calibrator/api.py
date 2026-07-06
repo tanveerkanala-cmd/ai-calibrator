@@ -128,6 +128,12 @@ class CiBody(BaseModel):
     baseline: str | None = None
 
 
+class EnginesBody(BaseModel):
+    role: str | None = None        # set one role, or...
+    model: str | None = None       # ...its model@provider
+    all: str | None = None         # ...set every role to this model@provider
+
+
 class TryBody(BaseModel):
     message: str = Field(..., min_length=1, max_length=100_000)
 
@@ -602,6 +608,29 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         if project.spec is None:
             raise HTTPException(400, "Nothing here yet — run `calibrate compile` (or `import`) first.")
         return coverage_dict(analyze_coverage(project.spec, project.tests))
+
+    @app.put("/api/projects/{name}/engines")
+    def set_engines(name: str, body: EnginesBody):
+        """Rebind role→model@provider. Body: {all} or {role, model}."""
+        from .engines.base import validate_engine_spec
+        from .models import EngineBinding
+        with _locked(name) as d:
+            project = _load(name)
+            try:
+                if body.all is not None:
+                    spec = validate_engine_spec(body.all)
+                    for r in EngineBinding.model_fields:
+                        setattr(project.engines, r, spec)
+                elif body.role and body.model:
+                    if body.role not in EngineBinding.model_fields:
+                        raise ValueError(f"unknown role {body.role!r}")
+                    setattr(project.engines, body.role, validate_engine_spec(body.model))
+                else:
+                    raise ValueError("provide `all`, or both `role` and `model`")
+            except ValueError as exc:
+                raise HTTPException(400, str(exc))
+            save_project(project, d)
+        return {"engines": project.engines.model_dump(), "state": _state(project)}
 
     @app.get("/api/projects/{name}/badge")
     def badge_(name: str):
