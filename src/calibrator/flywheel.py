@@ -26,18 +26,24 @@ from pathlib import Path
 
 from .coerce import as_opt_str, as_str, is_str
 from .models import BehaviorSpec, Example, Project, TestCase
-from .store import atomic_write_text
+from .store import atomic_write_text, project_lock
 
 FEEDBACK_FILE = "feedback.jsonl"            # under <project>/logs/
 ABSORBED_FILE = "feedback-absorbed.jsonl"   # consumed records (audit trail)
 
 
 def append_feedback(project_dir: str | Path, record: dict) -> None:
-    """Durably append one live-feedback record (called by the runtime)."""
-    d = Path(project_dir) / "logs"
-    d.mkdir(parents=True, exist_ok=True)
-    with (d / FEEDBACK_FILE).open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    """Durably append one live-feedback record (called by the runtime).
+
+    Takes the project lock: `absorb_feedback` empties the inbox after reading
+    it (under the same lock, via the CLI/API), so an unserialized append landing
+    in that read→truncate window would be silently DESTROYED. The lock closes
+    the window; appends simply wait out an in-flight absorb (milliseconds)."""
+    with project_lock(project_dir):
+        d = Path(project_dir) / "logs"
+        d.mkdir(parents=True, exist_ok=True)
+        with (d / FEEDBACK_FILE).open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
 def read_feedback(project_dir: str | Path) -> list[dict]:
@@ -89,7 +95,12 @@ def absorb_feedback(project: Project, project_dir: str | Path) -> AbsorbResult:
 
     Idempotent: consumed records move to ``feedback-absorbed.jsonl`` and
     duplicates (same conversation already pinned / same example already present)
-    are skipped, so running twice adds nothing new."""
+    are skipped, so running twice adds nothing new.
+
+    CONCURRENCY CONTRACT: the caller must hold ``store.project_lock`` (the CLI
+    and API do). This function reads the inbox and then EMPTIES it; the lock is
+    what stops a concurrent ``append_feedback`` from landing a record in that
+    window and having it destroyed by the truncate."""
     records = read_feedback(project_dir)
     result = AbsorbResult()
     if not records:

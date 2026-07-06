@@ -197,3 +197,19 @@ def test_rag_config_shape():
     cfg = rag_config(BehaviorSpec(goal="g", knowledge_sources=["a.md"]))
     assert cfg["knowledge_sources"] == ["a.md"]
     assert cfg["top_k"] == 5 and cfg["table"]
+
+
+def test_tests_from_examples_dedups_against_follow_ups():
+    """Audit finding: an absorbed multi-turn exchange (fb test input=turn 1,
+    example input=last turn) was double-pinned by examples-to-tests."""
+    from calibrator.compile import tests_from_examples
+    from calibrator.models import Example
+    from calibrator.models import TestCase as Case
+
+    spec = BehaviorSpec(goal="g", examples=[
+        Example(input="How are things?", bad_output="meh", good_output="Great!"),  # last turn of fb_1
+        Example(input="brand new", good_output="x"),
+    ])
+    existing = [Case(id="fb_1", input="Hi there", follow_ups=["How are things?"])]
+    new = tests_from_examples(spec, existing)
+    assert [t.input for t in new] == ["brand new"]   # the fb-covered exchange is NOT re-pinned

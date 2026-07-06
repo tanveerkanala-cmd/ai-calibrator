@@ -99,3 +99,38 @@ def test_feedback_round_trip_unicode(tmp_path):
     raw = (tmp_path / "logs" / "feedback.jsonl").read_text(encoding="utf-8")
     assert "🙂" in raw  # ensure_ascii=False — the file stays human-readable
     assert json.loads(raw)  # and valid JSON
+
+
+def test_concurrent_appends_never_lost_during_absorb(tmp_path):
+    """CRITICAL audit finding: a record appended during absorb's read→truncate
+    window was silently destroyed. append_feedback now serializes on the project
+    lock (which absorb callers hold) — conservation must be exact."""
+    import threading
+
+    from calibrator.store import project_lock
+
+    N = 150
+    done = threading.Event()
+
+    def writer():
+        for i in range(N):
+            append_feedback(tmp_path, {"turns": [f"q{i}"], "output": f"a{i}", "verdict": "up"})
+        done.set()
+
+    t = threading.Thread(target=writer)
+    absorbed_total = 0
+    p = _project()
+    t.start()
+    while not done.is_set():  # absorb aggressively while the writer hammers
+        with project_lock(tmp_path):
+            r = absorb_feedback(p, tmp_path)
+        absorbed_total += r.ups + r.downs + r.skipped
+    t.join()
+    with project_lock(tmp_path):
+        r = absorb_feedback(p, tmp_path)  # sweep the tail
+    absorbed_total += r.ups + r.downs + r.skipped
+
+    assert absorbed_total == N                              # nothing destroyed
+    assert read_feedback(tmp_path) == []                    # inbox drained
+    archived = (tmp_path / "logs" / "feedback-absorbed.jsonl").read_text().splitlines()
+    assert len(archived) == N                               # every record archived exactly once

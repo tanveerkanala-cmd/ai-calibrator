@@ -222,3 +222,50 @@ def test_flywheel_end_to_end_chat_feedback_absorb(tmp_path):
     assert project.spec.examples[-1].good_output == "No — the window is 30 days."
     # the AI learned something → its old certification no longer applies
     assert certification_status(project, tmp_path)[0] == "stale"
+
+
+def test_tool_calling_rejected_not_silently_dropped(tmp_path):
+    """HIGH audit finding: tool/function messages were silently dropped from
+    context. They must be rejected loudly — a lost tool result corrupts the
+    conversation invisibly."""
+    _seed(tmp_path)
+    c = _client(tmp_path, RecordingEngine())
+    r = c.post("/v1/chat/completions", json={"messages": [
+        {"role": "user", "content": "call the tool"},
+        {"role": "assistant", "content": "calling"},
+        {"role": "tool", "content": "tool result"},
+        {"role": "user", "content": "so?"}]})
+    assert r.status_code == 400 and "tool" in r.json()["detail"]
+
+    # assistant messages carrying tool_calls are the same protocol family
+    r2 = c.post("/v1/chat/completions", json={"messages": [
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": None, "tool_calls": [{"id": "x"}]},
+        {"role": "user", "content": "so?"}]})
+    assert r2.status_code == 400
+
+    # unknown roles are loud too
+    r3 = c.post("/v1/chat/completions", json={"messages": [{"role": "wizard", "content": "q"}]})
+    assert r3.status_code == 400 and "role" in r3.json()["detail"]
+
+
+def test_content_parts_form_is_accepted(tmp_path):
+    """Many OpenAI SDK wrappers always send content as [{"type":"text",...}]."""
+    _seed(tmp_path)
+    eng = RecordingEngine(["ok"])
+    c = _client(tmp_path, eng)
+    r = c.post("/v1/chat/completions", json={"messages": [
+        {"role": "user", "content": [{"type": "text", "text": "how "}, {"type": "text", "text": "long?"}]}]})
+    assert r.status_code == 200
+    assert eng.calls[0][0] == "User: how long?\nAssistant:"
+
+    # non-text parts are rejected with a reason, not silently dropped
+    r2 = c.post("/v1/chat/completions", json={"messages": [
+        {"role": "user", "content": [{"type": "image_url", "image_url": {"url": "http://x"}}]}]})
+    assert r2.status_code == 400 and "text" in r2.json()["detail"]
+
+    # null content is loud, not a silent drop
+    r3 = c.post("/v1/chat/completions", json={"messages": [
+        {"role": "user", "content": "q"}, {"role": "assistant", "content": None},
+        {"role": "user", "content": "so?"}]})
+    assert r3.status_code == 400

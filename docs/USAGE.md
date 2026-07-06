@@ -318,6 +318,11 @@ authority). Flags: `--host` (default `127.0.0.1`; no auth — keep it local),
 `--port` (default `8600`), `--guard`, `--force`. Streaming (`"stream": true`)
 is supported, so standard chat UIs work unchanged.
 
+Scope, honestly: **plain text chat**. Text content-parts
+(`[{"type":"text",…}]`) are accepted; function/tool-calling and image/audio
+content are **rejected with a clear 400** rather than silently dropped from the
+context — a lost tool result would corrupt the conversation invisibly.
+
 ### The flywheel: `POST /v1/feedback` + `calibrate absorb`
 
 The runtime is also the capture point for **learning from real use**. Thumbs-up

@@ -48,21 +48,56 @@ def _now() -> int:
     return int(datetime.now(timezone.utc).timestamp())
 
 
+def _content_text(content) -> str | None:
+    """Message content → text. Accepts plain strings AND the OpenAI
+    content-parts form (``[{"type": "text", "text": …}, …]``, which many SDK
+    wrappers always send). Returns None for anything non-textual."""
+    if is_str(content):
+        return content
+    if isinstance(content, list):
+        parts = [p for p in content if isinstance(p, dict)]
+        texts = [p.get("text") for p in parts if p.get("type") == "text" and is_str(p.get("text"))]
+        if parts and len(texts) == len(parts) == len(content):
+            return "".join(texts)
+    return None
+
+
 def encode_messages(messages: list[dict]) -> str:
     """OpenAI-style messages → the transcript-encoded prompt the engine sees.
 
-    Client ``system`` entries are dropped (the spec's compiled prompt is the
-    authority); the final message must be from the user."""
+    Honesty rules (a wrong answer beats a silently wrong context):
+    - ``system`` entries are dropped BY DESIGN — the spec's compiled prompt is
+      the authority (documented).
+    - tool/function-calling messages are REJECTED, not dropped: this endpoint
+      can't execute tools, and losing a tool result from the context would
+      corrupt the conversation invisibly.
+    - non-text content (images, audio) is rejected; text content-parts are
+      accepted and joined. The final message must be from the user."""
     if not isinstance(messages, list) or not messages:
         raise ValueError("messages must be a non-empty list")
-    turns = [m for m in messages
-             if isinstance(m, dict) and m.get("role") in ("user", "assistant") and is_str(m.get("content"))]
-    if not turns or turns[-1]["role"] != "user":
+    turns: list[tuple[str, str]] = []
+    for m in messages:
+        if not isinstance(m, dict):
+            raise ValueError("each message must be an object with role and content")
+        role = m.get("role")
+        if role == "system":
+            continue  # the calibrated spec is the authority
+        if role in ("tool", "function") or m.get("tool_calls") or m.get("function_call"):
+            raise ValueError("function/tool calling is not supported by this calibrated endpoint — "
+                             "send plain user/assistant text messages")
+        if role not in ("user", "assistant"):
+            raise ValueError(f"unsupported message role {role!r}")
+        text = _content_text(m.get("content"))
+        if text is None or not text.strip():
+            raise ValueError("message content must be non-empty text "
+                             "(image/audio content parts are not supported)")
+        turns.append((role, text))
+    if not turns or turns[-1][0] != "user":
         raise ValueError("the last message must be from the user")
-    if sum(len(m["content"]) for m in turns) > MAX_CHAT_CHARS:
+    if sum(len(t) for _, t in turns) > MAX_CHAT_CHARS:
         raise ValueError(f"conversation too large (>{MAX_CHAT_CHARS} characters)")
-    history = [f"{'User' if m['role'] == 'user' else 'Assistant'}: {m['content']}" for m in turns[:-1]]
-    return conversation_prompt(history, turns[-1]["content"])
+    history = [f"{'User' if role == 'user' else 'Assistant'}: {text}" for role, text in turns[:-1]]
+    return conversation_prompt(history, turns[-1][1])
 
 
 def _guard_checks(project: Project) -> list[tuple[str, object]]:
@@ -170,8 +205,9 @@ def create_ai_app(project_dir: str | Path, *, engine: Engine | None = None, guar
 
         created = _now()
         cid = f"chatcmpl-{project.name}-{created}-{len(recent)}"
-        user_turns = [m["content"] for m in body.get("messages", [])
-                      if isinstance(m, dict) and m.get("role") == "user" and is_str(m.get("content"))]
+        user_turns = [text for m in body.get("messages", [])
+                      if isinstance(m, dict) and m.get("role") == "user"
+                      and (text := _content_text(m.get("content"))) is not None]
         _remember(cid, user_turns, content)
         if body.get("stream"):
             # The engine interface is non-streaming; emit valid SSE chunks so

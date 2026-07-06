@@ -197,3 +197,22 @@ def test_certification_stales_when_tests_or_checks_change(tmp_path):
 
     p.spec.eval_criteria[0].check = Check(kind="contains", value="x")  # grading change → stale
     assert certification_status(p, tmp_path)[0] == "stale"
+
+
+def test_criteria_reordering_does_not_stale_certification(tmp_path):
+    """Audit finding: criteria were hashed in list order (tests are sorted) —
+    reordering YAML entries spuriously staled the certification."""
+    from calibrator.ci import certification_status, config_hash
+
+    p = _project()
+    p.spec.eval_criteria.append(EvalCriterion(id="c2", description="another thing", weight=Weight.LOW))
+    p.tests[0].expects = []
+    run_ci(p, Subject("GOOD"), Judge(), project_dir=tmp_path)
+    assert certification_status(p, tmp_path)[0] == "pass"
+
+    p.spec.eval_criteria.reverse()                       # pure reorder → still certified
+    assert certification_status(p, tmp_path)[0] == "pass"
+
+    p.spec.eval_criteria[0].description = "changed"      # content change → stale
+    assert certification_status(p, tmp_path)[0] == "stale"
+    assert config_hash(p) != ""

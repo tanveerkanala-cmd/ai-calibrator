@@ -169,9 +169,11 @@ def config_hash(project: Project) -> str:
     feedback — a previous certification is STALE and must be re-earned."""
     if project.spec is None:
         return ""
+    # Sorted like tests: reordering entries in the YAML is not a behavior change
+    # and must not spuriously stale a certification.
     criteria = [{"id": c.id, "description": c.description, "weight": c.weight.value,
                  "check": {"kind": c.check.kind, "value": c.check.value} if c.check else None}
-                for c in project.spec.eval_criteria]
+                for c in sorted(project.spec.eval_criteria, key=lambda c: c.id)]
     tests = [{"id": t.id, "input": t.input, "expects": t.expects, "follow_ups": t.follow_ups}
              for t in sorted(project.tests, key=lambda t: t.id)]
     material = (render_system_prompt(project.spec)

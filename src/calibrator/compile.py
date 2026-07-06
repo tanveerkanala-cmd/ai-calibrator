@@ -273,9 +273,12 @@ def tests_from_examples(spec: BehaviorSpec, existing: list[TestCase] = ()) -> li
     """Turn the spec's examples into regression tests (§9 golden anchors).
 
     Each example's input becomes a test graded against all criteria — so the exact
-    cases the expert cared about are pinned into the suite. Inputs already present
-    in ``existing`` are skipped (no duplicates)."""
-    seen = {t.input for t in existing}
+    cases the expert cared about are pinned into the suite. Inputs already covered
+    by ``existing`` are skipped — including inputs that appear as a multi-turn
+    test's follow-ups (an absorbed conversation's example is its LAST turn while
+    the pinned fb test starts at the FIRST; without this, examples-to-tests would
+    double-pin the same exchange)."""
+    seen = {t.input for t in existing} | {f for t in existing for f in t.follow_ups}
     out: list[TestCase] = []
     for i, ex in enumerate(spec.examples, start=1):
         if is_str(ex.input) and ex.input not in seen:
