@@ -67,8 +67,10 @@ def load_labels(project_dir: str | Path, run_id: str) -> list[dict]:
     labels = data.get("labels") if isinstance(data, dict) else None
     if not isinstance(labels, list):
         return []
+    # Require the verdict too: a label without "passed" carries no judgment, and
+    # letting it through would be silently treated as a fail downstream.
     return [x for x in labels
-            if isinstance(x, dict) and x.get("test_id") and x.get("criterion_id")]
+            if isinstance(x, dict) and x.get("test_id") and x.get("criterion_id") and "passed" in x]
 
 
 def all_labels(project_dir: str | Path) -> list[tuple[str, list[dict]]]:

@@ -140,3 +140,16 @@ def test_help_survives_ascii_and_cp1252_terminals():
         stderr = r.stderr.decode(enc, errors="replace")
         assert r.returncode == 0, f"{enc}: {stderr[-300:]}"
         assert "UnicodeEncodeError" not in stderr
+
+
+def test_snapshot_on_corrupt_scorecard_is_friendly(tmp_path):
+    """Audit #5: snapshot loaded the scorecard with no error handling."""
+    import os
+    d = tmp_path / "p"
+    d.mkdir()
+    (d / "project.yaml").write_text("name: p\ngoal: g\n")
+    run = d / "evals" / "run-0001"
+    run.mkdir(parents=True)
+    (run / "scorecard.json").write_text("{ truncated json")
+    r = runner.invoke(app, ["snapshot", str(d)])
+    assert r.exit_code == 1 and "Could not read scorecard" in r.output and _has_no_traceback(r.output)

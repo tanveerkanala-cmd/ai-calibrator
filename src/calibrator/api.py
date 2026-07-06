@@ -297,6 +297,8 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             try:
                 engine = make_engine(project.engines.extractor)
                 result = ingest_project(project, d / "materials", engine, project_dir=d)
+            except HTTPException:
+                raise
             except Exception as exc:
                 raise HTTPException(400, str(exc))
             save_project(project, d)
@@ -315,6 +317,8 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             try:
                 engine = make_engine(project.engines.interviewer)
                 project.interview = generate_questions(project, engine)
+            except HTTPException:
+                raise
             except Exception as exc:
                 raise HTTPException(400, str(exc))
             save_project(project, d)
@@ -343,6 +347,8 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             try:
                 engine = make_engine(project.engines.compiler)
                 result = compile_project(project, engine, project_dir=d)
+            except HTTPException:
+                raise
             except Exception as exc:
                 raise HTTPException(400, str(exc))
             save_project(project, d)
@@ -690,6 +696,8 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             generator = make_engine(project.engines.compiler)
             subject = make_engine(project.engines.subject)
             candidates = propose_candidates(project, generator, subject, n=body.n)
+        except HTTPException:
+            raise
         except Exception as exc:
             raise HTTPException(400, str(exc))
         return {"candidates": [{"id": c.id, "input": c.input, "output": c.output} for c in candidates]}

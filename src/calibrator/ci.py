@@ -189,6 +189,10 @@ def config_hash(project: Project) -> str:
              for t in sorted(project.tests, key=lambda t: t.id)]
     material = (render_system_prompt(spec)
                 + "\n@@subject=" + project.engines.subject
+                # The judge is part of the grading contract — a different judge can
+                # score the same outputs differently, so switching it must re-earn
+                # the certification just as a criterion change does.
+                + "\n@@judge=" + project.engines.judge
                 + "\n@@criteria=" + json.dumps(criteria, sort_keys=True, ensure_ascii=False)
                 + "\n@@tests=" + json.dumps(tests, sort_keys=True, ensure_ascii=False))
     return hashlib.sha256(material.encode("utf-8")).hexdigest()

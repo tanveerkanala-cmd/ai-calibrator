@@ -183,14 +183,13 @@ def export_engine_bundle(project_dir: str | Path, role: str, *, base_model: str 
     rows = assemble_role_dataset(project_dir, role)
     human: list[dict] = human_judge_rows(project_dir) if role == "judge" else []
     if human:
-        claimed = {(r["messages"][0]["content"], r["messages"][-2]["content"]) for r in human}
-
-        def _key(row: dict) -> tuple:
-            msgs = row["messages"]
-            system = msgs[0]["content"] if msgs[0]["role"] == "system" else ""
-            return (system, msgs[-2]["content"])
-
-        rows = [r for r in rows if _key(r) not in claimed] + human
+        # Dedup on the GRADED PROMPT (the user turn, always messages[-2]) alone.
+        # The judge system prompt is constant (JUDGE_SYSTEM), so keying on it too
+        # would fail to drop a logged imitation row that happened to be recorded
+        # without a system message — leaving both the model's verdict and the
+        # human's for the same question in the dataset.
+        claimed = {r["messages"][-2]["content"] for r in human}
+        rows = [r for r in rows if r["messages"][-2]["content"] not in claimed] + human
     recipe = recommend_recipe(len(rows), base_model=base_model)
 
     out = Path(project_dir) / "trained-engines" / role

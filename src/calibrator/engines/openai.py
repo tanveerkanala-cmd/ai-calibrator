@@ -46,7 +46,12 @@ class OpenAIEngine(Engine):
         if response_format is not None:
             kwargs["response_format"] = response_format
         resp = self._client.chat.completions.create(**kwargs)
-        message = resp.choices[0].message
+        try:
+            message = resp.choices[0].message
+        except (IndexError, AttributeError) as exc:
+            raise RuntimeError(
+                f"OpenAI returned no choices for {self.name} (empty or malformed response)."
+            ) from exc
         refusal = getattr(message, "refusal", None)
         if refusal:
             raise RuntimeError(f"OpenAI declined the request ({self.name}): {refusal}")

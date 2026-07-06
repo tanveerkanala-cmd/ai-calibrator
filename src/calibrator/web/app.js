@@ -171,7 +171,7 @@ async function runEval(name, refine) {
   const p = $("#panel");
   const last = res.rounds[res.rounds.length - 1];
   const width = Math.round(last.pass_rate * 100);  // bar width only — the NUMBER is honest
-  const rounds = res.rounds.map((r, i) => `round ${i + 1} [${r.run_id}]: ${pctText(r.pass_rate)}`).join("<br>");
+  const rounds = res.rounds.map((r, i) => `round ${i + 1} [${escapeHtml(r.run_id)}]: ${pctText(r.pass_rate)}`).join("<br>");
   p.insertAdjacentHTML("beforeend",
     `<div class="card"><strong>Eval</strong><div class="bar"><span style="width:${width}%"></span></div>` +
     `<p>Final pass rate: <b>${pctText(last.pass_rate)}</b></p><p class="muted">${rounds}</p></div>`);

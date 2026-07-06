@@ -34,6 +34,11 @@ def safe_token(value: str, field: str) -> str:
             f"{field} must be a plain model/path token (letters, digits, and . _ - : /); "
             f"got {value!r}"
         )
+    # The charset permits "." and "/", so also reject traversal-ish shapes: a
+    # ".." segment or a leading/trailing "/" has no place in a model id / dir name
+    # and could point a generated FROM/output line at the wrong path.
+    if ".." in value or value.startswith("/") or value.endswith("/"):
+        raise ValueError(f"{field} must not contain '..' or a leading/trailing '/'; got {value!r}")
     return value
 
 

@@ -27,6 +27,7 @@ function-local imports (kept lazy so importing this module never requires the
 parameters.
 """
 
+import itertools
 import json
 from collections import OrderedDict
 from datetime import datetime, timezone
@@ -144,6 +145,7 @@ def create_ai_app(project_dir: str | Path, *, engine: Engine | None = None, guar
     # id → {"turns": [user turns], "output": answer}; lets /v1/feedback reference
     # a completion by id (the flywheel's capture point).
     recent: OrderedDict[str, dict] = OrderedDict()
+    seq = itertools.count()  # monotonic — unique ids even at same-second timestamps
 
     def _remember(cid: str, turns: list[str], output: str) -> None:
         recent[cid] = {"turns": turns, "output": output}
@@ -204,7 +206,10 @@ def create_ai_app(project_dir: str | Path, *, engine: Engine | None = None, guar
             raise HTTPException(502, f"engine error: {exc}")
 
         created = _now()
-        cid = f"chatcmpl-{project.name}-{created}-{len(recent)}"
+        # A per-request monotonic counter — NOT len(recent), which plateaus at the
+        # ring-buffer cap and would collide for two same-second requests, routing
+        # feedback to the wrong conversation.
+        cid = f"chatcmpl-{project.name}-{created}-{next(seq)}"
         user_turns = [text for m in body.get("messages", [])
                       if isinstance(m, dict) and m.get("role") == "user"
                       and (text := _content_text(m.get("content"))) is not None]
@@ -233,7 +238,11 @@ def create_ai_app(project_dir: str | Path, *, engine: Engine | None = None, guar
             return resp
 
         _guard_header(response, guard_state)
-        prompt_chars = sum(len(str(m.get("content", ""))) for m in (body.get("messages") or []) if isinstance(m, dict))
+        # Approximate prompt size for the usage block — use the real text of each
+        # message (content-parts included), not str() of the raw list which would
+        # count the JSON structure. Best-effort estimate only.
+        prompt_chars = sum(len(_content_text(m.get("content")) or "")
+                           for m in (body.get("messages") or []) if isinstance(m, dict))
         return {
             "id": cid, "object": "chat.completion", "created": created, "model": project.name,
             "choices": [{"index": 0, "message": {"role": "assistant", "content": content},

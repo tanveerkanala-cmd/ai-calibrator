@@ -58,6 +58,12 @@ class FileLock:
         self._fd: Optional[int] = None
 
     def acquire(self) -> "FileLock":
+        # Not re-entrant (see class docstring). A second acquire on the same
+        # instance would overwrite self._fd — leaking the first descriptor and,
+        # under fcntl, blocking forever waiting on a lock this process holds.
+        # Fail fast with a clear programming error instead.
+        if self._fd is not None:
+            raise RuntimeError("FileLock is already held — it is not re-entrant; do not nest it")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         # O_CREAT so the first caller materializes the lock file; the descriptor
         # stays open for the whole critical section and carries the lock.

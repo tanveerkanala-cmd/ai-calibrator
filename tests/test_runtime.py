@@ -269,3 +269,17 @@ def test_content_parts_form_is_accepted(tmp_path):
         {"role": "user", "content": "q"}, {"role": "assistant", "content": None},
         {"role": "user", "content": "so?"}]})
     assert r3.status_code == 400
+
+
+def test_completion_ids_unique_past_ring_buffer(tmp_path):
+    """Audit #10: ids used len(recent), which plateaus at the 512 cap and would
+    collide within a second — routing feedback to the wrong conversation."""
+    from calibrator.runtime import RECENT_COMPLETIONS
+
+    _seed(tmp_path)
+    c = _client(tmp_path, RecordingEngine(["ok"]))
+    ids = set()
+    for _ in range(RECENT_COMPLETIONS + 25):   # push well past the ring cap
+        r = c.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "q"}]})
+        ids.add(r.json()["id"])
+    assert len(ids) == RECENT_COMPLETIONS + 25  # every id distinct

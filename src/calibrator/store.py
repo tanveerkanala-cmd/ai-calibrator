@@ -135,6 +135,9 @@ def load_project(path: str | Path) -> Project:
         data = yaml.safe_load(target.read_text())
     except yaml.YAMLError as exc:
         raise ValueError(_friendly_yaml_error(target, exc)) from exc
+    if data is None:  # empty file → safe_load returns None; model_validate(None) is cryptic
+        raise ValueError(f"{target} is empty — a project needs at least a name and goal. "
+                         "Run `calibrate init` to recreate it.")
     return Project.model_validate(data)
 
 
@@ -182,8 +185,16 @@ secrets.*
 
 
 def write_project_gitignore(path: str | Path) -> Path:
-    """Write the project .gitignore if absent (never clobbers a user's edits)."""
+    """Write the project .gitignore if absent (never clobbers a user's edits).
+
+    Uses an atomic O_EXCL create rather than exists()-then-write, so a file that
+    appears in the race window is preserved, not overwritten."""
     target = Path(path) / ".gitignore"
-    if not target.exists():
-        atomic_write_text(target, PROJECT_GITIGNORE)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(str(target), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    except FileExistsError:
+        return target  # already present — leave the user's version untouched
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(PROJECT_GITIGNORE)
     return target

@@ -34,8 +34,11 @@ class LoggingEngine(Engine):
         out = self.inner.complete(prompt, system=system, schema=schema)
         try:
             self._record(prompt, system, schema, out)
-        except OSError:
-            pass  # logging must never break the pipeline
+        except Exception:
+            # Best-effort by contract: logging must NEVER break the pipeline —
+            # not just on OSError (disk) but also e.g. a TypeError serializing an
+            # exotic output. The eval/compile result is what matters.
+            pass
         return out
 
     def _record(self, prompt: str, system: str | None, schema: dict | None, output: Any) -> None:

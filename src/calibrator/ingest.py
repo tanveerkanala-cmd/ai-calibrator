@@ -90,7 +90,10 @@ def _join_capped(docs: list[tuple[Path, str]], cap: int) -> str:
     total = 0
     for p, text in docs:
         header = f"\n\n=== {Path(p).name} ===\n"
-        budget = cap - total
+        # Reserve the header in the budget so total (header + body) never exceeds
+        # cap — the previous `cap - total` ignored the header and could overrun
+        # the cap by one header per file.
+        budget = cap - total - len(header)
         if budget <= 0:
             break
         body = text[:budget]

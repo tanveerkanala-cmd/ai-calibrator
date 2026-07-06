@@ -26,6 +26,17 @@ app = typer.Typer(
 )
 
 
+def _scorecard_or_exit(path: Path, rid: str):
+    """Load a saved scorecard, or exit friendly — a scorecard.json can be
+    corrupt/truncated/hand-edited, so never let a raw traceback escape."""
+    from .drift import load_scorecard
+    try:
+        return load_scorecard(path, rid)
+    except (OSError, ValueError, ValidationError) as exc:
+        typer.secho(f"Could not read scorecard {rid!r}: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+
 def _load(path: Path) -> Project:
     try:
         return load_project(path)
@@ -316,18 +327,23 @@ def interview(
                 typer.secho(f"Question generation failed: {exc}", fg=typer.colors.RED)
                 raise typer.Exit(code=1)
             save_project(project, path)
+        questions = list(project.interview)  # snapshot; lock released before prompting
 
-    pending = [it for it in project.interview if not it.answer]
+    pending = [it for it in questions if not it.answer]
     if not pending:
         typer.secho("All questions answered. Next:  calibrate compile  (M3)",
                     fg=typer.colors.GREEN)
         raise typer.Exit(code=0)
 
+    # Gather answers WITHOUT holding the lock — the interactive prompts can take
+    # minutes, and holding the project lock across them would block every other
+    # command on this project. Collect by question id, then apply atomically.
     mode = "auto-accepting drafts" if accept_drafts else "Enter = accept the draft"
     typer.secho(f"{len(pending)} question(s) to answer ({mode}):\n", bold=True)
+    answers: dict[str, str] = {}
     for item in pending:
         if accept_drafts:
-            item.answer = item.draft_answer or ""
+            answers[item.id] = item.draft_answer or ""
         else:
             typer.secho(f"[{item.dimension}] {item.question}", bold=True)
             if item.rationale:
@@ -335,12 +351,22 @@ def interview(
             typer.echo(f"  draft: {item.draft_answer}")
             resp = typer.prompt("  your answer (Enter to accept draft)",
                                 default="", show_default=False)
-            item.answer = resp.strip() or (item.draft_answer or "")
+            answers[item.id] = resp.strip() or (item.draft_answer or "")
             typer.echo("")
-        save_project(project, path)
 
-    answered = sum(1 for it in project.interview if it.answer)
-    typer.secho(f"✓ {answered}/{len(project.interview)} answered.", fg=typer.colors.GREEN)
+    # Apply under the lock against a FRESH load, so a concurrent edit isn't
+    # clobbered by our stale in-memory copy (store.py load→mutate→save contract).
+    with project_lock(path):
+        project = _load(path)
+        by_id = {it.id: it for it in project.interview}
+        for qid, ans in answers.items():
+            if qid in by_id:
+                by_id[qid].answer = ans
+        save_project(project, path)
+        answered = sum(1 for it in project.interview if it.answer)
+        total = len(project.interview)
+
+    typer.secho(f"✓ {answered}/{total} answered.", fg=typer.colors.GREEN)
     typer.echo("Next:  calibrate compile  (M3)")
 
 
@@ -598,8 +624,12 @@ def run(
                     fg=typer.colors.YELLOW)
     typer.echo(f"Serving '{project.name}' (subject: {project.engines.subject}"
                + (", guard ON" if guard else "") + f") at http://{host}:{port}/v1")
-    typer.echo(f'  try:  curl -s http://{host}:{port}/v1/chat/completions -H "Content-Type: application/json" '
-               f'-d \'{{"model":"{project.name}","messages":[{{"role":"user","content":"hello"}}]}}\'')
+    import json as _json
+    import shlex
+    payload = _json.dumps({"model": project.name,
+                           "messages": [{"role": "user", "content": "hello"}]})
+    typer.echo(f'  try:  curl -s http://{host}:{port}/v1/chat/completions '
+               f'-H "Content-Type: application/json" -d {shlex.quote(payload)}')
     uvicorn.run(application, host=host, port=port, log_level="warning")
 
 
@@ -1010,7 +1040,6 @@ def snapshot(
     check: bool = typer.Option(False, "--check", help="Compare the latest outputs to the pinned golden; exit 2 if changed."),
 ) -> None:
     """Pin or check golden outputs — catch output changes the pass/fail rubric misses. (no engine)"""
-    from .drift import load_scorecard
     from .eval import latest_run_id
     from .snapshot import compare, load_golden, outputs_of, save_golden
 
@@ -1019,7 +1048,7 @@ def snapshot(
     if not rid:
         typer.secho("No scorecard yet — run `calibrate eval` first.", fg=typer.colors.YELLOW)
         raise typer.Exit(code=1)
-    latest = outputs_of(load_scorecard(path, rid))
+    latest = outputs_of(_scorecard_or_exit(path, rid))
 
     if not check:
         save_golden(path, latest)
@@ -1219,11 +1248,16 @@ def merge(
             drops.add(c.a.idx)
             ruling = f"keep B [{c.b.stakeholder}]"
         elif choice == "m":
-            drops.update({c.a.idx, c.b.idx})
             merged_text = typer.prompt("  merged rule").strip()
             if merged_text:
+                drops.update({c.a.idx, c.b.idx})
                 additions.append(merged_text)
-            ruling = f"merge → {merged_text}"
+                ruling = f"merge → {merged_text}"
+            else:
+                # empty merged rule → not a merge; keep A rather than record a
+                # phantom "merge → " ruling that added nothing.
+                drops.add(c.b.idx)
+                ruling = f"keep A [{c.a.stakeholder}] (empty merge)"
         else:
             drops.add(c.b.idx)
             ruling = f"keep A [{c.a.stakeholder}]"
@@ -1471,8 +1505,6 @@ def finetune(
     candidate: Optional[str] = typer.Option(None, "--candidate", help="Candidate run id (with --gate)."),
 ) -> None:
     """Advanced tier: build a fine-tuning dataset + recipe, or run the prove-it gate. (v1)"""
-    import json as _json
-    from .models import Scorecard
 
     project = _load(path)
 
@@ -1482,14 +1514,7 @@ def finetune(
             raise typer.Exit(code=1)
         from .finetune import beats_baseline
 
-        def _card(rid: str) -> Scorecard:
-            f = Path(path) / "evals" / rid / "scorecard.json"
-            if not f.exists():
-                typer.secho(f"no scorecard at evals/{rid}/", fg=typer.colors.RED)
-                raise typer.Exit(code=1)
-            return Scorecard.model_validate(_json.loads(f.read_text()))
-
-        base_card, cand_card = _card(baseline), _card(candidate)
+        base_card, cand_card = _scorecard_or_exit(path, baseline), _scorecard_or_exit(path, candidate)
         win = beats_baseline(base_card, cand_card)
         typer.echo(f"baseline [{baseline}]: {pct(base_card.pass_rate)}    candidate [{candidate}]: {pct(cand_card.pass_rate)}")
         if win:
