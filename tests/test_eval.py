@@ -304,3 +304,12 @@ def test_weighted_score_backward_compat_unweighted_scorecard():
     ])])
     assert old.results[0].weighted_score == pytest.approx(0.5)  # (2*1+2*0)/4
     assert Scorecard(run_id="r", results=[]).weighted_score == 0.0
+
+
+def test_judge_consensus_even_split_is_not_a_majority():
+    """Mutation audit: 'yes * 2 > passes' vs '>=' — a 1-of-2 tie must FAIL (strict
+    majority), or a flaky judge could certify on a coin flip."""
+    card = run_eval(_project(), GoodSubject(), FlakyJudge(), run_id="r", judge_passes=2)
+    cr = card.results[0].criteria[0]
+    assert cr.passed is False            # pass/fail tie → not a majority → fail
+    assert cr.confidence == 0.5

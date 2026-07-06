@@ -14,6 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .coverage import CoverageReport
+from .fmt import pct
 from .models import BehaviorSpec, Project, Scorecard
 from .store import atomic_write_text
 
@@ -58,12 +59,12 @@ def render_report(project: Project, coverage: CoverageReport, latest: Scorecard 
     L += [f"# Calibration Report — {project.name}", ""]
     L += [f"**Goal:** {project.goal}  ", f"**Task type:** {project.task_type.value}", ""]
 
-    L += [f"## Calibration Confidence: {conf:.0%}", ""]
-    L += [f"- Behavioral coverage: **{coverage.coverage_rate:.0%}** "
+    L += [f"## Calibration Confidence: {pct(conf)}", ""]
+    L += [f"- Behavioral coverage: **{pct(coverage.coverage_rate)}** "
           f"({len(coverage.covered_criteria)}/{coverage.total_criteria} criteria targeted by a test)"]
     if latest:
-        L += [f"- Latest pass rate: **{pass_rate:.0%}** (run `{latest.run_id}`)"]
-        L += [f"- Weighted score: **{latest.weighted_score:.0%}** "
+        L += [f"- Latest pass rate: **{pct(pass_rate)}** (run `{latest.run_id}`)"]
+        L += [f"- Weighted score: **{pct(latest.weighted_score)}** "
               "(criteria weighted high=3 / medium=2 / low=1 — how much of what *matters* passed)"]
         L += ["- Confidence = coverage × pass rate."]
     else:
@@ -92,7 +93,7 @@ def render_report(project: Project, coverage: CoverageReport, latest: Scorecard 
 
     if latest:
         L += ["## Latest evaluation", ""]
-        L += [f"- Run `{latest.run_id}` — pass rate **{pass_rate:.0%}**"]
+        L += [f"- Run `{latest.run_id}` — pass rate **{pct(pass_rate)}**"]
         fails = [r for r in latest.results if not r.passed and r.criteria]
         if fails:
             L += ["- Weak spots:"]
@@ -146,13 +147,13 @@ def badge_dict(project: Project, project_dir: str | Path) -> dict:
     n = len([r for r in latest.results if r.criteria]) if latest else 0
 
     if status == "pass" and latest:
-        message, color = f"{latest.pass_rate:.0%} · {n} tests", "brightgreen"
+        message, color = f"{pct(latest.pass_rate)} · {n} tests", "brightgreen"
     elif status == "fail":
         message, color = "gate failing", "red"
     elif status == "stale":
         message, color = "stale — re-run ci", "orange"
     elif latest:
-        message, color = f"{latest.pass_rate:.0%} · ungated", "orange"
+        message, color = f"{pct(latest.pass_rate)} · ungated", "orange"
     else:
         message, color = "uncalibrated", "lightgrey"
     return {"schemaVersion": 1, "label": "calibrated", "message": message, "color": color}
@@ -183,7 +184,7 @@ _HTML_PAGE = """<!doctype html>
 </style></head><body>
 <h1>Calibration Certificate — {name}</h1>
 <p class="goal">{goal}</p>
-<p class="conf {conf_class}">{confidence:.0%}<small>calibration confidence = behavioral coverage × pass rate</small></p>
+<p class="conf {conf_class}">{confidence_pct}<small>calibration confidence = behavioral coverage × pass rate</small></p>
 <table>
 <tr><th>Measure</th><th>Value</th></tr>
 {measure_rows}
@@ -218,11 +219,11 @@ def render_html_report(project: Project, coverage: CoverageReport, latest: Score
     conf_class = "pass" if status == "pass" and conf >= 0.8 else ("fail" if status == "fail" else "warn")
 
     measures = [("Behavioral coverage",
-                 f"{coverage.coverage_rate:.0%} ({len(coverage.covered_criteria)}/{coverage.total_criteria} criteria tested)")]
+                 f"{pct(coverage.coverage_rate)} ({len(coverage.covered_criteria)}/{coverage.total_criteria} criteria tested)")]
     if latest:
         graded = [r for r in latest.results if r.criteria]
-        measures += [("Pass rate", f"{pass_rate:.0%} ({sum(1 for r in graded if r.passed)}/{len(graded)} tests)"),
-                     ("Weighted score", f"{latest.weighted_score:.0%} (high=3 · medium=2 · low=1)")]
+        measures += [("Pass rate", f"{pct(pass_rate)} ({sum(1 for r in graded if r.passed)}/{len(graded)} tests)"),
+                     ("Weighted score", f"{pct(latest.weighted_score)} (high=3 · medium=2 · low=1)")]
     else:
         measures += [("Pass rate", "— (no eval yet)")]
     measures += [("Certification", f"{status} — {detail}")]
@@ -248,7 +249,7 @@ def render_html_report(project: Project, coverage: CoverageReport, latest: Score
 
     from datetime import datetime, timezone
     return _HTML_PAGE.format(
-        name=_esc(project.name), goal=_esc(project.goal), confidence=conf, conf_class=conf_class,
+        name=_esc(project.name), goal=_esc(project.goal), confidence_pct=pct(conf), conf_class=conf_class,
         measure_rows=measure_rows, gate_rows=gate_rows, criteria_rows=criteria_rows,
         date=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
         run_note=f" (`{_esc(latest.run_id)}`)" if latest else "",

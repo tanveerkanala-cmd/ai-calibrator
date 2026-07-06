@@ -46,3 +46,12 @@ def test_regex_catastrophic_pattern_times_out_instead_of_hanging():
     assert ok is False
     assert "timed out" in why
     assert elapsed < REGEX_TIMEOUT + 2.0  # bounded — nowhere near an unbounded hang
+
+
+def test_length_checks_exact_boundary():
+    """Mutation audit: max_chars '<=' vs '<' (and min_chars '>=' vs '>') — the
+    boundary itself must pass."""
+    assert run_check(Check(kind="max_chars", value="5"), "12345")[0] is True    # == limit passes
+    assert run_check(Check(kind="max_chars", value="5"), "123456")[0] is False
+    assert run_check(Check(kind="min_chars", value="5"), "12345")[0] is True    # == limit passes
+    assert run_check(Check(kind="min_chars", value="5"), "1234")[0] is False

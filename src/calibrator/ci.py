@@ -25,6 +25,7 @@ from .compile import render_system_prompt
 from .drift import compare_scorecards, load_scorecard
 from .engines.base import Engine
 from .eval import latest_run_id, next_run_id, run_eval, save_scorecard
+from .fmt import pct, pct_delta
 from .lint import lint_spec, lint_unknown_fields
 from .models import Project, Scorecard
 from .snapshot import compare, load_golden, outputs_of
@@ -104,9 +105,12 @@ def run_ci(
     result.weighted_score = card.weighted_score
     graded = [r for r in card.results if r.criteria]
     passed = sum(1 for r in graded if r.passed)
-    eval_detail = (f"{card.run_id}: {card.pass_rate:.0%} pass ({passed}/{len(graded)}), "
-                   f"weighted {card.weighted_score:.0%}, threshold {threshold:.0%}")
-    result.stages.append(CiStage("eval", "pass" if card.pass_rate >= threshold else "fail", eval_detail))
+    ok = card.pass_rate >= threshold
+    eval_detail = (f"{card.run_id}: {pct(card.pass_rate)} pass ({passed}/{len(graded)}), "
+                   f"weighted {pct(card.weighted_score)}, threshold {threshold:.0%}")
+    if not ok:  # disambiguate the boundary: "80% pass, threshold 80%, fail" reads wrong
+        eval_detail += f" — below threshold ({card.pass_rate:.1%} < {threshold:.0%})"
+    result.stages.append(CiStage("eval", "pass" if ok else "fail", eval_detail))
 
     # 3. drift — vs the previous (or pinned) run.
     result.stages.append(_drift_stage(project_dir, baseline_id, card, tolerance))
@@ -126,7 +130,7 @@ def _drift_stage(project_dir: str | Path, baseline_id: str | None, card: Scoreca
     except (FileNotFoundError, ValueError) as exc:
         return CiStage("drift", "fail", f"baseline {baseline_id!r} unusable: {exc}")
     d = compare_scorecards(base, card, tolerance=tolerance)
-    detail = f"vs {baseline_id}: Δ {d.delta:+.0%}"
+    detail = f"vs {baseline_id}: Δ {pct_delta(d.delta)}"
     if d.regressed:
         what = f", regressed: {', '.join(d.regressed_tests)}" if d.regressed_tests else ""
         return CiStage("drift", "fail", detail + what)
@@ -221,7 +225,7 @@ def certification_status(project: Project, project_dir: str | Path) -> tuple[str
                          "re-run `calibrate ci`")
     if gate.get("ok"):
         rate = gate.get("pass_rate")
-        detail = f"gate {run} passed at {when}" + (f" ({rate:.0%} pass rate)" if isinstance(rate, (int, float)) else "")
+        detail = f"gate {run} passed at {when}" + (f" ({pct(rate)} pass rate)" if isinstance(rate, (int, float)) else "")
         return "pass", detail
     failed = [s["name"] for s in gate.get("stages", []) if isinstance(s, dict) and s.get("status") == "fail"]
     return "fail", (f"gate {run} FAILED at {when}" + (f" ({', '.join(failed)})" if failed else "")

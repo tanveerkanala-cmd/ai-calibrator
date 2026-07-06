@@ -16,6 +16,7 @@ import yaml
 from pydantic import ValidationError
 
 from .models import EngineBinding, Project, TaskType
+from .fmt import pct, pct_delta
 from .store import atomic_write_text, load_project, project_lock, save_project, write_project_gitignore
 
 app = typer.Typer(
@@ -451,12 +452,12 @@ def eval_(
     for i, card in enumerate(cards, 1):
         graded = [r for r in card.results if r.criteria]
         passed = sum(1 for r in graded if r.passed)
-        typer.echo(f"  round {i} [{card.run_id}]: {card.pass_rate:.0%} ({passed}/{len(graded)} graded)")
+        typer.echo(f"  round {i} [{card.run_id}]: {pct(card.pass_rate)} ({passed}/{len(graded)} graded)")
 
     final = cards[-1]
     ok = final.pass_rate >= threshold
     typer.secho(
-        f"\nFinal pass rate: {final.pass_rate:.0%}   (weighted score: {final.weighted_score:.0%})",
+        f"\nFinal pass rate: {pct(final.pass_rate)}   (weighted score: {pct(final.weighted_score)})",
         fg=typer.colors.GREEN if ok else typer.colors.YELLOW,
     )
     # Triage order: tests whose HIGH-weight criteria failed come first.
@@ -478,7 +479,7 @@ def eval_(
             typer.secho(f"\n⚠ {len(low)} verdict(s) the judge was split on — worth a human check:",
                         fg=typer.colors.YELLOW)
             for tid, c in low[:10]:
-                typer.echo(f"  · {tid} / {c.criterion_id}: {c.confidence:.0%} agreement → {'pass' if c.passed else 'fail'}")
+                typer.echo(f"  · {tid} / {c.criterion_id}: {pct(c.confidence)} agreement → {'pass' if c.passed else 'fail'}")
 
     typer.echo(f"\nScorecards saved under {Path(path)}/evals/.")
     if ok:
@@ -705,7 +706,7 @@ def judge_check(
     save_labels(path, rid, labels)  # ground truth is an asset: feeds train-engine
     ag = judge_agreement(card, labels)
     rate = ag.agreement_rate
-    typer.secho(f"\nJudge agreement with you: {rate:.0%} ({ag.agreed}/{ag.total})",
+    typer.secho(f"\nJudge agreement with you: {pct(rate)} ({ag.agreed}/{ag.total})",
                 fg=typer.colors.GREEN if rate >= 0.8 else typer.colors.YELLOW, bold=True)
     for cid in ag.unreliable_criteria():
         a, t = ag.by_criterion[cid]
@@ -771,7 +772,7 @@ def coverage(path: Path = typer.Argument(Path("."), help="Project directory.")) 
 
     report = analyze_coverage(project.spec, project.tests)
     typer.secho(
-        f"Behavioral coverage: {report.coverage_rate:.0%} "
+        f"Behavioral coverage: {pct(report.coverage_rate)} "
         f"({len(report.covered_criteria)}/{report.total_criteria} criteria targeted)",
         bold=True,
     )
@@ -832,7 +833,7 @@ def redteam(
 
     color = typer.colors.GREEN if not report.violations else typer.colors.RED
     typer.secho(
-        f"\nHeld {report.hold_rate:.0%} — {len(report.violations)}/{report.probes} probe(s) caused a violation.",
+        f"\nHeld {pct(report.hold_rate)} — {len(report.violations)}/{report.probes} probe(s) caused a violation.",
         fg=color, bold=True,
     )
     for r in report.violations:
@@ -886,12 +887,12 @@ def rightsize(
         price = f"{r.in_price}/{r.out_price}" if r.in_price is not None else "unknown"
         meets = r.pass_rate >= threshold
         note = "✓ meets bar" if meets else "below bar"
-        typer.secho(f"  {r.spec:<28}{r.pass_rate:>5.0%}  {price:>10}  {note}",
+        typer.secho(f"  {r.spec:<28}{pct(r.pass_rate):>5}  {price:>10}  {note}",
                     fg=typer.colors.GREEN if meets else None)
 
     rec = report.recommended
     if rec:
-        typer.secho(f"\n→ Recommended: {rec.spec}  ({rec.pass_rate:.0%}, cheapest that meets {threshold:.0%})",
+        typer.secho(f"\n→ Recommended: {rec.spec}  ({pct(rec.pass_rate)}, cheapest that meets {threshold:.0%})",
                     fg=typer.colors.GREEN)
         typer.echo(f"  to adopt: point engines.subject at {rec.spec} in project.yaml")
     else:
@@ -986,8 +987,8 @@ def drift(
             raise typer.Exit(code=1)
 
     typer.secho(
-        f"\nbaseline {report.baseline_run}: {report.baseline_rate:.0%}  →  "
-        f"{report.candidate_run}: {report.candidate_rate:.0%}  (Δ {report.delta:+.0%})",
+        f"\nbaseline {report.baseline_run}: {pct(report.baseline_rate)}  →  "
+        f"{report.candidate_run}: {pct(report.candidate_rate)}  (Δ {pct_delta(report.delta)})",
         bold=True,
     )
     if report.regressed_tests:
@@ -1072,9 +1073,9 @@ def report(
     markdown = render_report(project, cov, latest)
     out = save_report(path, markdown)
     conf = calibration_confidence(cov.coverage_rate, latest.pass_rate if latest else 0.0, latest is not None)
-    typer.secho(f"Calibration Confidence: {conf:.0%}", bold=True)
-    typer.echo(f"  coverage {cov.coverage_rate:.0%}"
-               + (f" × pass rate {latest.pass_rate:.0%}" if latest else "  (no eval yet — run `calibrate eval`)"))
+    typer.secho(f"Calibration Confidence: {pct(conf)}", bold=True)
+    typer.echo(f"  coverage {pct(cov.coverage_rate)}"
+               + (f" × pass rate {pct(latest.pass_rate)}" if latest else "  (no eval yet — run `calibrate eval`)"))
     typer.secho(f"✓ Report → {out}", fg=typer.colors.GREEN)
     if html:
         from .report import render_html_report, save_html_report
@@ -1315,7 +1316,7 @@ def train_engine_cmd(
                         fg=typer.colors.YELLOW)
             raise typer.Exit(code=1)
         typer.secho(
-            f"agreement: {proof.agreement:.0%} over {proof.samples} sample(s) (threshold {threshold:.0%})",
+            f"agreement: {pct(proof.agreement)} over {proof.samples} sample(s) (threshold {threshold:.0%})",
             fg=typer.colors.GREEN if proof.passes else typer.colors.YELLOW, bold=True,
         )
         if proof.passes:
@@ -1481,7 +1482,7 @@ def finetune(
 
         base_card, cand_card = _card(baseline), _card(candidate)
         win = beats_baseline(base_card, cand_card)
-        typer.echo(f"baseline [{baseline}]: {base_card.pass_rate:.0%}    candidate [{candidate}]: {cand_card.pass_rate:.0%}")
+        typer.echo(f"baseline [{baseline}]: {pct(base_card.pass_rate)}    candidate [{candidate}]: {pct(cand_card.pass_rate)}")
         if win:
             typer.secho("✓ ACCEPT — the fine-tune beats the configured baseline. Keep it.", fg=typer.colors.GREEN)
         else:

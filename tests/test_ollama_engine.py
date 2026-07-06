@@ -14,17 +14,21 @@ from calibrator.engines.ollama import OllamaEngine
 
 
 class FakeResp:
-    def __init__(self, data=None, ok=True):
+    def __init__(self, data=None, ok=True, status=500, raw=None):
         self._data = {} if data is None else data
         self._ok = ok
+        self._status = status
+        self.text = raw if raw is not None else ""
 
     def raise_for_status(self):
         if not self._ok:
             raise httpx.HTTPStatusError(
-                "500", request=httpx.Request("POST", "http://localhost:11434/api/chat"),
-                response=httpx.Response(500))
+                str(self._status), request=httpx.Request("POST", "http://localhost:11434/api/chat"),
+                response=httpx.Response(self._status, text=self.text))
 
     def json(self):
+        if self.text and self._data == {}:
+            raise ValueError("Expecting value: line 1 column 1 (char 0)")
         return self._data
 
 
@@ -73,9 +77,35 @@ def test_non_dict_message_is_clear_error(monkeypatch):
         OllamaEngine("gemma").complete("hi")
 
 
-def test_http_error_propagates(monkeypatch):
-    _patch(monkeypatch, FakeResp(ok=False))
-    with pytest.raises(httpx.HTTPStatusError):
+def test_http_errors_are_friendly_not_raw(monkeypatch):
+    """Audit finding: 4xx/5xx surfaced as raw httpx.HTTPStatusError (and the old
+    version of this test ENSHRINED that). Every status must be a RuntimeError
+    with an actionable message."""
+    for status, expect in [(404, "ollama pull"), (401, "authentication"),
+                           (429, "HTTP 429"), (500, "internal error"), (529, "HTTP 529")]:
+        _patch(monkeypatch, FakeResp(ok=False, status=status))
+        with pytest.raises(RuntimeError, match=expect):
+            OllamaEngine("gemma").complete("hi")
+
+
+def test_timeout_is_friendly(monkeypatch):
+    _patch(monkeypatch, exc=httpx.ReadTimeout("timed out"))
+    with pytest.raises(RuntimeError, match="did not respond within"):
+        OllamaEngine("gemma").complete("hi")
+    _patch(monkeypatch, exc=httpx.ConnectTimeout("timed out"))
+    with pytest.raises(RuntimeError, match="did not respond within"):
+        OllamaEngine("gemma").complete("hi")
+
+
+def test_invalid_json_body_is_friendly(monkeypatch):
+    _patch(monkeypatch, FakeResp(raw="<html>gateway error</html>"))
+    with pytest.raises(RuntimeError, match="invalid JSON"):
+        OllamaEngine("gemma").complete("hi")
+
+
+def test_other_transport_errors_are_friendly(monkeypatch):
+    _patch(monkeypatch, exc=httpx.RemoteProtocolError("connection torn down"))
+    with pytest.raises(RuntimeError, match="request .* failed"):
         OllamaEngine("gemma").complete("hi")
 
 

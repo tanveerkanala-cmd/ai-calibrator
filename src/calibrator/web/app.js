@@ -170,11 +170,11 @@ async function runEval(name, refine) {
   const res = await api("POST", `/projects/${name}/eval`, { refine, rounds: 3, threshold: 0.8 });
   const p = $("#panel");
   const last = res.rounds[res.rounds.length - 1];
-  const pct = Math.round(last.pass_rate * 100);
-  const rounds = res.rounds.map((r, i) => `round ${i + 1} [${r.run_id}]: ${Math.round(r.pass_rate * 100)}%`).join("<br>");
+  const width = Math.round(last.pass_rate * 100);  // bar width only — the NUMBER is honest
+  const rounds = res.rounds.map((r, i) => `round ${i + 1} [${r.run_id}]: ${pctText(r.pass_rate)}`).join("<br>");
   p.insertAdjacentHTML("beforeend",
-    `<div class="card"><strong>Eval</strong><div class="bar"><span style="width:${pct}%"></span></div>` +
-    `<p>Final pass rate: <b>${pct}%</b></p><p class="muted">${rounds}</p></div>`);
+    `<div class="card"><strong>Eval</strong><div class="bar"><span style="width:${width}%"></span></div>` +
+    `<p>Final pass rate: <b>${pctText(last.pass_rate)}</b></p><p class="muted">${rounds}</p></div>`);
 }
 
 // --- M4+ analysis & tuning views -------------------------------------------
@@ -187,7 +187,23 @@ function resultCard(title) {
   return card;
 }
 
-const pctText = (x) => `${Math.round((x || 0) * 100)}%`;
+// Honest percent (mirrors calibrator/fmt.py): never "100%" unless exactly 1,
+// never "0%" unless exactly 0 — 249/250 must not render as a perfect score.
+function pctText(x) {
+  x = x || 0;
+  if (x === 0) return "0%";
+  if (x === 1) return "100%";
+  const r = Math.round(x * 100);
+  if (r >= 100) return ">99%";
+  if (r <= 0) return "<1%";
+  return `${r}%`;
+}
+
+function pctDelta(x) {
+  if (!x) return "±0%";
+  const s = `${x > 0 ? "+" : "-"}${Math.abs(x * 100).toFixed(1)}%`;
+  return s === "+0.0%" || s === "-0.0%" ? (x > 0 ? "+<0.1%" : "-<0.1%") : s;
+}
 
 async function showCoverage(name) {
   const d = await api("GET", `/projects/${name}/coverage`);
@@ -201,9 +217,9 @@ async function showCoverage(name) {
 async function showReport(name) {
   const d = await api("GET", `/projects/${name}/report`);
   const card = resultCard("Calibration report");
-  const pct = Math.round((d.confidence || 0) * 100);
+  const width = Math.round((d.confidence || 0) * 100);
   card.insertAdjacentHTML("beforeend",
-    `<div class="bar"><span style="width:${pct}%"></span></div><p>Calibration Confidence: <b>${pct}%</b></p>`);
+    `<div class="bar"><span style="width:${width}%"></span></div><p>Calibration Confidence: <b>${pctText(d.confidence)}</b></p>`);
   const pre = document.createElement("pre");
   pre.style.whiteSpace = "pre-wrap";
   pre.textContent = d.markdown;
@@ -240,7 +256,7 @@ async function showDrift(name) {
   card.insertAdjacentHTML("beforeend", `<p class="muted">re-evaluating…</p>`);
   const d = await api("POST", `/projects/${name}/drift`, {});
   card.innerHTML = `<strong>Drift</strong>` +
-    `<p>${escapeHtml(d.baseline_run)}: ${pctText(d.baseline_rate)} → ${escapeHtml(d.candidate_run)}: ${pctText(d.candidate_rate)} (Δ ${pctText(d.delta)})</p>` +
+    `<p>${escapeHtml(d.baseline_run)}: ${pctText(d.baseline_rate)} → ${escapeHtml(d.candidate_run)}: ${pctText(d.candidate_rate)} (Δ ${pctDelta(d.delta)})</p>` +
     (d.regressed_tests.length ? `<div class="why">✗ regressed: ${d.regressed_tests.map(escapeHtml).join(", ")}</div>` : "") +
     (d.fixed_tests.length ? `<div class="why">✓ improved: ${d.fixed_tests.map(escapeHtml).join(", ")}</div>` : "") +
     (d.regressed ? `<p><b>⚠ Drift detected.</b></p>` : `<p>✓ No drift.</p>`);
