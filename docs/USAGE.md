@@ -79,6 +79,10 @@ ollama serve
 ```
 No API key, no per-use cost, fully private. Comfortable on a 12 GB+ GPU.
 
+On a slower machine (or a busy shared model) a big extraction can exceed the
+default 120s request timeout — raise it with `CALIBRATOR_OLLAMA_TIMEOUT=300`
+(seconds) in the environment.
+
 > You can **mix** engines per role — e.g. Claude for the interviewer, a cheap
 > local model for the judge. (A per-role CLI command is 🔜; for now set bindings
 > in `project.yaml` — see §5.)

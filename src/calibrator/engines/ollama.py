@@ -7,11 +7,29 @@ top, so a flaky local model degrades gracefully instead of erroring.
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import httpx
 
 from .base import Engine, call_json
+
+DEFAULT_TIMEOUT = 120.0
+
+
+def _default_timeout() -> float:
+    """Env-overridable: a slow machine (or a busy shared model) can need more
+    than 120s for a big extraction — without a knob the user is simply blocked.
+    Set CALIBRATOR_OLLAMA_TIMEOUT (seconds)."""
+    raw = os.getenv("CALIBRATOR_OLLAMA_TIMEOUT")
+    if raw:
+        try:
+            value = float(raw)
+            if value > 0:
+                return value
+        except ValueError:
+            pass  # ignore junk; fall through to the default
+    return DEFAULT_TIMEOUT
 
 
 class OllamaEngine(Engine):
@@ -19,12 +37,12 @@ class OllamaEngine(Engine):
         self,
         model: str,
         host: str = "http://localhost:11434",
-        timeout: float = 120.0,
+        timeout: float | None = None,
     ) -> None:
         self.name = f"{model}@ollama"
         self.model = model
         self.host = host.rstrip("/")
-        self.timeout = timeout
+        self.timeout = timeout if timeout is not None else _default_timeout()
 
     def complete(
         self,

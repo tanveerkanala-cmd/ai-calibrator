@@ -113,3 +113,16 @@ def test_schema_with_unparseable_output_retries_then_raises(monkeypatch):
     _patch(monkeypatch, FakeResp({"message": {"content": "not json at all"}}))
     with pytest.raises(RuntimeError, match="invalid JSON"):
         OllamaEngine("gemma").complete("hi", schema={"type": "object"})
+
+
+def test_timeout_env_override(monkeypatch):
+    """Journey finding: 120s was hardcoded — a slow machine had no knob."""
+    monkeypatch.delenv("CALIBRATOR_OLLAMA_TIMEOUT", raising=False)
+    assert OllamaEngine("m").timeout == 120.0
+    monkeypatch.setenv("CALIBRATOR_OLLAMA_TIMEOUT", "420")
+    assert OllamaEngine("m").timeout == 420.0
+    monkeypatch.setenv("CALIBRATOR_OLLAMA_TIMEOUT", "junk")
+    assert OllamaEngine("m").timeout == 120.0          # junk → default, never crash
+    monkeypatch.setenv("CALIBRATOR_OLLAMA_TIMEOUT", "-5")
+    assert OllamaEngine("m").timeout == 120.0
+    assert OllamaEngine("m", timeout=7.0).timeout == 7.0  # explicit arg still wins
