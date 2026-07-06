@@ -79,10 +79,19 @@ def test_openai_empty_choices_is_friendly(monkeypatch):
                 def create(**kw):
                     return FakeResp()
 
-    eng = OpenAIEngine.__new__(OpenAIEngine)
-    eng.model = "gpt-x"; eng.name = "gpt-x@openai"; eng._client = FakeClient()
-    with pytest.raises(RuntimeError, match="no choices"):
-        eng._chat([{"role": "user", "content": "hi"}])
+    for bad_choices in ([], None, 42, {"x": 1}):   # empty, None, non-subscriptable, dict
+        class R:
+            choices = bad_choices
+
+        class Client:
+            class chat:
+                class completions:
+                    create = staticmethod(lambda **kw: R())
+
+        eng = OpenAIEngine.__new__(OpenAIEngine)
+        eng.model = "gpt-x"; eng.name = "gpt-x@openai"; eng._client = Client()
+        with pytest.raises(RuntimeError, match="no usable choices"):
+            eng._chat([{"role": "user", "content": "hi"}])
 
 
 # #17 — human ground truth overrides a logged row even when the log had no system msg
@@ -172,3 +181,29 @@ def test_openai_sdk_errors_are_friendly(monkeypatch):
         with pytest.raises(RuntimeError) as ei:
             eng._chat([{"role": "user", "content": "hi"}])
         assert expect in str(ei.value)
+
+
+# Regression: O_EXCL gitignore write failure must not leave a 0-byte file that
+# blocks the next retry (found by auditing the round-19 fix itself).
+def test_gitignore_write_failure_leaves_no_stub(tmp_path, monkeypatch):
+    import os as _os
+
+    from calibrator import store
+
+    real_fdopen = _os.fdopen
+
+    def boom(fd, *a, **k):
+        fh = real_fdopen(fd, *a, **k)
+        def failing(_):
+            raise OSError("disk full")
+        fh.write = failing
+        return fh
+
+    monkeypatch.setattr(store.os, "fdopen", boom)
+    with pytest.raises(OSError):
+        store.write_project_gitignore(tmp_path)
+    assert not (tmp_path / ".gitignore").exists()   # no 0-byte stub left behind
+
+    monkeypatch.undo()
+    store.write_project_gitignore(tmp_path)          # retry now succeeds
+    assert "evals/" in (tmp_path / ".gitignore").read_text()

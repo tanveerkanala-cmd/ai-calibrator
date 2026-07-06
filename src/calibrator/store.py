@@ -195,6 +195,12 @@ def write_project_gitignore(path: str | Path) -> Path:
         fd = os.open(str(target), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
     except FileExistsError:
         return target  # already present — leave the user's version untouched
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(PROJECT_GITIGNORE)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(PROJECT_GITIGNORE)
+    except OSError:
+        # A write failure after the create left a 0-byte file — remove it so the
+        # next call isn't blocked by the O_EXCL check into a permanent empty file.
+        target.unlink(missing_ok=True)
+        raise
     return target

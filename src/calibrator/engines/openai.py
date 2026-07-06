@@ -82,9 +82,11 @@ class OpenAIEngine(Engine):
             raise
         try:
             message = resp.choices[0].message
-        except (IndexError, AttributeError) as exc:
+        except (IndexError, AttributeError, TypeError, KeyError) as exc:
+            # TypeError/KeyError too: choices may be None or a non-list on a
+            # malformed (or OpenAI-compatible) response, not just empty/missing.
             raise RuntimeError(
-                f"OpenAI returned no choices for {self.name} (empty or malformed response)."
+                f"OpenAI returned no usable choices for {self.name} (empty or malformed response)."
             ) from exc
         refusal = getattr(message, "refusal", None)
         if refusal:
