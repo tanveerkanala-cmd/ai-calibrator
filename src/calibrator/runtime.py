@@ -28,6 +28,7 @@ parameters.
 """
 
 import json
+from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -39,7 +40,8 @@ from .eval import conversation_prompt
 from .models import Project
 from .store import load_project
 
-MAX_CHAT_CHARS = 200_000  # total message content cap — protects the engine
+MAX_CHAT_CHARS = 200_000   # total message content cap — protects the engine
+RECENT_COMPLETIONS = 512   # how many completions stay addressable by id for /v1/feedback
 
 
 def _now() -> int:
@@ -104,13 +106,21 @@ def create_ai_app(project_dir: str | Path, *, engine: Engine | None = None, guar
     status, detail = certification_status(project, directory)
 
     app = FastAPI(title=f"{project.name} — calibrated AI", docs_url=None, redoc_url=None)
+    # id → {"turns": [user turns], "output": answer}; lets /v1/feedback reference
+    # a completion by id (the flywheel's capture point).
+    recent: OrderedDict[str, dict] = OrderedDict()
+
+    def _remember(cid: str, turns: list[str], output: str) -> None:
+        recent[cid] = {"turns": turns, "output": output}
+        while len(recent) > RECENT_COMPLETIONS:
+            recent.popitem(last=False)
 
     @app.get("/")
     def root():
         """The endpoint self-describes its certification."""
         return {"name": project.name, "goal": project.goal, "engine": engine.name,
                 "certification": status, "detail": detail, "guard": guard,
-                "openai_base_url": "/v1"}
+                "openai_base_url": "/v1", "feedback": "POST /v1/feedback"}
 
     @app.get("/v1/models")
     def models():
@@ -158,7 +168,11 @@ def create_ai_app(project_dir: str | Path, *, engine: Engine | None = None, guar
         except Exception as exc:  # engine failure → OpenAI-style 502, not a traceback
             raise HTTPException(502, f"engine error: {exc}")
 
-        created, cid = _now(), f"chatcmpl-{project.name}-{_now()}"
+        created = _now()
+        cid = f"chatcmpl-{project.name}-{created}-{len(recent)}"
+        user_turns = [m["content"] for m in body.get("messages", [])
+                      if isinstance(m, dict) and m.get("role") == "user" and is_str(m.get("content"))]
+        _remember(cid, user_turns, content)
         if body.get("stream"):
             # The engine interface is non-streaming; emit valid SSE chunks so
             # streaming clients (most chat UIs) work unchanged.
@@ -192,5 +206,49 @@ def create_ai_app(project_dir: str | Path, *, engine: Engine | None = None, guar
                       "completion_tokens": max(1, len(content) // 4),
                       "total_tokens": max(2, (prompt_chars + len(content)) // 4)},
         }
+
+    @app.post("/v1/feedback")
+    async def feedback(request: Request):
+        """The flywheel's capture point: thumbs-up / thumbs-down on a live answer.
+
+        Reference a completion by ``completion_id`` (from /v1/chat/completions),
+        or pass ``input``/``turns`` + ``output`` explicitly. ``verdict`` is
+        ``up`` | ``down``; a ``correction`` (what the answer SHOULD have been)
+        and a ``reason`` are welcome on downs. `calibrate absorb` turns these
+        into spec examples + pinned regression tests."""
+        from .flywheel import append_feedback
+
+        try:
+            body = await request.json()
+        except ValueError:
+            raise HTTPException(400, "request body must be JSON")
+        if not isinstance(body, dict):
+            raise HTTPException(400, "request body must be a JSON object")
+        verdict = body.get("verdict")
+        if verdict not in ("up", "down"):
+            raise HTTPException(400, "verdict must be 'up' or 'down'")
+
+        cid = body.get("completion_id")
+        if is_str(cid) and cid:
+            known = recent.get(cid)
+            if known is None:
+                raise HTTPException(404, "unknown or expired completion_id — "
+                                         "pass `input` (or `turns`) and `output` explicitly")
+            turns, output = known["turns"], known["output"]
+        else:
+            output = as_str(body.get("output"))
+            raw = body.get("turns") if isinstance(body.get("turns"), list) else [body.get("input")]
+            turns = [t for t in raw if is_str(t) and t.strip()]
+            if not turns or not output.strip():
+                raise HTTPException(400, "pass a completion_id, or `input` (or `turns`) and `output`")
+
+        correction, reason = body.get("correction"), body.get("reason")
+        append_feedback(directory, {
+            "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "turns": turns, "output": output, "verdict": verdict,
+            "correction": correction if is_str(correction) else None,
+            "reason": reason if is_str(reason) else None,
+        })
+        return {"recorded": True, "next": "run `calibrate absorb` to pin this into the spec + tests"}
 
     return app

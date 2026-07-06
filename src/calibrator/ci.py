@@ -163,11 +163,21 @@ def ci_dict(result: CiResult) -> dict:
 # --- the persisted gate record (what `calibrate run` boots against) ----------
 
 def config_hash(project: Project) -> str:
-    """Fingerprint of what a gate certifies: the compiled system prompt + the
-    subject binding. If either changes, a previous certification is STALE."""
+    """Fingerprint of what a gate certifies: the compiled system prompt, the
+    subject binding, the grading contract (criteria + checks + weights), and the
+    test suite. If ANY of it changes — including new tests absorbed from live
+    feedback — a previous certification is STALE and must be re-earned."""
     if project.spec is None:
         return ""
-    material = render_system_prompt(project.spec) + "\n@@subject=" + project.engines.subject
+    criteria = [{"id": c.id, "description": c.description, "weight": c.weight.value,
+                 "check": {"kind": c.check.kind, "value": c.check.value} if c.check else None}
+                for c in project.spec.eval_criteria]
+    tests = [{"id": t.id, "input": t.input, "expects": t.expects, "follow_ups": t.follow_ups}
+             for t in sorted(project.tests, key=lambda t: t.id)]
+    material = (render_system_prompt(project.spec)
+                + "\n@@subject=" + project.engines.subject
+                + "\n@@criteria=" + json.dumps(criteria, sort_keys=True, ensure_ascii=False)
+                + "\n@@tests=" + json.dumps(tests, sort_keys=True, ensure_ascii=False))
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 

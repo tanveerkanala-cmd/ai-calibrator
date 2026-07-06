@@ -421,6 +421,20 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
                 raise HTTPException(400, str(exc))
         return rightsize_dict(report)
 
+    @app.post("/api/projects/{name}/absorb")
+    def absorb_(name: str):
+        from .compile import write_build_bundle
+        from .flywheel import absorb_dict, absorb_feedback
+        with _locked(name) as d:
+            project = _load(name)
+            result = absorb_feedback(project, d)
+            save_project(project, d)
+            if project.spec is not None and project.tests:
+                write_build_bundle(project.spec, project.tests, d)
+        out = absorb_dict(result)
+        out["state"] = _state(project)
+        return out
+
     @app.post("/api/projects/{name}/examples-to-tests")
     def examples_to_tests_(name: str):
         from .compile import tests_from_examples, write_build_bundle

@@ -598,6 +598,35 @@ def run(
     uvicorn.run(application, host=host, port=port, log_level="warning")
 
 
+@app.command()
+def absorb(path: Path = typer.Argument(Path("."), help="Project directory.")) -> None:
+    """Close the flywheel: fold live feedback (from `calibrate run`) into examples + pinned tests. (no engine)"""
+    from .compile import write_build_bundle
+    from .flywheel import absorb_feedback
+
+    with project_lock(path):
+        project = _load(path)
+        result = absorb_feedback(project, path)
+        if result.ups + result.downs + result.skipped == 0:
+            typer.secho("No live feedback to absorb yet.", fg=typer.colors.YELLOW)
+            typer.echo("  `calibrate run` records it: POST /v1/feedback "
+                       '{"completion_id": "...", "verdict": "down", "correction": "..."}')
+            raise typer.Exit(code=0)
+        save_project(project, path)
+        if project.spec is not None and project.tests:
+            write_build_bundle(project.spec, project.tests, path)
+
+    typer.secho(f"✓ Absorbed {result.ups + result.downs} feedback record(s): "
+                f"{result.ups} up / {result.downs} down.", fg=typer.colors.GREEN)
+    typer.echo(f"  examples added: {result.examples_added}   pinned tests added: {result.tests_added}"
+               + (f" ({', '.join(result.test_ids)})" if result.test_ids else "")
+               + (f"   skipped: {result.skipped}" if result.skipped else ""))
+    if result.tests_added or result.examples_added:
+        typer.secho("The AI just learned from real use — its certification is now stale.",
+                    fg=typer.colors.YELLOW)
+        typer.echo("Run `calibrate ci` to re-certify against the suite that now includes it.")
+
+
 @app.command(name="add-check")
 def add_check(
     path: Path = typer.Argument(..., help="Project directory."),

@@ -608,3 +608,21 @@ def test_badge_and_certification_endpoints(tmp_path):
     cert = c.get("/api/projects/p/certification").json()
     assert cert["status"] == "none" and cert["gate"] is None
     assert c.get("/api/projects/nope/badge").status_code == 404
+
+
+def test_absorb_endpoint(tmp_path):
+    from calibrator.flywheel import append_feedback
+
+    c = _client(tmp_path)
+    proj = Project(name="p", goal="g")
+    proj.spec = BehaviorSpec(goal="g", eval_criteria=[EvalCriterion(id="c1", description="d", weight=Weight.HIGH)])
+    save_project(proj, tmp_path / "p")
+    append_feedback(tmp_path / "p", {"turns": ["q"], "output": "a", "verdict": "down"})
+
+    r = c.post("/api/projects/p/absorb")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["downs"] == 1 and body["tests_added"] == 1 and body["state"]["tests"] == 1
+
+    # idempotent: nothing left to absorb
+    assert c.post("/api/projects/p/absorb").json()["tests_added"] == 0

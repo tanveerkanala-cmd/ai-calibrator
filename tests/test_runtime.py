@@ -166,3 +166,59 @@ def test_encode_messages_contract():
     with pytest.raises(ValueError):
         encode_messages([{"role": "assistant", "content": "a"}])
     assert encode_messages([{"role": "user", "content": "hi"}]) == "User: hi\nAssistant:"
+
+
+def test_feedback_by_completion_id_and_explicit(tmp_path):
+    """The flywheel capture point: feedback lands durably in logs/feedback.jsonl."""
+    from calibrator.flywheel import read_feedback
+
+    _seed(tmp_path)
+    c = _client(tmp_path, RecordingEngine(["Any time!"]))
+    cid = c.post("/v1/chat/completions", json={"messages": [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+        {"role": "user", "content": "return after 40 days?"}]}).json()["id"]
+
+    r = c.post("/v1/feedback", json={"completion_id": cid, "verdict": "down",
+                                     "correction": "No — 30 days.", "reason": "wrong"})
+    assert r.status_code == 200 and r.json()["recorded"] is True
+    rec = read_feedback(tmp_path)[0]
+    assert rec["turns"] == ["hi", "return after 40 days?"]     # user turns only
+    assert rec["output"] == "Any time!" and rec["correction"] == "No — 30 days."
+
+    # explicit body (no id needed — e.g. after a server restart)
+    r2 = c.post("/v1/feedback", json={"input": "q", "output": "a", "verdict": "up"})
+    assert r2.status_code == 200
+    assert read_feedback(tmp_path)[1]["turns"] == ["q"]
+
+    # friendly failures
+    assert c.post("/v1/feedback", json={"completion_id": "nope", "verdict": "down"}).status_code == 404
+    assert c.post("/v1/feedback", json={"input": "q", "output": "a", "verdict": "meh"}).status_code == 400
+    assert c.post("/v1/feedback", json={"verdict": "down"}).status_code == 400
+
+
+def test_flywheel_end_to_end_chat_feedback_absorb(tmp_path):
+    """use → flag → absorb → pinned: the full loop, and certification goes stale."""
+    from calibrator.ci import certification_status, save_gate, CiResult, CiStage
+    from calibrator.flywheel import absorb_feedback
+    from calibrator.store import load_project
+
+    p = _seed(tmp_path)
+    # fake a passing gate for the CURRENT config so we can watch it go stale
+    save_gate(p, CiResult(stages=[CiStage("lint", "pass", "")], run_id="run-0001",
+                          pass_rate=1.0, weighted_score=1.0), tmp_path)
+    assert certification_status(p, tmp_path)[0] == "pass"
+
+    c = _client(tmp_path, RecordingEngine(["Sure, any time!"]))
+    cid = c.post("/v1/chat/completions",
+                 json={"messages": [{"role": "user", "content": "return after 40 days?"}]}).json()["id"]
+    c.post("/v1/feedback", json={"completion_id": cid, "verdict": "down",
+                                 "correction": "No — the window is 30 days."})
+
+    project = load_project(tmp_path)
+    result = absorb_feedback(project, tmp_path)
+    assert result.tests_added == 1 and result.examples_added == 1
+    assert project.tests[-1].input == "return after 40 days?"
+    assert project.spec.examples[-1].good_output == "No — the window is 30 days."
+    # the AI learned something → its old certification no longer applies
+    assert certification_status(project, tmp_path)[0] == "stale"

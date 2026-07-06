@@ -318,6 +318,36 @@ authority). Flags: `--host` (default `127.0.0.1`; no auth — keep it local),
 `--port` (default `8600`), `--guard`, `--force`. Streaming (`"stream": true`)
 is supported, so standard chat UIs work unchanged.
 
+### The flywheel: `POST /v1/feedback` + `calibrate absorb`
+
+The runtime is also the capture point for **learning from real use**. Thumbs-up
+or thumbs-down any live answer:
+
+```bash
+curl -s http://127.0.0.1:8600/v1/feedback -H "Content-Type: application/json" -d '{
+  "completion_id": "chatcmpl-…",          # from the completion response
+  "verdict": "down",                       # or "up"
+  "correction": "No — the window is 30 days.",
+  "reason": "invented policy"
+}'
+```
+(or pass `"input"`/`"turns"` + `"output"` explicitly, e.g. after a restart).
+Feedback lands durably in `logs/feedback.jsonl`. Then:
+
+```bash
+calibrate absorb    # (no engine)
+```
+
+folds every record into the project: the exchange becomes a spec **example**
+(down → `bad_output`, with your correction as `good_output`; up → `good_output`)
+— the same asset that feeds fine-tuning — and the conversation becomes a
+**pinned regression test** (`fb_1`, `fb_2`, …; multi-turn feedback keeps its
+follow-ups), so the exact exchange someone flagged can never silently regress.
+Absorbing changes the certification fingerprint, so the gate goes **stale**
+until `calibrate ci` re-proves the AI against the suite that now includes what
+it just learned. Use → flag → absorb → re-certify: the AI gets measurably more
+reliable the more it's used, with receipts.
+
 ---
 
 ## 4b. Drive it from the web UI (instead of the CLI)

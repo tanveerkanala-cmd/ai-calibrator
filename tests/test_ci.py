@@ -179,3 +179,21 @@ def test_gate_file_does_not_confuse_run_listing(tmp_path):
     p = _project()
     run_ci(p, Subject("GOOD"), Judge(), project_dir=tmp_path)
     assert latest_run_id(tmp_path) == "run-0001"
+
+
+def test_certification_stales_when_tests_or_checks_change(tmp_path):
+    """config_hash covers the grading contract + suite, not just the prompt."""
+    from calibrator.ci import certification_status
+    from calibrator.models import Check
+
+    p = _project()
+    run_ci(p, Subject("GOOD"), Judge(), project_dir=tmp_path)
+    assert certification_status(p, tmp_path)[0] == "pass"
+
+    p.tests.append(CaseModel(id="fb_1", input="new pinned test"))     # new test → stale
+    assert certification_status(p, tmp_path)[0] == "stale"
+    p.tests.pop()
+    assert certification_status(p, tmp_path)[0] == "pass"
+
+    p.spec.eval_criteria[0].check = Check(kind="contains", value="x")  # grading change → stale
+    assert certification_status(p, tmp_path)[0] == "stale"
