@@ -144,7 +144,6 @@ def test_help_survives_ascii_and_cp1252_terminals():
 
 def test_snapshot_on_corrupt_scorecard_is_friendly(tmp_path):
     """Audit #5: snapshot loaded the scorecard with no error handling."""
-    import os
     d = tmp_path / "p"
     d.mkdir()
     (d / "project.yaml").write_text("name: p\ngoal: g\n")

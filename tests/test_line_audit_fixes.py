@@ -89,7 +89,7 @@ def test_openai_empty_choices_is_friendly(monkeypatch):
 def test_ground_truth_overrides_systemless_logged_row(tmp_path):
     import json
 
-    from calibrator.eval import JUDGE_SYSTEM, judge_prompt, save_scorecard
+    from calibrator.eval import judge_prompt, save_scorecard
     from calibrator.judge_check import save_labels
     from calibrator.models import CriterionResult, Scorecard, TestResult
     from calibrator.store import save_project
@@ -140,3 +140,35 @@ def test_ingest_cap_is_respected():
     docs = [(Path(f"f{i}.md"), "x" * 50) for i in range(20)]
     out = _join_capped(docs, cap=200)
     assert len(out) <= 200
+
+
+# OpenAI adapter: raw SDK errors (auth/404/rate/timeout) → friendly RuntimeError.
+# Found by a LIVE run against the real API; tested here with a fake SDK (no key).
+def test_openai_sdk_errors_are_friendly(monkeypatch):
+    openai = pytest.importorskip("openai")
+    from calibrator.engines.openai import OpenAIEngine
+
+    def _raiser(exc):
+        class C:
+            class chat:
+                class completions:
+                    @staticmethod
+                    def create(**kw):
+                        raise exc
+        return C()
+
+    def mk(cls):
+        # Build a real SDK exception instance; fall back to __new__ for
+        # constructor-signature stability across openai SDK versions.
+        try:
+            return cls("x", response=None, body=None)
+        except Exception:
+            return cls.__new__(cls)
+
+    for cls, expect in [(openai.NotFoundError, "404"), (openai.AuthenticationError, "401"),
+                        (openai.PermissionDeniedError, "403"), (openai.RateLimitError, "429")]:
+        eng = OpenAIEngine.__new__(OpenAIEngine)
+        eng.model = "gpt-x"; eng.name = "gpt-x@openai"; eng._client = _raiser(mk(cls))
+        with pytest.raises(RuntimeError) as ei:
+            eng._chat([{"role": "user", "content": "hi"}])
+        assert expect in str(ei.value)

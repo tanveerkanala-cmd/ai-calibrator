@@ -14,6 +14,34 @@ from typing import Any
 from .base import Engine, call_json
 
 
+def _friendly_openai_error(name: str, model: str, exc: Exception) -> RuntimeError | None:
+    """Map a raw openai-SDK exception to an actionable RuntimeError, or None if
+    it is not an OpenAI API error (then the caller re-raises the original).
+
+    Confirmed live: a wrong key / typo'd model otherwise surfaced a raw
+    openai.NotFoundError / AuthenticationError traceback — same class of gap the
+    Ollama adapter closed."""
+    import openai
+    if isinstance(exc, openai.AuthenticationError):
+        return RuntimeError(f"OpenAI rejected the API key (401) for {name}. "
+                            "Check OPENAI_API_KEY (https://platform.openai.com/api-keys).")
+    if isinstance(exc, openai.PermissionDeniedError):
+        return RuntimeError(f"OpenAI denied access (403) to {model!r} for {name}.")
+    if isinstance(exc, openai.NotFoundError):
+        return RuntimeError(f"OpenAI has no model {model!r} (404), or your key lacks access to it.")
+    if isinstance(exc, openai.RateLimitError):
+        return RuntimeError(f"OpenAI rate limit or quota hit (429) for {name} — "
+                            "slow down or check your plan/billing.")
+    if isinstance(exc, openai.APITimeoutError):
+        return RuntimeError(f"OpenAI request timed out for {name} — the API may be slow; retry.")
+    if isinstance(exc, openai.APIConnectionError):
+        return RuntimeError(f"Could not reach OpenAI for {name} (network/endpoint issue): {exc}")
+    if isinstance(exc, openai.APIError):
+        status = getattr(exc, "status_code", "?")
+        return RuntimeError(f"OpenAI API error ({status}) for {name}: {getattr(exc, 'message', exc)}")
+    return None
+
+
 class OpenAIEngine(Engine):
     def __init__(self, model: str, api_key: str | None = None, base_url: str | None = None) -> None:
         try:
@@ -45,7 +73,13 @@ class OpenAIEngine(Engine):
         # the chat and reasoning model families.
         if response_format is not None:
             kwargs["response_format"] = response_format
-        resp = self._client.chat.completions.create(**kwargs)
+        try:
+            resp = self._client.chat.completions.create(**kwargs)
+        except Exception as exc:  # map raw SDK errors (auth/404/rate/timeout/conn) to friendly
+            friendly = _friendly_openai_error(self.name, self.model, exc)
+            if friendly is not None:
+                raise friendly from exc
+            raise
         try:
             message = resp.choices[0].message
         except (IndexError, AttributeError) as exc:
