@@ -70,8 +70,18 @@ function renderPanel(s) {
 
   const h = document.createElement("h2");
   h.textContent = s.name;
+  const cert = document.createElement("span");
+  cert.className = "pill";
+  cert.textContent = "… certification";
+  h.appendChild(document.createTextNode(" "));
+  h.appendChild(cert);
   p.appendChild(h);
   p.insertAdjacentHTML("beforeend", `<p class="muted">${escapeHtml(s.goal)}</p>`);
+  api("GET", `/projects/${name}/certification`).then((c) => {
+    const marks = { pass: "✓ certified", fail: "✗ gate failing", stale: "⚠ stale — re-run ci", none: "· ungated" };
+    cert.textContent = marks[c.status] || c.status;
+    cert.title = c.detail || "";
+  }).catch(() => { cert.textContent = ""; });
 
   // pipeline progress pills
   const done = {
@@ -110,6 +120,7 @@ function renderPanel(s) {
   tools.appendChild(stepButton("Red-team", () => showRedteam(name), !done.spec));
   tools.appendChild(stepButton("Rightsize", () => showRightsize(name), !done.tests));
   tools.appendChild(stepButton("Drift", () => showDrift(name), !done.tests));
+  tools.appendChild(stepButton("Try & flag", () => startFlywheel(name, s.name), !done.spec));
   p.appendChild(tools);
 
   if (s.gaps.length) {
@@ -270,6 +281,107 @@ async function startTeach(name, projName) {
     selectProject(projName);
   });
   card.appendChild(learn);
+}
+
+// --- the flywheel: try the calibrated AI, thumb its answers, absorb ---------
+
+async function startFlywheel(name, projName) {
+  const card = resultCard("Try & flag (flywheel)");
+  card.insertAdjacentHTML("beforeend",
+    `<p class="muted">Ask your calibrated AI, thumb the answer; absorb turns flags into
+     examples + pinned tests (the certification then goes stale until re-proven).</p>`);
+
+  const pendingLine = document.createElement("p");
+  pendingLine.className = "muted";
+  card.appendChild(pendingLine);
+  const absorbBtn = document.createElement("button");
+  absorbBtn.textContent = "Absorb into spec & tests";
+  absorbBtn.onclick = () => action(async () => {
+    const r = await api("POST", `/projects/${name}/absorb`);
+    banner(`Absorbed ${r.ups + r.downs} record(s): +${r.examples_added} example(s), ` +
+           `+${r.tests_added} pinned test(s)${r.tests_added ? " — re-run Eval/ci to re-certify" : ""}.`);
+    selectProject(projName);
+  });
+  card.appendChild(absorbBtn);
+
+  const refreshPending = () => api("GET", `/projects/${name}/feedback`).then((d) => {
+    pendingLine.textContent = d.pending
+      ? `${d.pending} feedback record(s) waiting to be absorbed.`
+      : "No feedback waiting.";
+    absorbBtn.disabled = !d.pending;
+  }).catch(() => {});
+  refreshPending();
+
+  const ask = document.createElement("div");
+  ask.className = "q";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.placeholder = "ask your AI something…";
+  input.style.width = "70%";
+  const go = document.createElement("button");
+  go.textContent = "Ask";
+  ask.appendChild(input);
+  ask.appendChild(go);
+  card.appendChild(ask);
+  const answers = document.createElement("div");
+  card.appendChild(answers);
+
+  go.onclick = () => action(async () => {
+    const message = input.value.trim();
+    if (!message) return;
+    go.disabled = true;
+    go.textContent = "asking…";
+    try {
+      const d = await api("POST", `/projects/${name}/try`, { message });
+      renderExchange(answers, name, d, refreshPending);
+    } finally {
+      go.disabled = false;
+      go.textContent = "Ask";
+    }
+  });
+}
+
+function renderExchange(container, name, d, refreshPending) {
+  const q = document.createElement("div");
+  q.className = "q";
+  q.style.margin = "0.8rem 0";
+  q.innerHTML = `<div class="dim">YOU</div><div>${escapeHtml(d.turns[d.turns.length - 1])}</div>` +
+                `<div class="dim">AI</div><div>${escapeHtml(d.output)}</div>`;
+  const up = document.createElement("button");
+  up.textContent = "👍";
+  const down = document.createElement("button");
+  down.textContent = "👎";
+  const detail = document.createElement("div");
+  q.appendChild(up);
+  q.appendChild(down);
+  q.appendChild(detail);
+  container.prepend(q);
+
+  const send = (verdict, correction, reason) => action(async () => {
+    await api("POST", `/projects/${name}/feedback`,
+              { turns: d.turns, output: d.output, verdict, correction, reason });
+    up.disabled = down.disabled = true;
+    detail.innerHTML = `<div class="why">recorded ${verdict === "up" ? "👍" : "👎"} — absorb when ready</div>`;
+    refreshPending();
+  });
+
+  up.onclick = () => send("up", null, null);
+  down.onclick = () => {
+    detail.innerHTML = "";
+    const corr = document.createElement("input");
+    corr.type = "text";
+    corr.placeholder = "what SHOULD it have said? (optional)";
+    corr.style.width = "60%";
+    const why = document.createElement("input");
+    why.type = "text";
+    why.placeholder = "why? (optional)";
+    const ok = document.createElement("button");
+    ok.textContent = "Send 👎";
+    ok.onclick = () => send("down", corr.value || null, why.value || null);
+    detail.appendChild(corr);
+    detail.appendChild(why);
+    detail.appendChild(ok);
+  };
 }
 
 function escapeHtml(s) {

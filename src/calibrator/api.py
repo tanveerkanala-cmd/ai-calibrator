@@ -128,6 +128,18 @@ class CiBody(BaseModel):
     baseline: str | None = None
 
 
+class TryBody(BaseModel):
+    message: str = Field(..., min_length=1, max_length=100_000)
+
+
+class FeedbackBody(BaseModel):
+    turns: list[str] = Field(..., min_length=1)
+    output: str = Field(..., min_length=1)
+    verdict: str  # "up" | "down" (validated in the endpoint for a friendly 400)
+    correction: str | None = None
+    reason: str | None = None
+
+
 def _engine_factory():
     """Dependency: returns the engine builder (overridable in tests)."""
     from .engines import get_engine
@@ -420,6 +432,52 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             except Exception as exc:
                 raise HTTPException(400, str(exc))
         return rightsize_dict(report)
+
+    @app.post("/api/projects/{name}/try")
+    def try_(name: str, body: TryBody, make_engine=Depends(_engine_factory)):
+        """One exchange with the calibrated AI (subject engine + compiled prompt) —
+        the workbench's 'Try & flag' box. Same encoding as the runtime/eval."""
+        from .compile import render_system_prompt
+        from .eval import conversation_prompt
+        project = _load(name)
+        if project.spec is None:
+            raise HTTPException(400, "compile first")
+        try:
+            subject = make_engine(project.engines.subject)
+            output = str(subject.complete(conversation_prompt([], body.message),
+                                          system=render_system_prompt(project.spec)) or "").strip()
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(400, str(exc))
+        return {"turns": [body.message], "output": output}
+
+    @app.post("/api/projects/{name}/feedback")
+    def feedback_(name: str, body: FeedbackBody):
+        """Record thumbs-up/down from the workbench (same inbox the runtime feeds)."""
+        from datetime import datetime, timezone
+
+        from .flywheel import append_feedback, read_feedback
+        _load(name)
+        if body.verdict not in ("up", "down"):
+            raise HTTPException(400, "verdict must be 'up' or 'down'")
+        turns = [t for t in body.turns if isinstance(t, str) and t.strip()]
+        if not turns or not body.output.strip():
+            raise HTTPException(400, "turns and output must be non-empty")
+        d = _dir(name)
+        append_feedback(d, {
+            "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "turns": turns, "output": body.output, "verdict": body.verdict,
+            "correction": body.correction, "reason": body.reason,
+        })
+        return {"recorded": True, "pending": len(read_feedback(d))}
+
+    @app.get("/api/projects/{name}/feedback")
+    def feedback_pending_(name: str):
+        from .flywheel import read_feedback
+        _load(name)
+        records = read_feedback(_dir(name))
+        return {"pending": len(records), "records": records}
 
     @app.post("/api/projects/{name}/absorb")
     def absorb_(name: str):

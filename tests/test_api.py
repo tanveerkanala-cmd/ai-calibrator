@@ -626,3 +626,46 @@ def test_absorb_endpoint(tmp_path):
 
     # idempotent: nothing left to absorb
     assert c.post("/api/projects/p/absorb").json()["tests_added"] == 0
+
+
+def test_try_and_feedback_endpoints(tmp_path):
+    """The workbench flywheel: try → thumbs → pending → absorb."""
+
+    class Subject:
+        name = "fake@test"
+
+        def __init__(self, spec):
+            self.spec = spec
+
+        def complete(self, prompt, *, system=None, schema=None):
+            assert prompt == "User: how long?\nAssistant:"       # runtime/eval encoding
+            assert system and "30-day" in system                 # compiled spec is the system prompt
+            return "30 days."
+
+    app = create_app(tmp_path)
+    app.dependency_overrides[_engine_factory] = lambda: (lambda spec: Subject(spec))
+    c = TestClient(app)
+
+    proj = Project(name="p", goal="g")
+    proj.spec = BehaviorSpec(goal="g", standards=["Always cite the 30-day window."],
+                             eval_criteria=[EvalCriterion(id="c1", description="d", weight=Weight.HIGH)])
+    save_project(proj, tmp_path / "p")
+
+    r = c.post("/api/projects/p/try", json={"message": "how long?"})
+    assert r.status_code == 200 and r.json() == {"turns": ["how long?"], "output": "30 days."}
+
+    fb = c.post("/api/projects/p/feedback", json={
+        "turns": ["how long?"], "output": "30 days.", "verdict": "down",
+        "correction": "30 days, unworn only.", "reason": "missing condition"})
+    assert fb.status_code == 200 and fb.json() == {"recorded": True, "pending": 1}
+    assert c.get("/api/projects/p/feedback").json()["pending"] == 1
+
+    # validation is friendly
+    assert c.post("/api/projects/p/feedback", json={"turns": ["q"], "output": "a", "verdict": "meh"}).status_code == 400
+    assert c.post("/api/projects/p/feedback", json={"turns": ["  "], "output": "a", "verdict": "up"}).status_code == 400
+    assert c.post("/api/projects/p/try", json={"message": ""}).status_code == 422
+
+    # absorb drains the same inbox
+    r2 = c.post("/api/projects/p/absorb").json()
+    assert r2["downs"] == 1 and r2["tests_added"] == 1
+    assert c.get("/api/projects/p/feedback").json()["pending"] == 0
