@@ -216,3 +216,27 @@ def test_criteria_reordering_does_not_stale_certification(tmp_path):
     p.spec.eval_criteria[0].description = "changed"      # content change → stale
     assert certification_status(p, tmp_path)[0] == "stale"
     assert config_hash(p) != ""
+
+
+def test_config_hash_ignores_list_reordering(tmp_path):
+    """Audit round 18: reordering standards/do_not/edge_cases (or criteria) in the
+    YAML must NOT stale a certification — only real content changes do."""
+    from calibrator.ci import config_hash
+    from calibrator.models import EdgeCase
+
+    p = _project()
+    p.spec.standards = ["Always cite the policy number.", "Be warm and concise."]
+    p.spec.do_not = ["Never promise exceptions.", "Never invent a policy."]
+    p.spec.edge_cases = [EdgeCase(situation="used item", ruling="30 days if defective"),
+                         EdgeCase(situation="gift", ruling="store credit")]
+    p.spec.eval_criteria.append(EvalCriterion(id="c2", description="d2", weight=Weight.LOW))
+    base = config_hash(p)
+
+    p.spec.standards.reverse()
+    p.spec.do_not.reverse()
+    p.spec.edge_cases.reverse()
+    p.spec.eval_criteria.reverse()
+    assert config_hash(p) == base                       # pure reorder → same fingerprint
+
+    p.spec.standards[0] = "Always cite the policy number AND the fee."
+    assert config_hash(p) != base                       # real edit → different

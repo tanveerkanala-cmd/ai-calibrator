@@ -13,6 +13,29 @@ detected rather than silently coerced.
 
 from __future__ import annotations
 
+import re
+
+# A model id / output-dir token safe to bake into a GENERATED file that later
+# runs — train.py / run.py (Python), a Modelfile, README/shell lines. Restricting
+# to this charset means the value cannot carry a quote, semicolon, backslash,
+# backtick, dollar, space, or newline, so it can't break out of a string literal,
+# a comment, or a shell command in any of those templates. Covers real ids:
+# "Qwen/Qwen2.5-7B-Instruct", "gemma4:e4b", "mistralai/Mistral-7B-Instruct-v0.3".
+_SAFE_TOKEN = re.compile(r"^[A-Za-z0-9._:/-]+$")
+
+
+def safe_token(value: str, field: str) -> str:
+    """Return ``value`` if it is a plain model/path token, else raise ValueError.
+
+    Guards the code/template generators (finetune, train-engine, export) against
+    injection via a hand-edited engine binding or a crafted ``--base``."""
+    if not isinstance(value, str) or not _SAFE_TOKEN.fullmatch(value):
+        raise ValueError(
+            f"{field} must be a plain model/path token (letters, digits, and . _ - : /); "
+            f"got {value!r}"
+        )
+    return value
+
 
 def is_str(value: object) -> bool:
     """True only for a non-blank string — used to gate required string fields."""

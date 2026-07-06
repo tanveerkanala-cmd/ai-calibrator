@@ -176,6 +176,10 @@ def export_engine_bundle(project_dir: str | Path, role: str, *, base_model: str 
     For the judge role, human judge-check labels become ground-truth rows: they
     are added to the dataset, and any logged (imitation) row asking the exact
     same question is dropped in favor of the human answer."""
+    # role becomes a directory component — gate it to the known roles so no caller
+    # (Core included) can traverse out of trained-engines/ with e.g. "../../x".
+    if role not in TRAINABLE_ROLES:
+        raise ValueError(f"role must be one of: {', '.join(sorted(TRAINABLE_ROLES))} (got {role!r})")
     rows = assemble_role_dataset(project_dir, role)
     human: list[dict] = human_judge_rows(project_dir) if role == "judge" else []
     if human:

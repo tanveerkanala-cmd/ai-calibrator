@@ -18,6 +18,7 @@ from pathlib import Path
 
 import yaml
 
+from .coerce import safe_token
 from .compile import render_system_prompt
 from .models import Project, Scorecard
 from .store import atomic_write_text
@@ -108,7 +109,9 @@ def assemble_dataset(project: Project) -> list[dict]:
 
 
 def recommend_recipe(n_examples: int, *, base_model: str | None = None) -> dict:
-    base = base_model or DEFAULT_BASE
+    # base_model comes from `--base` (or a hand-edited binding) and gets baked
+    # into the generated, later-executed train.py — validate it can't inject.
+    base = safe_token(base_model or DEFAULT_BASE, "base model")
     return {
         "method": "lora",
         "base_model": base,

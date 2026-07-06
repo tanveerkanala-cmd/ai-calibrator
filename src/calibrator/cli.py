@@ -1333,7 +1333,11 @@ def train_engine_cmd(
             fg=typer.colors.YELLOW,
         )
         raise typer.Exit(code=1)
-    result = export_engine_bundle(path, role, base_model=base)
+    try:
+        result = export_engine_bundle(path, role, base_model=base)
+    except ValueError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED)
+        raise typer.Exit(code=1)
     typer.secho(
         f"✓ Engine-training bundle → {result.bundle_dir}/  "
         f"({result.examples} example(s) on {result.base_model})",
@@ -1362,7 +1366,11 @@ def export(
         typer.secho("Nothing to export — run `calibrate compile` first.", fg=typer.colors.YELLOW)
         raise typer.Exit(code=1)
 
-    result = export_bundle(project, project_dir=path, name=name)
+    try:
+        result = export_bundle(project, project_dir=path, name=name)
+    except ValueError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED)
+        raise typer.Exit(code=1)
     typer.secho(f"✓ Exported calibrated AI → {result.bundle_dir}/", fg=typer.colors.GREEN)
     for f in result.files:
         typer.echo(f"    {f}")
@@ -1495,7 +1503,11 @@ def finetune(
         raise typer.Exit(code=1)
 
     from .finetune import export_finetune
-    result = export_finetune(project, project_dir=path, base_model=base)
+    try:
+        result = export_finetune(project, project_dir=path, base_model=base)
+    except ValueError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED)
+        raise typer.Exit(code=1)
     if result.examples == 0:
         typer.secho(
             "⚠ No training examples yet. The Advanced tier needs human-authored / "

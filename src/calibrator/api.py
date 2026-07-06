@@ -311,7 +311,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         with _locked(name) as d:
             project = _load(name)
             if not project.gaps:
-                raise HTTPException(400, "no gaps — ingest first")
+                raise HTTPException(400, "No gaps yet — run `calibrate ingest` first.")
             try:
                 engine = make_engine(project.engines.interviewer)
                 project.interview = generate_questions(project, engine)
@@ -339,7 +339,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         with _locked(name) as d:
             project = _load(name)
             if not any(it.answer for it in project.interview):
-                raise HTTPException(400, "answer the interview first")
+                raise HTTPException(400, "No interview answers yet — run `calibrate interview` first.")
             try:
                 engine = make_engine(project.engines.compiler)
                 result = compile_project(project, engine, project_dir=d)
@@ -356,7 +356,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         with _locked(name) as d:
             project = _load(name)
             if project.spec is None or not project.tests:
-                raise HTTPException(400, "compile first")
+                raise HTTPException(400, "Nothing here yet — run `calibrate compile` (or `import`) first.")
             log_on = project.log_interactions
             try:
                 subject = make_engine(project.engines.subject)
@@ -392,7 +392,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         with _locked(name) as d:
             project = _load(name)
             if project.spec is None or not project.tests:
-                raise HTTPException(400, "compile first")
+                raise HTTPException(400, "Nothing here yet — run `calibrate compile` (or `import`) first.")
             try:
                 # factories: engines resolve only after the lint stage passes
                 subject = lambda: make_engine(project.engines.subject)  # noqa: E731
@@ -412,8 +412,11 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         from .export import export_bundle
         project = _load(name)
         if project.spec is None:
-            raise HTTPException(400, "compile first")
-        result = export_bundle(project, project_dir=_dir(name))
+            raise HTTPException(400, "Nothing here yet — run `calibrate compile` (or `import`) first.")
+        try:
+            result = export_bundle(project, project_dir=_dir(name))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
         return {"bundle_dir": result.bundle_dir, "name": result.name,
                 "base_model": result.base_model, "files": result.files}
 
@@ -423,7 +426,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         with _locked(name) as d:
             project = _load(name)
             if project.spec is None or not project.tests:
-                raise HTTPException(400, "compile first")
+                raise HTTPException(400, "Nothing here yet — run `calibrate compile` (or `import`) first.")
             specs = body.models or list(DEFAULT_LADDER)
             try:
                 judge = make_engine(project.engines.judge)
@@ -443,7 +446,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         from .eval import conversation_prompt
         project = _load(name)
         if project.spec is None:
-            raise HTTPException(400, "compile first")
+            raise HTTPException(400, "Nothing here yet — run `calibrate compile` (or `import`) first.")
         try:
             subject = make_engine(project.engines.subject)
             output = str(subject.complete(conversation_prompt([], body.message),
@@ -501,7 +504,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         with _locked(name) as d:
             project = _load(name)
             if project.spec is None:
-                raise HTTPException(400, "compile first")
+                raise HTTPException(400, "Nothing here yet — run `calibrate compile` (or `import`) first.")
             new = tests_from_examples(project.spec, project.tests)
             project.tests.extend(new)
             save_project(project, d)
@@ -513,7 +516,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         from .interop import to_promptfoo
         project = _load(name)
         if project.spec is None or not project.tests:
-            raise HTTPException(400, "compile first")
+            raise HTTPException(400, "Nothing here yet — run `calibrate compile` (or `import`) first.")
         return {"config": to_promptfoo(project)}
 
     @app.get("/api/projects/{name}/judge-check")
@@ -581,7 +584,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         from .lint import lint_dict, lint_spec, lint_unknown_fields
         project = _load(name)
         if project.spec is None:
-            raise HTTPException(400, "compile first")
+            raise HTTPException(400, "Nothing here yet — run `calibrate compile` (or `import`) first.")
         report = lint_spec(project.spec, project.tests)
         report.issues.extend(lint_unknown_fields(project))
         return lint_dict(report)
@@ -591,7 +594,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         from .coverage import analyze_coverage, coverage_dict
         project = _load(name)
         if project.spec is None:
-            raise HTTPException(400, "compile first")
+            raise HTTPException(400, "Nothing here yet — run `calibrate compile` (or `import`) first.")
         return coverage_dict(analyze_coverage(project.spec, project.tests))
 
     @app.get("/api/projects/{name}/badge")
@@ -618,7 +621,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         from .report import render_report, report_dict
         project = _load(name)
         if project.spec is None:
-            raise HTTPException(400, "compile first")
+            raise HTTPException(400, "Nothing here yet — run `calibrate compile` (or `import`) first.")
         cov = analyze_coverage(project.spec, project.tests)
         latest = None
         rid = latest_run_id(_dir(name))
@@ -636,7 +639,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         with _locked(name) as d:
             project = _load(name)
             if project.spec is None or not project.tests:
-                raise HTTPException(400, "compile first")
+                raise HTTPException(400, "Nothing here yet — run `calibrate compile` (or `import`) first.")
             base_id = body.baseline or latest_run_id(d)
             if not base_id:
                 raise HTTPException(400, "no baseline scorecard — run eval first")
@@ -661,7 +664,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         with _locked(name) as d:
             project = _load(name)
             if project.spec is None:
-                raise HTTPException(400, "compile first")
+                raise HTTPException(400, "Nothing here yet — run `calibrate compile` (or `import`) first.")
             try:
                 generator = make_engine(project.engines.compiler)
                 subject = make_engine(project.engines.subject)
@@ -811,7 +814,10 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             raise HTTPException(404, f"no project {name!r}")
         if not read_log(d, role):
             raise HTTPException(400, f"no logged {role} decisions — enable logging and run eval first")
-        result = export_engine_bundle(d, role)
+        try:
+            result = export_engine_bundle(d, role)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
         return {"role": result.role, "examples": result.examples,
                 "base_model": result.base_model, "bundle_dir": result.bundle_dir, "files": result.files}
 

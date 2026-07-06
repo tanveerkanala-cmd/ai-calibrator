@@ -150,6 +150,11 @@ def parse_engine_spec(spec: str) -> tuple[str, str]:
 def get_engine(spec: str) -> Engine:
     """Build an Engine from a ``model@provider`` spec."""
     model, provider = parse_engine_spec(spec)
+    if not model:
+        raise ValueError(
+            f"Invalid engine spec {spec!r}: no model name. "
+            "Use `model@provider` (e.g. `claude-opus-4-8@anthropic`) or just `model` for local Ollama."
+        )
     if provider == "ollama":
         from .ollama import OllamaEngine
         return OllamaEngine(model)
@@ -159,4 +164,7 @@ def get_engine(spec: str) -> Engine:
     if provider == "openai":
         from .openai import OpenAIEngine
         return OpenAIEngine(model)
-    raise ValueError(f"Unknown engine provider: {provider!r}")
+    raise ValueError(
+        f"Unknown engine provider {provider!r} in {spec!r}. "
+        "Valid providers: anthropic, openai, ollama."
+    )

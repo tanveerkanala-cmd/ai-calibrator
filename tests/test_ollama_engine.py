@@ -126,3 +126,12 @@ def test_timeout_env_override(monkeypatch):
     monkeypatch.setenv("CALIBRATOR_OLLAMA_TIMEOUT", "-5")
     assert OllamaEngine("m").timeout == 120.0
     assert OllamaEngine("m", timeout=7.0).timeout == 7.0  # explicit arg still wins
+
+
+def test_engine_spec_errors_are_actionable():
+    from calibrator.engines.base import get_engine
+    import pytest as _pytest
+    with _pytest.raises(ValueError, match="Valid providers: anthropic, openai, ollama"):
+        get_engine("some-model@bogus")
+    with _pytest.raises(ValueError, match="no model name"):
+        get_engine("@ollama")
