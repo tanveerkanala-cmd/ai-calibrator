@@ -101,3 +101,20 @@ def test_apply_learned_coerces_non_string_judged_fields():
     assert exs[0].input == "" and exs[0].good_output == ""   # 123 / 456 → ""
     assert exs[1].input == "" and exs[1].bad_output == ""     # None / list → ""
     assert exs[1].why is None                                 # non-string reason → None
+
+
+def test_apply_learned_dedups_within_batch_and_across_lists():
+    """Audit: the same sentence must never land in both standards and do_not,
+    and within-batch duplicates collapse to one."""
+    from calibrator.models import BehaviorSpec
+    from calibrator.teach import apply_learned
+
+    project = Project(name="p", goal="g")
+    project.spec = BehaviorSpec(goal="g", do_not=["CONFLICT"])
+    result = apply_learned(project, [], {
+        "standards": ["CONFLICT", "NEW", "NEW"],       # cross-list + within-batch dupe
+        "do_not": ["NEW", "NEVER", "NEVER"],           # 'NEW' already claimed by standards
+    })
+    assert project.spec.standards == ["NEW"]
+    assert project.spec.do_not == ["CONFLICT", "NEVER"]
+    assert result.standards == ["NEW"] and result.do_not == ["NEVER"]

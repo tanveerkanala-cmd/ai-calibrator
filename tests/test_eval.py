@@ -313,3 +313,22 @@ def test_judge_consensus_even_split_is_not_a_majority():
     cr = card.results[0].criteria[0]
     assert cr.passed is False            # pass/fail tie → not a majority → fail
     assert cr.confidence == 0.5
+
+
+def test_refine_loop_never_duplicates_standards():
+    """Audit: a refiner proposing the same standard every round (or twice in one
+    batch, or one that already exists as a never-rule) must not bloat the spec."""
+    class RepeatingRefiner:
+        name = "r@test"
+
+        def complete(self, prompt, *, system=None, schema=None):
+            return {"new_standards": ["SAME_STD", "SAME_STD", "ALREADY_A_NEVER_RULE"]}
+
+    project = _project()
+    project.spec.do_not = ["ALREADY_A_NEVER_RULE"]
+    cards = calibrate_loop(project, RefineAwareSubject(), PassJudge(), RepeatingRefiner(),
+                           threshold=1.0, max_rounds=4, project_dir=None)
+    assert project.spec.standards.count("SAME_STD") == 1          # once, ever
+    assert "ALREADY_A_NEVER_RULE" not in project.spec.standards   # cross-list guard
+    # round 2's refine returns nothing NEW → the loop stops instead of spinning
+    assert len(cards) == 2

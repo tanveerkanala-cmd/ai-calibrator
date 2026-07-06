@@ -8,6 +8,7 @@ print what they'll do and which milestone delivers them.
 from __future__ import annotations
 
 import math
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -497,7 +498,7 @@ def ci(
     baseline: Optional[str] = typer.Option(None, "--baseline", help="Run id to drift against (default: previous run)."),
     as_json: bool = typer.Option(False, "--json", help="Print a machine-readable JSON result."),
 ) -> None:
-    """The whole gate in one command: lint → eval → drift → snapshot.
+    """The whole gate in one command: lint -> eval -> drift -> snapshot.
 
     Exit codes: 0 = gate passed, 1 = couldn't gate (spec/engine problems), 2 = the AI failed the gate.
     """
@@ -1516,6 +1517,14 @@ def finetune(
 
 
 def main() -> None:
+    # A limited terminal encoding (ascii / cp1252 console) must degrade glyphs
+    # (✓ ⚠ →) to '?', never crash — Rich's --help rendering raised a raw
+    # UnicodeEncodeError otherwise. (audit: locale robustness)
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, OSError):  # non-reconfigurable stream (tests, pipes)
+            pass
     app()
 
 

@@ -51,7 +51,17 @@ def refine_spec(project: Project, scorecard: Scorecard, engine: Engine) -> list[
         "Propose additional standards to fix them."
     )
     out = require_object(engine.complete(prompt, system=_REFINE_SYSTEM, schema=REFINE_SCHEMA), "refiner")
-    return [s for s in as_list(out.get("new_standards")) if isinstance(s, str) and s.strip()]
+    # Dedup within the batch AND against the spec (both lists): a refiner that
+    # proposes the same standard every round otherwise bloats the spec without
+    # bound, and a "standard" that already exists as a never-rule would put the
+    # same sentence on both sides of the contract. (audit: refine loops)
+    existing = set(project.spec.standards) | set(project.spec.do_not) if project.spec else set()
+    fresh: list[str] = []
+    for s in as_list(out.get("new_standards")):
+        if isinstance(s, str) and s.strip() and s not in existing:
+            existing.add(s)
+            fresh.append(s)
+    return fresh
 
 
 def calibrate_loop(
@@ -94,9 +104,9 @@ def calibrate_loop(
 
         if card.pass_rate >= threshold or rnd == max_rounds:
             break
-        new_standards = refine_spec(project, card, refiner)
+        new_standards = refine_spec(project, card, refiner)  # deduped vs the spec
         if not new_standards:
-            break
+            break  # nothing NEW to add — more rounds would just repeat themselves
         # Update the source of truth; the next round re-renders the system prompt.
         project.spec.standards.extend(new_standards)
 

@@ -138,8 +138,20 @@ def apply_learned(project: Project, judged: list[Judged], learned: dict) -> Lear
         project.spec = BehaviorSpec(goal=project.goal, task_type=project.task_type)
     spec = project.spec
 
-    new_standards = [s for s in as_list(learned.get("standards")) if is_str(s) and s not in spec.standards]
-    new_do_not = [s for s in as_list(learned.get("do_not")) if is_str(s) and s not in spec.do_not]
+    # Dedup within each incoming batch AND across BOTH lists: the same sentence
+    # must never sit in standards and do_not at once (a self-contradiction the
+    # spec would then render on both sides). First list to claim a rule wins.
+    taken = set(spec.standards) | set(spec.do_not)
+    new_standards: list[str] = []
+    for s in as_list(learned.get("standards")):
+        if is_str(s) and s not in taken:
+            taken.add(s)
+            new_standards.append(s)
+    new_do_not: list[str] = []
+    for s in as_list(learned.get("do_not")):
+        if is_str(s) and s not in taken:
+            taken.add(s)
+            new_do_not.append(s)
     spec.standards.extend(new_standards)
     spec.do_not.extend(new_do_not)
 

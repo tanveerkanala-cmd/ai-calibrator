@@ -122,3 +122,21 @@ def test_init_writes_gitignore_and_honest_engines_line(tmp_path):
 def test_init_rejects_overlong_name():
     r = runner.invoke(app, ["init", "a" * 1000, "--goal", "g"])
     assert r.exit_code == 1 and "too long" in r.output and _has_no_traceback(r.output)
+
+
+def test_help_survives_ascii_and_cp1252_terminals():
+    """Audit: `calibrate --help` crashed with UnicodeEncodeError under limited
+    encodings (Rich rendering the → glyph). Glyphs must degrade, never crash."""
+    import os
+    import subprocess
+    import sys
+
+    for enc in ("ascii", "cp1252"):
+        env = {**os.environ, "PYTHONIOENCODING": enc}
+        r = subprocess.run(
+            [sys.executable, "-c",
+             "import sys; sys.argv=['calibrate','--help']; from calibrator.cli import main; main()"],
+            env=env, capture_output=True, timeout=60)  # bytes: the child writes in `enc`
+        stderr = r.stderr.decode(enc, errors="replace")
+        assert r.returncode == 0, f"{enc}: {stderr[-300:]}"
+        assert "UnicodeEncodeError" not in stderr
