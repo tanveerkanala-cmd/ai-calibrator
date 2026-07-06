@@ -669,3 +669,12 @@ def test_try_and_feedback_endpoints(tmp_path):
     r2 = c.post("/api/projects/p/absorb").json()
     assert r2["downs"] == 1 and r2["tests_added"] == 1
     assert c.get("/api/projects/p/feedback").json()["pending"] == 0
+
+
+def test_overlong_project_name_is_400_not_500(tmp_path):
+    """Audit finding: a >255-char name passed _safe() and blew up in mkdir (OSError→500)."""
+    c = _client(tmp_path)
+    r = c.post("/api/projects", json={"name": "a" * 1000, "goal": "g"})
+    assert r.status_code == 400 and "too long" in r.json()["detail"]
+    # and every routed endpoint rejects it the same way (name is the routing key)
+    assert c.get(f"/api/projects/{'a' * 1000}").status_code == 400

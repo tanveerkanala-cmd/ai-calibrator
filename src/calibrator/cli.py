@@ -59,6 +59,9 @@ def init(
     if not name or not name.strip():
         typer.secho("Project name must not be empty.", fg=typer.colors.RED)
         raise typer.Exit(code=1)
+    if len(name.strip()) > 120:
+        typer.secho("Project name too long (max 120 characters).", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
     if path is None:
         p = Path(name)
         if p.is_absolute() or len(p.parts) != 1 or p.parts[0] in ("..", "."):

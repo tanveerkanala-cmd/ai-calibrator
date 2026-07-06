@@ -117,3 +117,8 @@ def test_init_writes_gitignore_and_honest_engines_line(tmp_path):
     assert "evals/" in gi and ".env" in gi and "*.key" in gi
     assert "all roles" not in r.output          # the misleading phrasing is gone
     assert "(judge)" in r.output and "(subject)" in r.output
+
+
+def test_init_rejects_overlong_name():
+    r = runner.invoke(app, ["init", "a" * 1000, "--goal", "g"])
+    assert r.exit_code == 1 and "too long" in r.output and _has_no_traceback(r.output)

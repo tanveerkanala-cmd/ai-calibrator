@@ -256,3 +256,14 @@ def test_eval_endpoint_rejects_bad_controls_with_422(tmp_path, body):
     client.post("/api/projects", json={"name": "p", "goal": "g"})
     # Body validation happens before the handler runs → clean 422, not a 500.
     assert client.post("/api/projects/p/eval", json=body).status_code == 422
+
+
+def test_project_name_length_cap():
+    import pytest as _pytest
+    from pydantic import ValidationError
+
+    from calibrator.models import Project
+
+    Project(name="a" * 120, goal="g")           # at the cap: fine
+    with _pytest.raises(ValidationError):
+        Project(name="a" * 121, goal="g")       # over: clear error, not a later OSError

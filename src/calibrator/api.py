@@ -178,6 +178,8 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         s = "".join(c for c in name if c.isalnum() or c in "-_ ").strip()
         if not s:
             raise HTTPException(400, "invalid project name")
+        if len(s) > 120:  # names become directory names — filesystems cap ~255 bytes
+            raise HTTPException(400, "project name too long (max 120 characters)")
         return s
 
     def _dir(name: str) -> Path:

@@ -238,6 +238,10 @@ class Project(PreservingModel):
     def _nonempty_name(cls, v: str) -> str:
         if not isinstance(v, str) or not v.strip():
             raise ValueError("project name must be a non-empty string")
+        if len(v.strip()) > 120:
+            # the name becomes a directory name; filesystems cap components at
+            # ~255 bytes — fail here with a clear message, not an OSError later
+            raise ValueError("project name too long (max 120 characters)")
         return v
     materials: list[Material] = Field(default_factory=list)
     facts: list[str] = Field(default_factory=list)
