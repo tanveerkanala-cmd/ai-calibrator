@@ -67,7 +67,7 @@ class FileLock:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         # O_CREAT so the first caller materializes the lock file; the descriptor
         # stays open for the whole critical section and carries the lock.
-        self._fd = os.open(str(self.path), os.O_RDWR | os.O_CREAT, 0o644)
+        self._fd = os.open(str(self.path), os.O_RDWR | os.O_CREAT, 0o600)
         try:
             if _BACKEND == "fcntl":
                 fcntl.flock(self._fd, fcntl.LOCK_EX)

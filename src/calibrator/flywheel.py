@@ -39,10 +39,11 @@ def append_feedback(project_dir: str | Path, record: dict) -> None:
     it (under the same lock, via the CLI/API), so an unserialized append landing
     in that read→truncate window would be silently DESTROYED. The lock closes
     the window; appends simply wait out an in-flight absorb (milliseconds)."""
+    from .store import open_private_append
     with project_lock(project_dir):
         d = Path(project_dir) / "logs"
-        d.mkdir(parents=True, exist_ok=True)
-        with (d / FEEDBACK_FILE).open("a", encoding="utf-8") as fh:
+        d.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with open_private_append(d / FEEDBACK_FILE) as fh:  # 0600 — holds user queries
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 

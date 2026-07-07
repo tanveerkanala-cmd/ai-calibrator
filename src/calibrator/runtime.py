@@ -108,10 +108,11 @@ def _guard_checks(project: Project) -> list[tuple[str, object]]:
 
 
 def _log_guard(project_dir: Path, record: dict) -> None:
+    from .store import open_private_append
     try:
         d = project_dir / "logs"
-        d.mkdir(exist_ok=True)
-        with (d / "guard.jsonl").open("a", encoding="utf-8") as fh:
+        d.mkdir(exist_ok=True, mode=0o700)
+        with open_private_append(d / "guard.jsonl") as fh:  # 0600 — holds live answers
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
     except OSError:  # guarding must never take the endpoint down
         pass

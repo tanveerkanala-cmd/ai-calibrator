@@ -42,11 +42,12 @@ class LoggingEngine(Engine):
         return out
 
     def _record(self, prompt: str, system: str | None, schema: dict | None, output: Any) -> None:
-        self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        from .store import open_private_append
+        self.log_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         record = {"role": self.role, "system": system, "prompt": prompt,
                   "schema": schema, "output": output}
         line = json.dumps(record, default=str)
-        with self.log_path.open("a", encoding="utf-8") as fh:
+        with open_private_append(self.log_path) as fh:  # 0600 — logs hold prompts/outputs
             fh.write(line + "\n")
 
 

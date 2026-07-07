@@ -32,8 +32,13 @@ def _as_int(value: str) -> int | None:
 
 def run_check(check: Check, output: str) -> tuple[bool, str]:
     """Grade ``output`` against a deterministic ``check`` → (passed, rationale)."""
-    text = output or ""
-    kind, value = check.kind, check.value
+    import unicodedata
+    # NFC-normalize both sides so a "contains"/"not_contains" check can't be
+    # bypassed by emitting a different Unicode normalization of the same glyph
+    # (e.g. composed vs decomposed "é") — the check must be truly deterministic.
+    text = unicodedata.normalize("NFC", output or "")
+    kind = check.kind
+    value = unicodedata.normalize("NFC", check.value)
 
     if kind == "contains":
         ok = value.lower() in text.lower()

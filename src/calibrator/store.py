@@ -48,6 +48,16 @@ def project_lock(path: str | Path) -> FileLock:
     return FileLock(directory / LOCK_FILE)
 
 
+def open_private_append(path: str | Path):
+    """Open a file for appending, created owner-only (0600) — for local logs that
+    may hold system prompts / model outputs / user queries, which must not be
+    world-readable on a multi-user box (CWE-732). ``os.open`` sets perms only at
+    creation; umask can remove bits but never add them, so 0600 caps at owner rw.
+    Caller should ``mkdir(..., mode=0o700)`` the containing dir."""
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    return os.fdopen(fd, "a", encoding="utf-8")
+
+
 def atomic_write_text(path: str | Path, text: str) -> Path:
     """Write ``text`` to ``path`` atomically (unique temp + fsync + replace).
 
