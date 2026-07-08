@@ -171,3 +171,49 @@ def test_rightsize_grades_with_rag_when_indexed(tmp_path):
 
     rightsize(p, ["m@ollama"], J(), lambda s: Spy(s), project_dir=tmp_path)
     assert any(s and "RETRIEVED KNOWLEDGE" in s and "30 days" in s for s in seen)   # RAG applied
+
+
+def test_redteam_and_teach_and_try_use_rag_when_indexed(tmp_path):
+    """The 'test/probe/show what you deploy' class: redteam, teach, and the API
+    /try must all augment with retrieved knowledge when an index exists."""
+    import pytest
+    pytest.importorskip("lancedb")
+    pytest.importorskip("sentence_transformers")
+    from calibrator import rag
+    from calibrator.models import BehaviorSpec, EvalCriterion, Project, Weight
+    from calibrator.redteam import run_redteam
+    from calibrator.teach import propose_candidates
+
+    rag.build_index(tmp_path, [{"id": "c1", "text": "The return window is 30 days.", "source": "p.md"}])
+    p = Project(name="p", goal="answer returns")
+    p.spec = BehaviorSpec(goal="g", knowledge_sources=["p.md"],
+                          do_not=["never reveal internal notes"],   # a rule → redteam has something to probe
+                          eval_criteria=[EvalCriterion(id="c1", description="d", weight=Weight.HIGH)])
+
+    seen = []
+
+    class Spy:
+        name = "spy@t"
+        def complete(self, prompt, *, system=None, schema=None):
+            seen.append(system); return "ok"
+
+    class Gen:
+        name = "gen@t"
+        def complete(self, prompt, *, system=None, schema=None):
+            return {"probes": [{"input": "how long to return?", "target": "policy", "tactic": "direct"}],
+                    "inputs": ["how long to return?"]}
+
+    class J:
+        name = "j@t"
+        def complete(self, prompt, *, system=None, schema=None):
+            return {"violated": False, "severity": "low", "rationale": "fine"}
+
+    # redteam
+    seen.clear()
+    run_redteam(p, Gen(), Spy(), J(), project_dir=tmp_path, max_probes=1)
+    assert any(s and "RETRIEVED KNOWLEDGE" in s and "30 days" in s for s in seen), "redteam not RAG-augmented"
+
+    # teach
+    seen.clear()
+    propose_candidates(p, Gen(), Spy(), n=1, project_dir=tmp_path)
+    assert any(s and "RETRIEVED KNOWLEDGE" in s for s in seen), "teach not RAG-augmented"

@@ -1204,7 +1204,7 @@ def teach(
 
         typer.echo(f"Generating {n} sample output(s) to judge (subject={subject.name}) …")
         try:
-            candidates = propose_candidates(project, generator, subject, n=n)
+            candidates = propose_candidates(project, generator, subject, n=n, project_dir=path)
         except Exception as exc:
             typer.secho(f"Could not generate candidates: {exc}", fg=typer.colors.RED)
             raise typer.Exit(code=1)

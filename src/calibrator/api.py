@@ -457,6 +457,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
     def try_(name: str, body: TryBody, make_engine=Depends(_engine_factory)):
         """One exchange with the calibrated AI (subject engine + compiled prompt) —
         the workbench's 'Try & flag' box. Same encoding as the runtime/eval."""
+        from . import rag
         from .compile import render_system_prompt
         from .eval import conversation_prompt
         project = _load(name)
@@ -464,8 +465,11 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             raise HTTPException(400, "Nothing here yet — run `calibrate compile` (or `import`) first.")
         try:
             subject = make_engine(project.engines.subject)
+            # Augment with retrieved knowledge when indexed, so the workbench "try"
+            # shows the AI as DEPLOYED (matching `run`), not a prompt-only variant.
+            eff_system = rag.augment_system(render_system_prompt(project.spec), _dir(name), body.message)
             output = str(subject.complete(conversation_prompt([], body.message),
-                                          system=render_system_prompt(project.spec)) or "").strip()
+                                          system=eff_system) or "").strip()
         except HTTPException:
             raise
         except Exception as exc:
@@ -740,7 +744,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         try:
             generator = make_engine(project.engines.compiler)
             subject = make_engine(project.engines.subject)
-            candidates = propose_candidates(project, generator, subject, n=body.n)
+            candidates = propose_candidates(project, generator, subject, n=body.n, project_dir=_dir(name))
         except HTTPException:
             raise
         except Exception as exc:

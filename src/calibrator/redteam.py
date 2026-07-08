@@ -160,12 +160,16 @@ def run_redteam(
     spec = project.spec
     if spec is None:
         raise ValueError("No behavior spec — run `calibrate compile` first.")
+    from . import rag
     system = render_system_prompt(spec)
     probes = generate_probes(spec, generator, max_probes=max_probes)
 
     results: list[ProbeResult] = []
     for p in probes:
-        output = as_str(subject.complete(p["input"], system=system))  # tolerate non-string output
+        # Probe the AI as DEPLOYED: augment with retrieved knowledge when an index
+        # exists, exactly as eval/run do — else redteam tests a different AI.
+        eff_system = rag.augment_system(system, project_dir, p["input"])
+        output = as_str(subject.complete(p["input"], system=eff_system))  # tolerate non-string output
         if output.strip():
             violated, severity, rationale = _judge_violation(judge, p["target"], p["input"], output)
         else:

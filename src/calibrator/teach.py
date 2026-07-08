@@ -15,6 +15,7 @@ outputs first, build the spec from your verdicts).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from .coerce import as_list, as_opt_str, as_str, is_str
 from .compile import render_system_prompt
@@ -93,6 +94,7 @@ def propose_candidates(
     subject: Engine,
     *,
     n: int = 5,
+    project_dir: str | Path | None = None,
 ) -> list[Candidate]:
     """Produce up to ``n`` (input, output) candidates for the human to judge.
 
@@ -101,13 +103,17 @@ def propose_candidates(
     running under the current spec's system prompt (or raw, if no spec yet).
     Returns fewer than ``n`` (possibly zero) if there are no test inputs and the
     generator produces none — the caller handles the empty case."""
+    from . import rag
     system = render_system_prompt(project.spec) if project.spec else None
     inputs = [t.input for t in project.tests if is_str(t.input)][:n]
     if len(inputs) < n:
         inputs = inputs + _generate_inputs(project, generator, n - len(inputs))
     candidates: list[Candidate] = []
     for i, inp in enumerate(inputs[:n], start=1):
-        output = as_str(subject.complete(inp, system=system))  # tolerate non-string output
+        # Candidates must reflect the DEPLOYED AI (RAG-augmented when indexed), so
+        # the standards inferred from the human's judgments match what ships.
+        eff_system = rag.augment_system(system, project_dir, inp)
+        output = as_str(subject.complete(inp, system=eff_system))  # tolerate non-string output
         candidates.append(Candidate(id=f"ex{i}", input=inp, output=output))
     return candidates
 
