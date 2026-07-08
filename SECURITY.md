@@ -46,6 +46,11 @@ before deploying — a malicious or careless document could otherwise inject
 standards you did not intend. The extractor prompt fences materials as data as a
 defense-in-depth measure, but the human review of the spec is the real control.
 
+With RAG retrieval on, ingested chunks also reach the served AI's system prompt
+at query time. Those chunks are JSON-encoded and framed as untrusted reference
+data (never instructions) so a poisoned chunk cannot break out of the knowledge
+block — again defense-in-depth, not a guarantee. Only index documents you trust.
+
 ## Reporting a vulnerability
 
 Please **do not** open a public issue for security reports. Use GitHub's
