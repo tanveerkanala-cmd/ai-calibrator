@@ -87,7 +87,7 @@ def run_drift(
     tolerance: float = 0.0,
 ) -> tuple[DriftReport, Scorecard]:
     """Run a fresh eval (the candidate), persist it, and compare to ``baseline``."""
-    candidate = run_eval(project, subject, judge, run_id=next_run_id(project_dir))
+    candidate = run_eval(project, subject, judge, run_id=next_run_id(project_dir), project_dir=project_dir)
     save_scorecard(project_dir, candidate)
     return compare_scorecards(baseline, candidate, tolerance=tolerance), candidate
 

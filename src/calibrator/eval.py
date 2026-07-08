@@ -132,15 +132,21 @@ def conversation_prompt(history_lines: list[str], user_turn: str) -> str:
     return (history + "\n" if history else "") + f"User: {user_turn}\nAssistant:"
 
 
-def _conversation_output(subject: Engine, system: str | None, user_turns: list[str]) -> str:
+def _conversation_output(subject: Engine, system: str | None, user_turns: list[str],
+                         project_dir: str | Path | None = None) -> str:
     """Run a multi-turn conversation; return the full transcript (graded as the output).
 
     History is encoded into each prompt (works across every engine without a
-    messages-based interface); the system prompt is held constant across turns."""
+    messages-based interface). The base system prompt is constant; when a
+    knowledge index exists, each turn's system is augmented with chunks retrieved
+    for THAT turn (identical to how the runtime serves — what you test is what
+    you serve)."""
+    from . import rag
     lines: list[str] = []
     for turn in user_turns:
+        eff_system = rag.augment_system(system, project_dir, turn)
         prompt = conversation_prompt(lines, turn)
-        reply = as_str(subject.complete(prompt, system=system)).strip()
+        reply = as_str(subject.complete(prompt, system=eff_system)).strip()
         lines.append(f"User: {turn}")
         lines.append(f"Assistant: {reply}")
     return "\n".join(lines)
@@ -153,17 +159,24 @@ def run_eval(
     *,
     run_id: str = "run-0001",
     judge_passes: int = 1,
+    project_dir: str | Path | None = None,
 ) -> Scorecard:
     """Run each test on the subject and grade the output against its criteria.
 
     ``judge_passes > 1`` grades each criterion with that many independent judge
     calls and majority-votes (self-consistency), recording per-criterion
-    confidence so split verdicts can be surfaced for human review."""
+    confidence so split verdicts can be surfaced for human review.
+
+    ``project_dir`` enables **RAG retrieval**: when the project has a knowledge
+    index, each test's subject prompt is augmented with chunks retrieved for that
+    input — identical to what `calibrate run` serves — so the scorecard reflects
+    the AI you actually deploy. Omit it (default) to grade the prompt-only AI."""
     if not isinstance(judge_passes, int) or judge_passes < 1:
         raise ValueError(f"judge_passes must be an integer >= 1 (got {judge_passes!r})")
     spec = project.spec
     if spec is None:
         raise ValueError("No behavior spec — run `calibrate compile` first.")
+    from . import rag
     system = render_system_prompt(spec)
     crit_by_id = {c.id: c for c in spec.eval_criteria}
 
@@ -174,9 +187,10 @@ def run_eval(
         # by the guard below) instead of an AttributeError on .strip().
         turns = [test.input] + [f for f in test.follow_ups if is_str(f)]
         if len(turns) > 1:  # multi-turn conversation test
-            output = _conversation_output(subject, system, turns)
+            output = _conversation_output(subject, system, turns, project_dir)
         else:
-            output = as_str(subject.complete(test.input, system=system))
+            eff_system = rag.augment_system(system, project_dir, test.input)  # RAG when indexed
+            output = as_str(subject.complete(test.input, system=eff_system))
         expected = [cid for cid in (test.expects or list(crit_by_id)) if cid in crit_by_id]
         graded: dict[str, CriterionResult] = {}
 

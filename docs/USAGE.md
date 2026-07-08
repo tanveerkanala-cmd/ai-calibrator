@@ -139,6 +139,15 @@ Drop your materials — product docs, past replies, policies, FAQs — into
 **gaps**: the things your materials *don't* settle (tone? refusal policy? edge
 cases?). Needs a configured engine (see §3).
 
+With the `rag` extra installed (`pip install -e '.[rag]'`), ingest builds a local
+vector index (`knowledge.lancedb`) over your materials. **`calibrate eval` and
+`calibrate run` then retrieve** the most relevant chunks for each question and
+prepend them to the AI's context — so your scorecard reflects the RAG-augmented
+AI you actually serve, not a prompt-only version. Without the extra (or with
+`--no-index`), ingest still works and eval/run run prompt-only. The
+`rag.config.yaml` in the export bundle describes the same index for your own
+deployment.
+
 ### `calibrate interview [--accept-drafts] [--regenerate]` ✅
 Fills the gaps. It generates one targeted question per gap with a **drafted
 answer** and a short *why*, then walks you through them — press Enter to accept

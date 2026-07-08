@@ -167,13 +167,18 @@ def create_ai_app(project_dir: str | Path, *, engine: Engine | None = None, guar
                           "owned_by": "ai-calibrator"}]}
 
     def _complete(messages: list[dict]) -> tuple[str, dict]:
+        from . import rag
         prompt = encode_messages(messages)
-        content = as_str(engine.complete(prompt, system=system)).strip()
+        # RAG: augment the system with chunks retrieved for the latest user turn,
+        # exactly as run_eval does — so the served AI matches the tested one.
+        query = _content_text(messages[-1].get("content")) if messages else None
+        eff_system = rag.augment_system(system, directory, query or "")
+        content = as_str(engine.complete(prompt, system=eff_system)).strip()
         guard_state: dict = {}
         if checks:
             failed = [cid for cid, chk in checks if not run_check(chk, content)[0]]
             if failed:  # one retry — models are stochastic; then flag, never block
-                content = as_str(engine.complete(prompt, system=system)).strip()
+                content = as_str(engine.complete(prompt, system=eff_system)).strip()
                 still = [cid for cid, chk in checks if not run_check(chk, content)[0]]
                 if still:
                     guard_state = {"guard": "failed", "criteria": still}

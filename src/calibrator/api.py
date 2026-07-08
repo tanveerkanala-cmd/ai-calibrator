@@ -387,7 +387,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
                     write_build_bundle(project.spec, project.tests, d)  # refresh build/ to match
                 else:
                     card = run_eval(project, subject, judge, run_id=next_run_id(d),
-                                    judge_passes=body.judge_passes)
+                                    judge_passes=body.judge_passes, project_dir=d)
                     save_scorecard(d, card)
                     cards = [card]
             except HTTPException:

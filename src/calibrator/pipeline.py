@@ -97,7 +97,8 @@ def calibrate_loop(
     cards: list[Scorecard] = []
     for rnd in range(1, max_rounds + 1):
         run_id = next_run_id(project_dir) if project_dir is not None else f"run-{rnd:04d}"
-        card = run_eval(project, subject, judge, run_id=run_id, judge_passes=judge_passes)
+        card = run_eval(project, subject, judge, run_id=run_id, judge_passes=judge_passes,
+                        project_dir=project_dir)
         if project_dir is not None:
             save_scorecard(project_dir, card)
         cards.append(card)

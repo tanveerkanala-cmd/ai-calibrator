@@ -518,7 +518,8 @@ def eval_(
                 save_project(project, path)  # refined standards persist
                 write_build_bundle(project.spec, project.tests, path)  # refresh build/ to match
             else:
-                card = run_eval(project, subject, judge, run_id=next_run_id(path), judge_passes=judge_passes)
+                card = run_eval(project, subject, judge, run_id=next_run_id(path), judge_passes=judge_passes,
+                                project_dir=path)
                 save_scorecard(path, card)
                 cards = [card]
         except Exception as exc:

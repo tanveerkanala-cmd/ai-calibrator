@@ -98,7 +98,8 @@ def run_ci(
     # 2. eval — the fresh run under test. Baseline resolves BEFORE it exists.
     subject, judge = _resolve(subject), _resolve(judge)
     baseline_id = baseline or latest_run_id(project_dir)
-    card = run_eval(project, subject, judge, run_id=next_run_id(project_dir), judge_passes=judge_passes)
+    card = run_eval(project, subject, judge, run_id=next_run_id(project_dir), judge_passes=judge_passes,
+                    project_dir=project_dir)
     save_scorecard(project_dir, card)
     result.run_id = card.run_id
     result.pass_rate = card.pass_rate
