@@ -407,10 +407,12 @@ def interview(
     # clobbered by our stale in-memory copy (store.py load→mutate→save contract).
     with project_lock(path):
         project = _load(path)
-        by_id = {it.id: it for it in project.interview}
-        for qid, ans in answers.items():
-            if qid in by_id:
-                by_id[qid].answer = ans
+        # Apply to EVERY item whose id matches — a dict-by-id would drop all but
+        # the last of any duplicate-id items (possible via a hand-edited
+        # project.yaml), silently discarding a collected answer.
+        for it in project.interview:
+            if it.id in answers:
+                it.answer = answers[it.id]
         save_project(project, path)
         answered = sum(1 for it in project.interview if it.answer)
         total = len(project.interview)

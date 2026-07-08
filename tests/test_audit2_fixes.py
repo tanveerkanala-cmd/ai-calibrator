@@ -135,3 +135,39 @@ def test_fd_guard_preserves_original_error_and_cleans_up(tmp_path, monkeypatch):
     with pytest.raises(Boom):                          # ORIGINAL error, not the close OSError
         store.atomic_write_text(tmp_path / "x.txt", "data")
     assert list(tmp_path.glob("x.txt.*.tmp")) == []    # temp file still cleaned up
+
+
+def test_rightsize_grades_with_rag_when_indexed(tmp_path):
+    """rightsize recommends a model for PRODUCTION, which serves with RAG — so its
+    eval must augment with retrieved knowledge when an index exists (else it can
+    recommend the wrong model)."""
+    import pytest
+    pytest.importorskip("lancedb")
+    pytest.importorskip("sentence_transformers")
+    from calibrator import rag
+    from calibrator.models import BehaviorSpec, EvalCriterion, Project, Weight
+    from calibrator.models import TestCase as Case
+    from calibrator.rightsize import rightsize
+
+    rag.build_index(tmp_path, [{"id": "c1", "text": "The return window is 30 days.", "source": "p.md"}])
+    p = Project(name="p", goal="g")
+    p.spec = BehaviorSpec(goal="g", knowledge_sources=["p.md"],
+                          eval_criteria=[EvalCriterion(id="c1", description="d", weight=Weight.HIGH)])
+    p.tests = [Case(id="t1", input="how long to return?", expects=["c1"])]
+
+    seen = []
+
+    class Spy:
+        def __init__(self, spec): self.name = spec
+        def complete(self, prompt, *, system=None, schema=None):
+            seen.append(system); return "answer"
+
+    class J:
+        name = "j@t"
+        def complete(self, prompt, *, system=None, schema=None):
+            import re
+            ids = re.findall(r"^- (\S+):", prompt, re.M)
+            return {"results": [{"criterion_id": i, "passed": True, "score": 1.0, "rationale": "ok"} for i in ids]}
+
+    rightsize(p, ["m@ollama"], J(), lambda s: Spy(s), project_dir=tmp_path)
+    assert any(s and "RETRIEVED KNOWLEDGE" in s and "30 days" in s for s in seen)   # RAG applied

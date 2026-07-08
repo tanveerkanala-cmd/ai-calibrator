@@ -111,7 +111,10 @@ def rightsize(
         in_price, out_price = PRICING.get(model, (None, None))
         try:
             subject = make_engine(ms)
-            card = run_eval(project, subject, judge, run_id=f"rightsize-{i:02d}")
+            # Pass project_dir so each candidate is graded WITH RAG retrieval when
+            # an index exists — rightsize recommends a model for production, and
+            # production serves with RAG, so the comparison must match it.
+            card = run_eval(project, subject, judge, run_id=f"rightsize-{i:02d}", project_dir=project_dir)
         except Exception as exc:
             results.append(ModelResult(spec=ms, model=model, pass_rate=0.0, passed=0, graded=0,
                                        in_price=in_price, out_price=out_price, error=str(exc)))
