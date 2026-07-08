@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 try:  # POSIX
     import fcntl
@@ -102,6 +102,9 @@ class FileLock:
     def __enter__(self) -> "FileLock":
         return self.acquire()
 
-    def __exit__(self, *exc: object) -> bool:
+    def __exit__(self, *exc: object) -> Literal[False]:
+        # Literal[False] (not bool): this lock must NEVER suppress an exception —
+        # a critical section that raised must propagate, not be swallowed. The
+        # precise type stops a future `return True` slip from type-checking clean.
         self.release()
         return False

@@ -94,11 +94,13 @@ def propose_candidates(
     *,
     n: int = 5,
 ) -> list[Candidate]:
-    """Produce ``n`` (input, output) candidates for the human to judge.
+    """Produce up to ``n`` (input, output) candidates for the human to judge.
 
     Reuses the project's existing test inputs when present (real scenarios);
     generates fresh inputs from the goal to top up. Outputs come from the subject
-    running under the current spec's system prompt (or raw, if no spec yet)."""
+    running under the current spec's system prompt (or raw, if no spec yet).
+    Returns fewer than ``n`` (possibly zero) if there are no test inputs and the
+    generator produces none — the caller handles the empty case."""
     system = render_system_prompt(project.spec) if project.spec else None
     inputs = [t.input for t in project.tests if is_str(t.input)][:n]
     if len(inputs) < n:
