@@ -97,3 +97,41 @@ def test_run_check_rejects_negative_length_limits():
     # a valid non-negative limit still grades normally
     assert run_check(Check(kind="max_chars", value="10"), "hello")[0] is True
     assert run_check(Check(kind="min_chars", value="10"), "hi")[0] is False
+
+
+# self-review: open_private_append must tighten a PRE-EXISTING loose file too
+def test_open_private_append_tightens_existing_file(tmp_path):
+    import os
+    import stat as statmod
+    if os.name == "nt":
+        return
+    from calibrator.store import open_private_append
+    p = tmp_path / "log.jsonl"
+    p.write_text("old\n")
+    os.chmod(p, 0o644)                      # world-readable, as a pre-fix file would be
+    with open_private_append(p) as fh:
+        fh.write("new\n")
+    assert statmod.S_IMODE(p.stat().st_mode) == 0o600   # now owner-only
+
+
+# self-review: the fd-leak guard must NOT let a failing os.close mask the original
+# error or skip temp cleanup
+def test_fd_guard_preserves_original_error_and_cleans_up(tmp_path, monkeypatch):
+    import pytest
+
+    import calibrator.store as store
+
+    class Boom(Exception):
+        pass
+
+    def bad_fdopen(*a, **k):
+        raise Boom("original fdopen failure")
+
+    def bad_close(fd):
+        raise OSError("close also failed")
+
+    monkeypatch.setattr(store.os, "fdopen", bad_fdopen)
+    monkeypatch.setattr(store.os, "close", bad_close)
+    with pytest.raises(Boom):                          # ORIGINAL error, not the close OSError
+        store.atomic_write_text(tmp_path / "x.txt", "data")
+    assert list(tmp_path.glob("x.txt.*.tmp")) == []    # temp file still cleaned up

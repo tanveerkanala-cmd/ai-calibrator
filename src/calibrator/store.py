@@ -48,18 +48,32 @@ def project_lock(path: str | Path) -> FileLock:
     return FileLock(directory / LOCK_FILE)
 
 
+def _close_quietly(fd: int) -> None:
+    """Close a raw fd, swallowing a close error. Used in fd-leak guards so a
+    failing os.close can't (a) mask the ORIGINAL exception we're cleaning up
+    after, or (b) skip the temp-file unlink that follows it."""
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+
+
 def open_private_append(path: str | Path):
-    """Open a file for appending, created owner-only (0600) — for local logs that
-    may hold system prompts / model outputs / user queries, which must not be
-    world-readable on a multi-user box (CWE-732). ``os.open`` sets perms only at
-    creation; umask can remove bits but never add them, so 0600 caps at owner rw.
-    Caller should ``mkdir(..., mode=0o700)`` the containing dir."""
+    """Open a file for appending, owner-only (0600) — for local logs that may hold
+    system prompts / model outputs / user queries, which must not be world-readable
+    on a multi-user box (CWE-732). ``os.open`` sets perms only at CREATION, so an
+    existing (e.g. pre-fix 0644) file is also chmod-tightened here."""
     fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     try:
-        return os.fdopen(fd, "a", encoding="utf-8")
+        fh = os.fdopen(fd, "a", encoding="utf-8")
     except BaseException:  # fdopen didn't take ownership — close the raw fd, don't leak it
-        os.close(fd)
+        _close_quietly(fd)
         raise
+    try:
+        os.chmod(path, 0o600)  # tighten a file that already existed with looser perms
+    except OSError:  # best-effort — never break logging over a chmod failure
+        pass
+    return fh
 
 
 def atomic_write_text(path: str | Path, text: str) -> Path:
@@ -73,8 +87,8 @@ def atomic_write_text(path: str | Path, text: str) -> Path:
     tmp: Path | None = Path(tmp_name)
     try:
         fh = os.fdopen(fd, "w", encoding="utf-8")
-    except BaseException:  # fdopen didn't take the fd — close it so it isn't leaked
-        os.close(fd)
+    except BaseException:  # fdopen didn't take the fd — close it (quietly, so the
+        _close_quietly(fd)   # original error propagates) and drop the temp file
         tmp.unlink(missing_ok=True)
         raise
     try:
@@ -125,8 +139,8 @@ def save_project(project: Project, path: str | Path) -> Path:
     tmp: Path | None = Path(tmp_name)
     try:
         fh = os.fdopen(fd, "w", encoding="utf-8")
-    except BaseException:  # fdopen didn't take the fd — close it so it isn't leaked
-        os.close(fd)
+    except BaseException:  # fdopen didn't take the fd — close it (quietly, so the
+        _close_quietly(fd)   # original error propagates) and drop the temp file
         tmp.unlink(missing_ok=True)
         raise
     try:
