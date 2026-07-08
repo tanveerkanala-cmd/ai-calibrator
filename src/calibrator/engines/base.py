@@ -69,11 +69,17 @@ def _extract_json(text: str) -> str | None:
 
 
 def loads_tolerant(text: Any) -> Any:
-    """``json.loads``, but tolerant of markdown fences / surrounding prose."""
+    """``json.loads``, but tolerant of markdown fences / surrounding prose.
+
+    Parses an engine's TEXT output — so a non-str (e.g. bytes, which
+    ``json.loads`` would silently auto-decode) is a contract violation, rejected
+    with ValueError rather than accepted."""
+    if not isinstance(text, str):
+        raise ValueError(f"expected engine text output, got {type(text).__name__}")
     try:
         return json.loads(text)
-    except (json.JSONDecodeError, TypeError):
-        candidate = _extract_json(text) if isinstance(text, str) else None
+    except json.JSONDecodeError:
+        candidate = _extract_json(text)
         if candidate is not None:
             return json.loads(candidate)  # JSONDecodeError (a ValueError) propagates
         raise ValueError("no JSON found in engine output") from None

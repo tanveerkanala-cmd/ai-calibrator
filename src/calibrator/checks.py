@@ -57,14 +57,14 @@ def run_check(check: Check, output: str) -> tuple[bool, str]:
         return ok, f"regex {value!r} {'matched' if ok else 'did not match'}"
     if kind == "max_chars":
         limit = _as_int(value)
-        if limit is None:
-            return False, f"max_chars needs an integer, got {value!r}"
+        if limit is None or limit < 0:
+            return False, f"max_chars needs a non-negative integer, got {value!r}"
         ok = len(text) <= limit
         return ok, f"length {len(text)} {'<=' if ok else '>'} {limit}"
     if kind == "min_chars":
         limit = _as_int(value)
-        if limit is None:
-            return False, f"min_chars needs an integer, got {value!r}"
+        if limit is None or limit < 0:
+            return False, f"min_chars needs a non-negative integer, got {value!r}"
         ok = len(text) >= limit
         return ok, f"length {len(text)} {'>=' if ok else '<'} {limit}"
     if kind == "non_empty":

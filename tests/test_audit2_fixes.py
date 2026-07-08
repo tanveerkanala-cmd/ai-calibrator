@@ -73,3 +73,27 @@ def test_prove_engine_skips_none_output(tmp_path):
             return "real"
     res = prove_engine(tmp_path, "judge", Echo())
     assert res.samples == 1        # only the row with a non-None output is measured
+
+
+# loads_tolerant parses engine TEXT — bytes is a contract violation, not silently OK
+def test_loads_tolerant_rejects_non_str():
+    import pytest
+
+    from calibrator.engines.base import loads_tolerant
+    assert loads_tolerant('{"a": 1}') == {"a": 1}        # str still works
+    with pytest.raises(ValueError):
+        loads_tolerant(b'{"a": 1}')                       # bytes rejected, not auto-decoded
+    with pytest.raises(ValueError):
+        loads_tolerant({"a": 1})                          # already-a-dict rejected
+
+
+# max_chars/min_chars must reject negative limits (they were always-fail garbage)
+def test_run_check_rejects_negative_length_limits():
+    from calibrator.checks import run_check
+    from calibrator.models import Check
+    for kind in ("max_chars", "min_chars"):
+        passed, why = run_check(Check(kind=kind, value="-5"), "hello")
+        assert passed is False and "non-negative" in why
+    # a valid non-negative limit still grades normally
+    assert run_check(Check(kind="max_chars", value="10"), "hello")[0] is True
+    assert run_check(Check(kind="min_chars", value="10"), "hi")[0] is False

@@ -735,6 +735,14 @@ def add_check(
             ids = ", ".join(c.id for c in project.spec.eval_criteria) or "(none)"
             typer.secho(f"No criterion {criterion!r}. Ids: {ids}", fg=typer.colors.RED)
             raise typer.Exit(code=1)
+        if kind in ("max_chars", "min_chars"):
+            try:
+                n = int(value.strip())
+                if n < 0:
+                    raise ValueError
+            except ValueError:
+                typer.secho(f"{kind} needs a non-negative integer, got {value!r}.", fg=typer.colors.RED)
+                raise typer.Exit(code=1)
         try:
             crit.check = Check(kind=kind, value=value)
         except ValidationError:
