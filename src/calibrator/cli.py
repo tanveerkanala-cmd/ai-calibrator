@@ -754,7 +754,6 @@ def judge_check(
     sample: int = typer.Option(10, "--sample", help="How many of the judge's verdicts to review."),
 ) -> None:
     """Calibrate the judge: confirm a sample of its verdicts and measure its agreement with you. (no engine)"""
-    from .drift import load_scorecard
     from .eval import latest_run_id
     from .judge_check import gradings, judge_agreement, save_labels
 
@@ -766,7 +765,7 @@ def judge_check(
     if not rid:
         typer.secho("No scorecard yet — run `calibrate eval` first.", fg=typer.colors.YELLOW)
         raise typer.Exit(code=1)
-    card = load_scorecard(path, rid)
+    card = _scorecard_or_exit(path, rid)
     items = gradings(card)
     if not items:
         typer.secho("No graded verdicts in the latest scorecard.", fg=typer.colors.YELLOW)
@@ -1032,7 +1031,7 @@ def drift(
     ),
 ) -> None:
     """Re-run the suite and flag behavior drift vs a baseline. Exits 2 on regression (CI-friendly). (M4+)"""
-    from .drift import load_scorecard, run_drift
+    from .drift import run_drift
     from .engines import get_engine
     from .eval import latest_run_id
 
@@ -1049,11 +1048,7 @@ def drift(
         if not base_id:
             typer.secho("No baseline scorecard yet — run `calibrate eval` first to set one.", fg=typer.colors.YELLOW)
             raise typer.Exit(code=1)
-        try:
-            base_card = load_scorecard(path, base_id)
-        except FileNotFoundError as exc:
-            typer.secho(str(exc), fg=typer.colors.RED)
-            raise typer.Exit(code=1)
+        base_card = _scorecard_or_exit(path, base_id)  # corrupt/missing baseline → friendly exit
         try:
             subject = get_engine(project.engines.subject)
             judge = get_engine(project.engines.judge)
@@ -1147,7 +1142,7 @@ def report(
     if rid:
         try:
             latest = load_scorecard(path, rid)
-        except (FileNotFoundError, ValueError):
+        except (FileNotFoundError, ValueError, ValidationError):
             latest = None
 
     markdown = render_report(project, cov, latest)

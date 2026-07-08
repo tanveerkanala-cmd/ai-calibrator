@@ -42,7 +42,9 @@ def save_labels(project_dir: str | Path, run_id: str, labels: list[dict]) -> Pat
     path = _labels_path(project_dir, run_id)
     merged: dict[tuple, dict] = {}
     for label in load_labels(project_dir, run_id) + list(labels):
-        if isinstance(label, dict) and label.get("test_id") and label.get("criterion_id"):
+        # Require an explicit "passed" — otherwise a label missing it would be
+        # silently persisted as a FAIL (bool(None)); load_labels enforces the same.
+        if isinstance(label, dict) and label.get("test_id") and label.get("criterion_id") and "passed" in label:
             merged[(label["test_id"], label["criterion_id"])] = {
                 "test_id": label["test_id"], "criterion_id": label["criterion_id"],
                 "passed": bool(label.get("passed")),

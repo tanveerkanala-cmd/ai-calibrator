@@ -12,6 +12,34 @@ from typing import Any
 from .base import Engine, call_json
 
 
+def _friendly_anthropic_error(exc: Exception, name: str) -> RuntimeError | None:
+    """Map a raw anthropic-SDK exception to an actionable RuntimeError, or None if
+    it is not an Anthropic API error (then the caller re-raises the original).
+    Mirrors the OpenAI adapter so the DEFAULT cloud engine never surfaces a raw
+    SDK traceback on a bad key / model / rate limit."""
+    try:
+        import anthropic
+    except ImportError:  # pragma: no cover
+        return None
+    if isinstance(exc, anthropic.AuthenticationError):
+        return RuntimeError(f"Anthropic rejected the credentials (401) for {name}. "
+                            "Set ANTHROPIC_API_KEY or run `calibrate login claude`.")
+    if isinstance(exc, anthropic.PermissionDeniedError):
+        return RuntimeError(f"Anthropic denied access (403) for {name} — your key may lack this model.")
+    if isinstance(exc, anthropic.NotFoundError):
+        return RuntimeError(f"Anthropic has no such model for {name} (404), or your key lacks access.")
+    if isinstance(exc, anthropic.RateLimitError):
+        return RuntimeError(f"Anthropic rate limit or quota hit (429) for {name} — slow down or check billing.")
+    if isinstance(exc, anthropic.APITimeoutError):
+        return RuntimeError(f"Anthropic request timed out for {name} — the API may be slow; retry.")
+    if isinstance(exc, anthropic.APIConnectionError):
+        return RuntimeError(f"Could not reach Anthropic for {name} (network/endpoint issue): {exc}")
+    if isinstance(exc, anthropic.APIError):
+        status = getattr(exc, "status_code", "?")
+        return RuntimeError(f"Anthropic API error ({status}) for {name}: {getattr(exc, 'message', exc)}")
+    return None
+
+
 class AnthropicEngine(Engine):
     def __init__(self, model: str, api_key: str | None = None, max_tokens: int = 16000) -> None:
         try:
@@ -59,7 +87,13 @@ class AnthropicEngine(Engine):
             kwargs["output_config"] = {"format": {"type": "json_schema", "schema": schema}}
 
         def _call() -> str:
-            resp = self._client.messages.create(**kwargs)
+            try:
+                resp = self._client.messages.create(**kwargs)
+            except Exception as exc:  # map SDK errors (auth/rate-limit/conn/timeout) to friendly text
+                friendly = _friendly_anthropic_error(exc, self.name)
+                if friendly is not None:
+                    raise friendly from exc
+                raise
             if resp.stop_reason == "refusal":
                 raise RuntimeError(f"Claude declined the request ({self.name}).")
             if resp.stop_reason == "max_tokens":
@@ -67,6 +101,9 @@ class AnthropicEngine(Engine):
                     f"Claude response truncated at max_tokens={self.max_tokens} ({self.name}); "
                     "increase max_tokens for this engine."
                 )
-            return next((b.text for b in resp.content if b.type == "text"), "")
+            # content can be None/empty on a malformed or OpenAI-compatible proxy
+            # response — don't let that raise a raw TypeError.
+            blocks = resp.content or []
+            return next((b.text for b in blocks if getattr(b, "type", None) == "text"), "")
 
         return call_json(_call) if schema is not None else _call()

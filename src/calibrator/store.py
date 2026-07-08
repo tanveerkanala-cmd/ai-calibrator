@@ -55,7 +55,11 @@ def open_private_append(path: str | Path):
     creation; umask can remove bits but never add them, so 0600 caps at owner rw.
     Caller should ``mkdir(..., mode=0o700)`` the containing dir."""
     fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-    return os.fdopen(fd, "a", encoding="utf-8")
+    try:
+        return os.fdopen(fd, "a", encoding="utf-8")
+    except BaseException:  # fdopen didn't take ownership — close the raw fd, don't leak it
+        os.close(fd)
+        raise
 
 
 def atomic_write_text(path: str | Path, text: str) -> Path:
@@ -68,7 +72,13 @@ def atomic_write_text(path: str | Path, text: str) -> Path:
     fd, tmp_name = tempfile.mkstemp(dir=str(target.parent), prefix=target.name + ".", suffix=".tmp")
     tmp: Path | None = Path(tmp_name)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh = os.fdopen(fd, "w", encoding="utf-8")
+    except BaseException:  # fdopen didn't take the fd — close it so it isn't leaked
+        os.close(fd)
+        tmp.unlink(missing_ok=True)
+        raise
+    try:
+        with fh:
             fh.write(text)
             fh.flush()
             os.fsync(fh.fileno())
@@ -114,7 +124,13 @@ def save_project(project: Project, path: str | Path) -> Path:
     fd, tmp_name = tempfile.mkstemp(dir=str(directory), prefix=PROJECT_FILE + ".", suffix=".tmp")
     tmp: Path | None = Path(tmp_name)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh = os.fdopen(fd, "w", encoding="utf-8")
+    except BaseException:  # fdopen didn't take the fd — close it so it isn't leaked
+        os.close(fd)
+        tmp.unlink(missing_ok=True)
+        raise
+    try:
+        with fh:
             fh.write(data)
             fh.flush()
             os.fsync(fh.fileno())  # durability: bytes hit disk before the rename

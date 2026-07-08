@@ -88,6 +88,8 @@ class OpenAIEngine(Engine):
             raise RuntimeError(
                 f"OpenAI returned no usable choices for {self.name} (empty or malformed response)."
             ) from exc
+        if message is None:  # a valid response can still carry a null message
+            raise RuntimeError(f"OpenAI returned an empty message for {self.name} (malformed response).")
         refusal = getattr(message, "refusal", None)
         if refusal:
             raise RuntimeError(f"OpenAI declined the request ({self.name}): {refusal}")

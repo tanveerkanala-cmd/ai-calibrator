@@ -273,7 +273,10 @@ def prove_engine(
 ) -> ProveResult:
     """Replay logged inputs through ``candidate`` and measure agreement vs the
     logged cloud outputs — the gate for trusting a localized engine."""
-    records = [r for r in read_log(project_dir, role) if isinstance(r.get("prompt"), str)]
+    # Skip rows with no logged output (same filter as assemble_role_dataset) —
+    # a None reference would otherwise skew the agreement the prove-it gate reports.
+    records = [r for r in read_log(project_dir, role)
+               if isinstance(r.get("prompt"), str) and r.get("output") is not None]
     if limit is not None:
         records = records[:limit]
     reference = [r.get("output") for r in records]

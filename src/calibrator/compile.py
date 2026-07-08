@@ -29,7 +29,7 @@ from .models import (
     TestCase,
     Weight,
 )
-from .rag import EMBED_MODEL, TABLE
+from .rag import EMBED_MODEL, TABLE, TOP_K
 
 # --- Structured-output schemas (strict-compatible across providers) ---------
 
@@ -333,7 +333,7 @@ def rag_config(spec: BehaviorSpec) -> dict:
         "index": "knowledge.lancedb",
         "table": TABLE,
         "embedder": EMBED_MODEL,
-        "top_k": 5,
+        "top_k": TOP_K,
     }
 
 

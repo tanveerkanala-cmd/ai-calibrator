@@ -88,11 +88,14 @@ def _dedup(items: list[str]) -> list[str]:
 def gather(named_specs: dict[str, BehaviorSpec]) -> list[Statement]:
     """Flatten every standard / never-rule across specs, tagged + indexed (1-based).
 
-    Deterministic in the dict's order, so indices are stable between detect and
-    apply for the same stakeholder ordering."""
+    Ordering is by STAKEHOLDER NAME (not the dict's insertion order), so the
+    indices are reproducible from the same set of specs regardless of how the
+    sources were ordered. This is load-bearing: `detect` and `apply` are separate
+    API requests, and a client that reordered `sources` between them would
+    otherwise get misaligned indices and silently drop the wrong statement."""
     statements: list[Statement] = []
     i = 1
-    for name, spec in named_specs.items():
+    for name, spec in sorted(named_specs.items()):
         for s in spec.standards:
             if is_str(s):
                 statements.append(Statement(i, s, "standard", name))
