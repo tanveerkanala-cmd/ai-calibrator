@@ -258,7 +258,13 @@ def next_run_id(project_dir: str | Path) -> str:
 
 
 def latest_run_id(project_dir: str | Path) -> str | None:
-    """The most recent ``run-NNNN`` that has a saved scorecard, or None."""
+    """The most recent ``run-NNNN`` that has a saved scorecard, or None.
+
+    Returns the newest run whose scorecard file EXISTS — it does not validate the
+    contents. A corrupt/truncated scorecard is surfaced honestly by the caller
+    ("Could not read scorecard <id>" on the CLI, a 409 on the API) rather than
+    silently skipped, so the user learns their file is broken instead of seeing a
+    misleading "no scorecard yet"."""
     evals = Path(project_dir) / "evals"
     best: str | None = None
     n = 0

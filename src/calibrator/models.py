@@ -228,6 +228,15 @@ class EngineBinding(PreservingModel):
 
 # --- The project (everything, serializable) --------------------------------
 
+# Reserved on Windows — a folder can't be named any of these (case-insensitive,
+# with or without an extension), so a project name that is one would break there.
+_WINDOWS_RESERVED_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{i}" for i in range(1, 10)}
+    | {f"LPT{i}" for i in range(1, 10)}
+)
+
+
 class Project(PreservingModel):
     name: str
     goal: str
@@ -256,6 +265,12 @@ class Project(PreservingModel):
             )
         if v in (".", ".."):
             raise ValueError("project name cannot be '.' or '..'")
+        if v[-1] in " .":  # Windows silently strips a trailing space/dot from a path component
+            raise ValueError("project name may not end with a space or '.'")
+        # Windows reserved DEVICE names (case-insensitive, with or without an
+        # extension) can't be a folder there — reject cross-platform.
+        if v.split(".", 1)[0].upper() in _WINDOWS_RESERVED_NAMES:
+            raise ValueError(f"project name {v!r} is a reserved device name on Windows — pick another")
         return v  # normalized: stripped, <= 120, filesystem-safe on every platform
     materials: list[Material] = Field(default_factory=list)
     facts: list[str] = Field(default_factory=list)

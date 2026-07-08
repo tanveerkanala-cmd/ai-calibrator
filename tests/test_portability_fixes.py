@@ -65,3 +65,37 @@ def test_gitignore_cleanup_on_non_oserror(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError):
         store.write_project_gitignore(tmp_path)
     assert not (tmp_path / ".gitignore").exists()             # 0-byte stub removed
+
+
+def test_project_name_rejects_windows_reserved(tmp_path):
+    from pydantic import ValidationError
+
+    from calibrator.models import Project
+    for bad in ["CON", "con", "PRN", "nul", "COM1", "LPT9", "aux.txt", "NUL.log", "name."]:
+        with pytest.raises(ValidationError):
+            Project(name=bad, goal="g")
+    assert Project(name="name ", goal="g").name == "name"   # trailing space is stripped, not rejected
+    # names that merely CONTAIN a reserved word are fine
+    assert Project(name="console", goal="g").name == "console"
+    assert Project(name="my-con-figs", goal="g").name == "my-con-figs"
+
+
+def test_api_returns_clean_error_not_500_on_corrupt_scorecard(tmp_path):
+    """A corrupt scorecard must yield a clean 4xx from the API, never a raw 500."""
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from calibrator.api import create_app
+    from calibrator.models import BehaviorSpec, EvalCriterion, Project, Weight
+    from calibrator.store import save_project
+
+    p = Project(name="apibot", goal="g")
+    p.spec = BehaviorSpec(goal="g", eval_criteria=[EvalCriterion(id="c1", description="desc long enough", weight=Weight.HIGH)])
+    save_project(p, tmp_path / "apibot")
+    ev = tmp_path / "apibot" / "evals" / "run-0001"
+    ev.mkdir(parents=True)
+    (ev / "scorecard.json").write_text("{ corrupt not json")
+    c = TestClient(create_app(tmp_path))
+    for path in ("/api/projects/apibot/judge-check", "/api/projects/apibot/snapshot"):
+        r = c.get(path)
+        assert r.status_code < 500, f"{path} → {r.status_code} (must not 500 on a corrupt scorecard)"

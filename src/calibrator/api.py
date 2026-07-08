@@ -544,7 +544,11 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         rid = latest_run_id(d)
         if not rid:
             raise HTTPException(400, "no scorecard — run eval first")
-        return {"run_id": rid, "gradings": gradings(load_scorecard(d, rid))}
+        try:
+            card = load_scorecard(d, rid)
+        except (FileNotFoundError, ValueError, ValidationError) as exc:
+            raise HTTPException(409, f"scorecard {rid!r} is unreadable: {exc}")
+        return {"run_id": rid, "gradings": gradings(card)}
 
     @app.post("/api/projects/{name}/judge-check")
     def judge_check_score_(name: str, body: JudgeLabelsBody):
@@ -559,7 +563,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         try:
             card = load_scorecard(d, rid)
             save_labels(d, rid, body.labels)  # persist: feeds train-engine as ground truth
-        except (FileNotFoundError, ValueError) as exc:
+        except (FileNotFoundError, ValueError, ValidationError) as exc:
             raise HTTPException(400, str(exc))
         out = agreement_dict(judge_agreement(card, body.labels))
         out["labels_saved"] = f"evals/{rid}/human-labels.json"
@@ -575,7 +579,10 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         rid = latest_run_id(d)
         if not rid:
             raise HTTPException(400, "no scorecard — run eval first")
-        outs = outputs_of(load_scorecard(d, rid))
+        try:
+            outs = outputs_of(load_scorecard(d, rid))
+        except (FileNotFoundError, ValueError, ValidationError) as exc:
+            raise HTTPException(409, f"scorecard {rid!r} is unreadable: {exc}")
         save_golden(d, outs)
         return {"pinned": len(outs), "run_id": rid}
 
@@ -592,7 +599,11 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         rid = latest_run_id(d)
         if not rid:
             raise HTTPException(400, "no scorecard — run eval first")
-        return snapshot_dict(compare(golden, outputs_of(load_scorecard(d, rid))))
+        try:
+            card = load_scorecard(d, rid)
+        except (FileNotFoundError, ValueError, ValidationError) as exc:
+            raise HTTPException(409, f"scorecard {rid!r} is unreadable: {exc}")
+        return snapshot_dict(compare(golden, outputs_of(card)))
 
     @app.get("/api/projects/{name}/lint")
     def lint_(name: str):
