@@ -201,7 +201,7 @@ def export_engine_bundle(project_dir: str | Path, role: str, *, base_model: str 
         files.append(f"trained-engines/{role}/{fn}")
 
     _write("dataset.jsonl", "".join(json.dumps(r) + "\n" for r in rows))
-    _write("recipe.yaml", yaml.safe_dump(recipe, sort_keys=False))
+    _write("recipe.yaml", yaml.safe_dump(recipe, sort_keys=False, allow_unicode=True))
     _write("train.py", _TRAIN_PY.replace("__BASE__", recipe["base_model"]).replace("__OUT__", recipe["output_dir"]))
     _write("README.md", _engine_readme(role, recipe, len(rows), len(human)))
 

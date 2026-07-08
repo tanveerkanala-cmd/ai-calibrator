@@ -130,7 +130,7 @@ def save_project(project: Project, path: str | Path) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "materials").mkdir(exist_ok=True)
     target = directory / PROJECT_FILE
-    data = yaml.safe_dump(project.model_dump(mode="json"), sort_keys=False)
+    data = yaml.safe_dump(project.model_dump(mode="json"), sort_keys=False, allow_unicode=True)
 
     # Unique temp file in the SAME directory (so os.replace stays atomic — a
     # cross-filesystem rename is not). mkstemp gives each concurrent writer its
@@ -172,7 +172,7 @@ def load_project(path: str | Path) -> Project:
             "Run `calibrate init` first."
         )
     try:
-        data = yaml.safe_load(target.read_text())
+        data = yaml.safe_load(target.read_text(encoding="utf-8"))
     except yaml.YAMLError as exc:
         raise ValueError(_friendly_yaml_error(target, exc)) from exc
     if data is None:  # empty file → safe_load returns None; model_validate(None) is cryptic
@@ -236,11 +236,17 @@ def write_project_gitignore(path: str | Path) -> Path:
     except FileExistsError:
         return target  # already present — leave the user's version untouched
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh = os.fdopen(fd, "w", encoding="utf-8")
+    except BaseException:  # fdopen didn't take the fd — don't leak it, drop the stub
+        _close_quietly(fd)
+        target.unlink(missing_ok=True)
+        raise
+    try:
+        with fh:
             fh.write(PROJECT_GITIGNORE)
-    except OSError:
-        # A write failure after the create left a 0-byte file — remove it so the
-        # next call isn't blocked by the O_EXCL check into a permanent empty file.
+    except BaseException:
+        # ANY failure after the create (not just OSError) left a 0-byte file —
+        # remove it so the next call isn't permanently blocked by the O_EXCL check.
         target.unlink(missing_ok=True)
         raise
     return target

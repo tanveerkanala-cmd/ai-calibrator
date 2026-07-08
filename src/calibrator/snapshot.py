@@ -53,7 +53,7 @@ def load_golden(project_dir: str | Path) -> dict | None:
     if not f.exists():
         return None
     try:
-        data = json.loads(f.read_text())
+        data = json.loads(f.read_text(encoding="utf-8"))
     except (ValueError, OSError):  # corrupt/hand-edited golden → treat as unpinned, don't traceback
         return None
     return data if isinstance(data, dict) else {}

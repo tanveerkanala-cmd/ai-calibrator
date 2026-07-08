@@ -243,7 +243,20 @@ class Project(PreservingModel):
             # the name becomes a directory name; filesystems cap components at
             # ~255 bytes — fail here with a clear message, not an OSError later
             raise ValueError("project name too long (max 120 characters)")
-        return v  # normalized: no surrounding whitespace, guaranteed <= 120
+        # The name becomes a directory component. Reject path separators, the
+        # Windows-reserved characters (\ / : * ? " < > |), control chars, and the
+        # . / .. specials — so a name valid on POSIX can't create an invalid path
+        # (or traverse) on Windows, and vice versa. Fail here, cross-platform,
+        # rather than as a confusing OSError at mkdir time.
+        bad = set('/\\:*?"<>|') & set(v)
+        if bad or any(ord(c) < 32 for c in v):
+            raise ValueError(
+                "project name may not contain path separators or any of \\ / : * ? \" < > | "
+                "(it becomes a folder name); use letters, digits, spaces, - or _"
+            )
+        if v in (".", ".."):
+            raise ValueError("project name cannot be '.' or '..'")
+        return v  # normalized: stripped, <= 120, filesystem-safe on every platform
     materials: list[Material] = Field(default_factory=list)
     facts: list[str] = Field(default_factory=list)
     gaps: list[Gap] = Field(default_factory=list)

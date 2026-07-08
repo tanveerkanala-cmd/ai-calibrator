@@ -680,7 +680,12 @@ def run(
                            "messages": [{"role": "user", "content": "hello"}]})
     typer.echo(f'  try:  curl -s http://{host}:{port}/v1/chat/completions '
                f'-H "Content-Type: application/json" -d {shlex.quote(payload)}')
-    uvicorn.run(application, host=host, port=port, log_level="warning")
+    try:
+        uvicorn.run(application, host=host, port=port, log_level="warning")
+    except OSError as exc:  # e.g. EADDRINUSE — friendly, not a raw traceback
+        typer.secho(f"Could not bind {host}:{port} — {exc}. "
+                    "The port may be in use; retry with a different --port.", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
 
 
 @app.command()
@@ -1330,7 +1335,7 @@ def merge(
             raise typer.Exit(code=1)
         save_project(merged, out)
         atomic_write_text(out / "reconciliation.yaml",
-                          _yaml.safe_dump({"stakeholders": list(named), "conflicts": audit}, sort_keys=False))
+                          _yaml.safe_dump({"stakeholders": list(named), "conflicts": audit}, sort_keys=False, allow_unicode=True))
     typer.secho(
         f"\n✓ Merged {len(named)} stakeholder(s) → {out}/  "
         f"({len(spec.standards)} standard(s), {len(spec.do_not)} never-rule(s); {len(conflicts)} conflict(s) reconciled).",
@@ -1546,7 +1551,12 @@ def serve(
     application = create_app(root, allowed_hosts=None if is_local else [host])
     typer.secho(f"AI Calibrator → http://{host}:{port}", fg=typer.colors.GREEN)
     typer.echo(f"  projects in {root}")
-    uvicorn.run(application, host=host, port=port, log_level="warning")
+    try:
+        uvicorn.run(application, host=host, port=port, log_level="warning")
+    except OSError as exc:  # e.g. EADDRINUSE — friendly, not a raw traceback
+        typer.secho(f"Could not bind {host}:{port} — {exc}. "
+                    "The port may be in use; retry with a different --port.", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
 
 
 @app.command()

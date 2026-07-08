@@ -43,7 +43,7 @@ OUT = "__OUT__"
 
 
 def main() -> None:
-    with open("dataset.jsonl") as f:
+    with open("dataset.jsonl", encoding="utf-8") as f:
         rows = [json.loads(line) for line in f if line.strip()]
     if not rows:
         raise SystemExit("dataset.jsonl is empty — add training examples first.")
@@ -176,7 +176,7 @@ def export_finetune(project: Project, *, project_dir, base_model: str | None = N
         files.append(f"finetune/{fn}")
 
     _write("dataset.jsonl", "".join(json.dumps(r) + "\n" for r in rows))
-    _write("recipe.yaml", yaml.safe_dump(recipe, sort_keys=False))
+    _write("recipe.yaml", yaml.safe_dump(recipe, sort_keys=False, allow_unicode=True))
     _write("train.py", _TRAIN_PY.replace("__BASE__", recipe["base_model"]).replace("__OUT__", recipe["output_dir"]))
     _write("README.md", _readme(recipe, len(rows)))
 

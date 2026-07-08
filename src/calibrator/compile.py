@@ -349,10 +349,10 @@ def write_build_bundle(spec: BehaviorSpec, tests: list[TestCase], project_dir: s
         atomic_write_text(build / name, content)
         files.append(f"build/{name}")
 
-    _write("spec.yaml", yaml.safe_dump(spec.model_dump(mode="json"), sort_keys=False))
+    _write("spec.yaml", yaml.safe_dump(spec.model_dump(mode="json"), sort_keys=False, allow_unicode=True))
     _write("system_prompt.txt", render_system_prompt(spec))
-    _write("rubric.yaml", yaml.safe_dump(rubric(spec), sort_keys=False))
-    _write("rag.config.yaml", yaml.safe_dump(rag_config(spec), sort_keys=False))
+    _write("rubric.yaml", yaml.safe_dump(rubric(spec), sort_keys=False, allow_unicode=True))
+    _write("rag.config.yaml", yaml.safe_dump(rag_config(spec), sort_keys=False, allow_unicode=True))
     _write(
         "tests.jsonl",
         "".join(json.dumps(t.model_dump(mode="json")) + "\n" for t in tests),

@@ -42,7 +42,7 @@ HOST = "http://localhost:11434"
 
 
 def main() -> None:
-    system = (Path(__file__).parent / "system_prompt.txt").read_text()
+    system = (Path(__file__).parent / "system_prompt.txt").read_text(encoding="utf-8")
     question = " ".join(sys.argv[1:]).strip() or sys.stdin.read().strip()
     if not question:
         print('usage: python run.py "your question"', file=sys.stderr)
@@ -149,9 +149,9 @@ def export_bundle(project: Project, *, project_dir: str | Path, name: str | None
         files.append(f"export/{fn}")
 
     _write("system_prompt.txt", system)
-    _write("spec.yaml", yaml.safe_dump(spec.model_dump(mode="json"), sort_keys=False))
-    _write("rubric.yaml", yaml.safe_dump(rubric(spec), sort_keys=False))
-    _write("rag.config.yaml", yaml.safe_dump(rag_config(spec), sort_keys=False))
+    _write("spec.yaml", yaml.safe_dump(spec.model_dump(mode="json"), sort_keys=False, allow_unicode=True))
+    _write("rubric.yaml", yaml.safe_dump(rubric(spec), sort_keys=False, allow_unicode=True))
+    _write("rag.config.yaml", yaml.safe_dump(rag_config(spec), sort_keys=False, allow_unicode=True))
     _write("tests.jsonl", "".join(json.dumps(t.model_dump(mode="json")) + "\n" for t in project.tests))
     _write("Modelfile", _modelfile(base, system))
     _write("run.py", _RUN_PY.replace("__BASE_MODEL__", base))

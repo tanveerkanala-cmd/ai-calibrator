@@ -7,6 +7,7 @@ top, so a flaky local model degrades gracefully instead of erroring.
 
 from __future__ import annotations
 
+import math
 import os
 from typing import Any
 
@@ -25,7 +26,7 @@ def _default_timeout() -> float:
     if raw:
         try:
             value = float(raw)
-            if value > 0:
+            if math.isfinite(value) and value > 0:  # reject inf / nan / 1e999 → no timeout
                 return value
         except ValueError:
             pass  # ignore junk; fall through to the default

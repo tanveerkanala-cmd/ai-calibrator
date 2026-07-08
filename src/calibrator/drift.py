@@ -74,7 +74,7 @@ def load_scorecard(project_dir: str | Path, run_id: str) -> Scorecard:
     f = Path(project_dir) / "evals" / run_id / "scorecard.json"
     if not f.exists():
         raise FileNotFoundError(f"no scorecard at evals/{run_id}/")
-    return Scorecard.model_validate(json.loads(f.read_text()))
+    return Scorecard.model_validate(json.loads(f.read_text(encoding="utf-8")))
 
 
 def run_drift(
