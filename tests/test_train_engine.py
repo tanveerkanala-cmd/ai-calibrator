@@ -37,7 +37,7 @@ def test_logging_engine_records_and_passes_through(tmp_path):
     out = eng.complete("the prompt", system="sys", schema={"type": "object"})
     assert out == inner.output  # passes through unchanged
 
-    rec = json.loads((tmp_path / "logs" / "judge.jsonl").read_text().splitlines()[0])
+    rec = json.loads((tmp_path / "logs" / "judge.jsonl").read_text(encoding="utf-8").splitlines()[0])
     assert rec["role"] == "judge" and rec["prompt"] == "the prompt"
     assert rec["system"] == "sys" and rec["schema"] == {"type": "object"}
     assert rec["output"] == inner.output
@@ -47,7 +47,7 @@ def test_logging_engine_appends(tmp_path):
     eng = LoggingEngine(FakeEngine("x"), "extractor", tmp_path / "logs")
     eng.complete("a")
     eng.complete("b")
-    assert len((tmp_path / "logs" / "extractor.jsonl").read_text().splitlines()) == 2
+    assert len((tmp_path / "logs" / "extractor.jsonl").read_text(encoding="utf-8").splitlines()) == 2
 
 
 def test_wrap_engine_toggle(tmp_path):
@@ -228,10 +228,10 @@ def test_export_bundle_ground_truth_overrides_conflicting_log_row(tmp_path):
     result = export_engine_bundle(tmp_path, "judge")
     assert result.examples == 1 and result.human_examples == 1   # log row dropped, human row kept
 
-    row = json.loads((tmp_path / "trained-engines" / "judge" / "dataset.jsonl").read_text().splitlines()[0])
+    row = json.loads((tmp_path / "trained-engines" / "judge" / "dataset.jsonl").read_text(encoding="utf-8").splitlines()[0])
     assert row["messages"][1]["content"] == expected_prompt
     assert json.loads(row["messages"][2]["content"])["results"][0]["passed"] is False
-    assert "ground-truth" in (tmp_path / "trained-engines" / "judge" / "README.md").read_text()
+    assert "ground-truth" in (tmp_path / "trained-engines" / "judge" / "README.md").read_text(encoding="utf-8")
 
 
 def test_export_bundle_skips_stale_labels(tmp_path):

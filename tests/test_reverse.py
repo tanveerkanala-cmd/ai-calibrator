@@ -50,7 +50,7 @@ def test_reverse_project_creates_evaluable_project(tmp_path):
     assert proj.engines.subject == "gemma4:e4b@ollama" and proj.engines.judge == "gemma4:e4b@ollama"
     # persisted with build bundle + the original prompt for provenance
     assert (tmp_path / "build" / "system_prompt.txt").exists()
-    assert (tmp_path / "imported_prompt.txt").read_text() == PROMPT
+    assert (tmp_path / "imported_prompt.txt").read_text(encoding="utf-8") == PROMPT
     # round-trips: the imported project loads back coherently
     assert load_project(tmp_path).spec.standards == proj.spec.standards
 

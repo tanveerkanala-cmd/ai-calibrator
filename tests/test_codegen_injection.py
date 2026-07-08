@@ -37,7 +37,7 @@ def test_export_run_py_is_valid_python_and_uninjected(tmp_path):
     p.tests = [TestCase(id="t1", input="q", expects=["c"])]
     p.engines.subject = "gemma4:e4b@ollama"
     export_bundle(p, project_dir=tmp_path)
-    run_py = (tmp_path / "export" / "run.py").read_text()
+    run_py = (tmp_path / "export" / "run.py").read_text(encoding="utf-8")
     ast.parse(run_py)                                  # parses
     assert 'gemma4:e4b' in run_py and "import os" not in run_py.split("gemma4")[1][:40]
 

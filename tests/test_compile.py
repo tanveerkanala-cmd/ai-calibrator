@@ -140,10 +140,10 @@ def test_compile_project_writes_bundle(tmp_path):
     for name in ["spec.yaml", "system_prompt.txt", "rubric.yaml", "rag.config.yaml", "tests.jsonl"]:
         assert (build / name).exists(), name
 
-    rub = yaml.safe_load((build / "rubric.yaml").read_text())
+    rub = yaml.safe_load((build / "rubric.yaml").read_text(encoding="utf-8"))
     assert rub["criteria"][0]["id"] == "cites_policy"
 
-    lines = [ln for ln in (build / "tests.jsonl").read_text().splitlines() if ln.strip()]
+    lines = [ln for ln in (build / "tests.jsonl").read_text(encoding="utf-8").splitlines() if ln.strip()]
     assert len(lines) == 2
     assert json.loads(lines[0])["id"] == "t1"
 

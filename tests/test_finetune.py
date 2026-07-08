@@ -58,10 +58,10 @@ def test_export_writes_bundle_and_valid_script(tmp_path):
         assert (ft / fn).exists(), fn
     assert result.examples == 2
 
-    lines = [ln for ln in (ft / "dataset.jsonl").read_text().splitlines() if ln.strip()]
+    lines = [ln for ln in (ft / "dataset.jsonl").read_text(encoding="utf-8").splitlines() if ln.strip()]
     assert len(lines) == 2 and "messages" in json.loads(lines[0])
 
-    src = (ft / "train.py").read_text()
+    src = (ft / "train.py").read_text(encoding="utf-8")
     assert "meta-llama/Llama-3.1-8B-Instruct" in src
     ast.parse(src)  # the generated training script is valid Python
 

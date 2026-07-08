@@ -36,7 +36,7 @@ def test_export_writes_full_bundle(tmp_path):
         assert (exp / fn).exists(), fn
     assert result.name == "my-support-ai"
 
-    modelfile = (exp / "Modelfile").read_text()
+    modelfile = (exp / "Modelfile").read_text(encoding="utf-8")
     assert "FROM" in modelfile and "SYSTEM" in modelfile
     assert "Answer product questions" in modelfile  # system prompt embedded
 
@@ -44,17 +44,17 @@ def test_export_writes_full_bundle(tmp_path):
 def test_cloud_subject_falls_back_to_local_base(tmp_path):
     result = export_bundle(_project("gpt-4o@openai"), project_dir=tmp_path)
     assert result.base_model == DEFAULT_LOCAL_BASE
-    assert f"FROM {DEFAULT_LOCAL_BASE}" in (tmp_path / "export" / "Modelfile").read_text()
+    assert f"FROM {DEFAULT_LOCAL_BASE}" in (tmp_path / "export" / "Modelfile").read_text(encoding="utf-8")
 
 
 def test_ollama_subject_uses_that_model(tmp_path):
     result = export_bundle(_project("llama3.1:8b@ollama"), project_dir=tmp_path)
     assert result.base_model == "llama3.1:8b"
-    assert "FROM llama3.1:8b" in (tmp_path / "export" / "Modelfile").read_text()
+    assert "FROM llama3.1:8b" in (tmp_path / "export" / "Modelfile").read_text(encoding="utf-8")
 
 
 def test_generated_runner_is_valid_python_with_base(tmp_path):
     export_bundle(_project("llama3.1:8b@ollama"), project_dir=tmp_path)
-    src = (tmp_path / "export" / "run.py").read_text()
+    src = (tmp_path / "export" / "run.py").read_text(encoding="utf-8")
     assert "llama3.1:8b" in src
     ast.parse(src)  # the generated runner is syntactically valid Python

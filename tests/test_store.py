@@ -27,7 +27,7 @@ def test_atomic_write_text_writes_completely_and_leaves_no_temp(tmp_path):
     from calibrator.store import atomic_write_text
     p = tmp_path / "sub" / "f.json"
     atomic_write_text(p, '{"a": 1}')
-    assert p.read_text() == '{"a": 1}'
+    assert p.read_text(encoding="utf-8") == '{"a": 1}'
     assert list((tmp_path / "sub").glob("*.tmp")) == []
 
 
@@ -44,7 +44,7 @@ def test_atomic_write_text_never_truncates_on_failure(tmp_path, monkeypatch):
 
     with pytest.raises(OSError):
         atomic_write_text(p, "NEW DATA " * 1000)
-    assert p.read_text() == "ORIGINAL"            # prior version intact — never truncated
+    assert p.read_text(encoding="utf-8") == "ORIGINAL"            # prior version intact — never truncated
     assert list(tmp_path.glob("*.tmp")) == []      # scratch file cleaned up
 
 
@@ -86,7 +86,7 @@ def test_unknown_fields_survive_round_trip(tmp_path):
     }))
     project = load_project(d)
     save_project(project, d)                                   # round-trip
-    on_disk = _yaml.safe_load((d / "project.yaml").read_text())
+    on_disk = _yaml.safe_load((d / "project.yaml").read_text(encoding="utf-8"))
     assert on_disk["future_top_level"] == {"nested": [1, 2]}
     assert on_disk["spec"]["spec_future"] == "keep me"
     assert on_disk["spec"]["eval_criteria"][0]["crit_future"] == 7
@@ -114,9 +114,9 @@ def test_write_project_gitignore(tmp_path):
     from calibrator.store import write_project_gitignore
 
     target = write_project_gitignore(tmp_path)
-    body = target.read_text()
+    body = target.read_text(encoding="utf-8")
     assert "evals/" in body and ".env" in body and "*.key" in body
     # never clobbers user edits
     target.write_text("# mine\n")
     write_project_gitignore(tmp_path)
-    assert target.read_text() == "# mine\n"
+    assert target.read_text(encoding="utf-8") == "# mine\n"

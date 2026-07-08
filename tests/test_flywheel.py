@@ -51,7 +51,7 @@ def test_absorb_is_idempotent_and_archives(tmp_path):
     first = absorb_feedback(p, tmp_path)
     assert first.tests_added == 1
     assert read_feedback(tmp_path) == []                                  # inbox emptied
-    assert "q" in (tmp_path / "logs" / "feedback-absorbed.jsonl").read_text()  # audit trail
+    assert "q" in (tmp_path / "logs" / "feedback-absorbed.jsonl").read_text(encoding="utf-8")  # audit trail
 
     # same feedback arriving again → recognized as duplicate, nothing re-added
     append_feedback(tmp_path, {"turns": ["q"], "output": "a", "verdict": "down"})
@@ -132,5 +132,5 @@ def test_concurrent_appends_never_lost_during_absorb(tmp_path):
 
     assert absorbed_total == N                              # nothing destroyed
     assert read_feedback(tmp_path) == []                    # inbox drained
-    archived = (tmp_path / "logs" / "feedback-absorbed.jsonl").read_text().splitlines()
+    archived = (tmp_path / "logs" / "feedback-absorbed.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(archived) == N                               # every record archived exactly once

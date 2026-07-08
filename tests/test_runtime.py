@@ -142,7 +142,7 @@ def test_guard_retries_then_flags(tmp_path):
                                                   json={"messages": [{"role": "user", "content": "q"}]})
     assert r2.status_code == 200  # flag, don't block
     assert r2.headers["x-calibrate-guard"] == "failed:c1"
-    logged = (tmp_path / "logs" / "guard.jsonl").read_text().splitlines()
+    logged = (tmp_path / "logs" / "guard.jsonl").read_text(encoding="utf-8").splitlines()
     assert json.loads(logged[-1])["failed"] == ["c1"]
 
     # passing answer → passed header, single call

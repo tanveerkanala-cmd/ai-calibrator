@@ -61,7 +61,7 @@ def test_gitignore_never_clobbers(tmp_path):
     from calibrator.store import write_project_gitignore
     (tmp_path / ".gitignore").write_text("# mine\n")
     write_project_gitignore(tmp_path)
-    assert (tmp_path / ".gitignore").read_text() == "# mine\n"
+    assert (tmp_path / ".gitignore").read_text(encoding="utf-8") == "# mine\n"
 
 
 # #16 — OpenAI empty choices → friendly RuntimeError, not IndexError
@@ -121,7 +121,7 @@ def test_ground_truth_overrides_systemless_logged_row(tmp_path):
     }) + "\n")
 
     result = export_engine_bundle(tmp_path, "judge")
-    lines = (tmp_path / "trained-engines" / "judge" / "dataset.jsonl").read_text().splitlines()
+    lines = (tmp_path / "trained-engines" / "judge" / "dataset.jsonl").read_text(encoding="utf-8").splitlines()
     assert result.examples == 1 and result.human_examples == 1     # logged row dropped, human kept
     target = json.loads(json.loads(lines[0])["messages"][-1]["content"])
     assert target["results"][0]["passed"] is False                 # the HUMAN verdict
@@ -206,4 +206,4 @@ def test_gitignore_write_failure_leaves_no_stub(tmp_path, monkeypatch):
 
     monkeypatch.undo()
     store.write_project_gitignore(tmp_path)          # retry now succeeds
-    assert "evals/" in (tmp_path / ".gitignore").read_text()
+    assert "evals/" in (tmp_path / ".gitignore").read_text(encoding="utf-8")

@@ -28,3 +28,30 @@ jobs:
         run: ruff check .
       - name: Test
         run: pytest -q
+
+  locale:
+    # Guards the encoding class: files are written UTF-8, so every read must be
+    # too. Running the whole suite under a non-UTF-8 locale catches any regression
+    # that would crash on Windows (cp1252) or a POSIX box with LC_ALL=C.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e '.[dev]'
+      - name: Test under a non-UTF-8 locale (LC_ALL=C)
+        run: LC_ALL=C LANG=C PYTHONUTF8=0 pytest -q
+
+  security:
+    # Static security scan. Fails only on MEDIUM+ severity, so the known, justified
+    # Low findings (the fixed `ant` subprocess, best-effort except-pass) don't gate.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e '.[dev]'
+      - name: Bandit (medium+ severity)
+        run: bandit -r src/calibrator --severity-level medium -q

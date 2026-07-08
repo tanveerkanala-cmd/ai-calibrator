@@ -39,4 +39,4 @@ def test_provider_id_mapping():
 def test_export_promptfoo_writes_file(tmp_path):
     out = export_promptfoo(_project(), project_dir=tmp_path)
     assert out.exists() and out.name == "promptfooconfig.yaml"
-    assert yaml.safe_load(out.read_text())["tests"]  # round-trips to valid YAML
+    assert yaml.safe_load(out.read_text(encoding="utf-8"))["tests"]  # round-trips to valid YAML

@@ -113,7 +113,7 @@ def test_init_writes_gitignore_and_honest_engines_line(tmp_path):
     not claim one engine covers 'all roles' when judge/subject differ (audit)."""
     r = runner.invoke(app, ["init", "proj", "--goal", "g", "--path", str(tmp_path / "proj")])
     assert r.exit_code == 0
-    gi = (tmp_path / "proj" / ".gitignore").read_text()
+    gi = (tmp_path / "proj" / ".gitignore").read_text(encoding="utf-8")
     assert "evals/" in gi and ".env" in gi and "*.key" in gi
     assert "all roles" not in r.output          # the misleading phrasing is gone
     assert "(judge)" in r.output and "(subject)" in r.output
