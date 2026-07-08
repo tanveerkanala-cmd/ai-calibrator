@@ -292,7 +292,7 @@ def render_system_prompt(spec: BehaviorSpec) -> str:
     if spec.persona and (spec.persona.voice or spec.persona.reading_level):
         voice = spec.persona.voice or ""
         rl = f" (reading level: {spec.persona.reading_level})" if spec.persona.reading_level else ""
-        lines += [f"VOICE: {voice}{rl}", ""]
+        lines += [f"VOICE: {(voice + rl).strip()}", ""]  # .strip() avoids a double space when voice is empty
     if spec.standards:
         lines.append("STANDARDS:")
         lines += [f"- {s}" for s in spec.standards]

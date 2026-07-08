@@ -140,7 +140,7 @@ def agreement_dict(ag: JudgeAgreement) -> dict:
     return {
         "agreement_rate": round(ag.agreement_rate, 3),
         "agreed": ag.agreed, "total": ag.total,
-        "by_criterion": {cid: {"agreed": a, "total": t, "rate": round(a / t, 3)}
+        "by_criterion": {cid: {"agreed": a, "total": t, "rate": round(a / t, 3) if t else 0.0}
                          for cid, (a, t) in ag.by_criterion.items()},
         "unreliable_criteria": ag.unreliable_criteria(),
         "disagreements": ag.disagreements,

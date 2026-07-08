@@ -26,6 +26,13 @@ app = typer.Typer(
 )
 
 
+def _validate_port(port: int) -> None:
+    """Reject an out-of-range port before uvicorn does (with a raw error)."""
+    if not (1 <= port <= 65535):
+        typer.secho(f"--port must be between 1 and 65535 (got {port}).", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+
 def _scorecard_or_exit(path: Path, rid: str):
     """Load a saved scorecard, or exit friendly — a scorecard.json can be
     corrupt/truncated/hand-edited, so never let a raw traceback escape."""
@@ -277,7 +284,7 @@ def login(
         )
         raise typer.Exit(code=0)
     typer.secho(
-        f"Unknown provider {provider!r}. Use 'claude' or 'openai'.",
+        f"Unknown provider {provider!r}. Use 'claude' (aka 'anthropic') or 'openai'.",
         fg=typer.colors.RED,
     )
     raise typer.Exit(code=1)
@@ -302,6 +309,10 @@ def ingest(
     with project_lock(path):
         project = _load(path)
         src = source or (Path(path) / "materials")
+        if src.exists() and not src.is_dir():  # --source pointed at a file, not a dir
+            typer.secho(f"--source {src} must be a directory of materials, not a file.",
+                        fg=typer.colors.RED)
+            raise typer.Exit(code=1)
         if not src.exists() or not any(src.iterdir()):
             typer.secho(
                 f"No materials found in {src}/. Add files there, then re-run.",
@@ -389,6 +400,11 @@ def interview(
     # command on this project. Collect by question id, then apply atomically.
     mode = "auto-accepting drafts" if accept_drafts else "Enter = accept the draft"
     typer.secho(f"{len(pending)} question(s) to answer ({mode}):\n", bold=True)
+    # Prompt once per unique id — a hand-edited project.yaml can have duplicate
+    # interview ids, and prompting for each would collect two answers under one
+    # dict key (losing the first). The apply step fans the answer to every match.
+    seen_ids: set[str] = set()
+    pending = [it for it in pending if not (it.id in seen_ids or seen_ids.add(it.id))]
     answers: dict[str, str] = {}
     for item in pending:
         if accept_drafts:
@@ -643,6 +659,7 @@ def run(
     """
     from .ci import certification_status
 
+    _validate_port(port)
     project = _load(path)
     if project.spec is None:
         typer.secho("Nothing to serve — run `calibrate compile` (or `import`) first.", fg=typer.colors.YELLOW)
@@ -1157,7 +1174,7 @@ def report(
     if rid:
         try:
             latest = load_scorecard(path, rid)
-        except (FileNotFoundError, ValueError, ValidationError):
+        except (OSError, ValueError, ValidationError):  # incl. PermissionError on read
             latest = None
 
     markdown = render_report(project, cov, latest)
@@ -1193,39 +1210,45 @@ def teach(
         typer.secho("--n must be between 1 and 20.", fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
-    with project_lock(path):
+    # Generate + judge + infer WITHOUT the lock — the interactive approve/reject
+    # loop can take minutes, and holding the project lock across it would block
+    # every other command on this project. Apply atomically at the end (like
+    # `interview`), against a FRESH load so a concurrent edit isn't clobbered.
+    project = _load(path)
+    try:
+        generator = get_engine(project.engines.compiler)
+        subject = get_engine(project.engines.subject)
+    except (RuntimeError, ValueError, NotImplementedError) as exc:
+        typer.secho(str(exc), fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    typer.echo(f"Generating {n} sample output(s) to judge (subject={subject.name}) …")
+    try:
+        candidates = propose_candidates(project, generator, subject, n=n, project_dir=path)
+    except Exception as exc:
+        typer.secho(f"Could not generate candidates: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    if not candidates:
+        typer.secho("No candidates to judge.", fg=typer.colors.YELLOW)
+        raise typer.Exit(code=1)
+
+    judged: list[Judged] = []
+    for c in candidates:
+        typer.secho(f"\nINPUT:  {c.input}", bold=True)
+        typer.echo(f"OUTPUT: {c.output}")
+        approved = typer.confirm("  Approve this output?", default=True)
+        reason = typer.prompt("  Why? (optional, Enter to skip)", default="", show_default=False).strip() or None
+        judged.append(Judged(input=c.input, output=c.output, approved=approved, reason=reason))
+
+    typer.echo("\nInferring your standards from these judgments …")
+    try:
+        learned = infer_standards(project.goal, judged, generator)
+    except Exception as exc:
+        typer.secho(f"Inference failed: {exc}", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    with project_lock(path):  # short critical section: reload → apply → save
         project = _load(path)
-        try:
-            generator = get_engine(project.engines.compiler)
-            subject = get_engine(project.engines.subject)
-        except (RuntimeError, ValueError, NotImplementedError) as exc:
-            typer.secho(str(exc), fg=typer.colors.RED)
-            raise typer.Exit(code=1)
-
-        typer.echo(f"Generating {n} sample output(s) to judge (subject={subject.name}) …")
-        try:
-            candidates = propose_candidates(project, generator, subject, n=n, project_dir=path)
-        except Exception as exc:
-            typer.secho(f"Could not generate candidates: {exc}", fg=typer.colors.RED)
-            raise typer.Exit(code=1)
-        if not candidates:
-            typer.secho("No candidates to judge.", fg=typer.colors.YELLOW)
-            raise typer.Exit(code=1)
-
-        judged: list[Judged] = []
-        for c in candidates:
-            typer.secho(f"\nINPUT:  {c.input}", bold=True)
-            typer.echo(f"OUTPUT: {c.output}")
-            approved = typer.confirm("  Approve this output?", default=True)
-            reason = typer.prompt("  Why? (optional, Enter to skip)", default="", show_default=False).strip() or None
-            judged.append(Judged(input=c.input, output=c.output, approved=approved, reason=reason))
-
-        typer.echo("\nInferring your standards from these judgments …")
-        try:
-            learned = infer_standards(project.goal, judged, generator)
-        except Exception as exc:
-            typer.secho(f"Inference failed: {exc}", fg=typer.colors.RED)
-            raise typer.Exit(code=1)
         result = apply_learned(project, judged, learned)
         save_project(project, path)
         if project.tests:  # refresh the build bundle if one exists
@@ -1528,11 +1551,7 @@ def serve(
     ),
 ) -> None:
     """Run the local API + web UI; open the printed URL in your browser. (M6)"""
-    if not (0 <= port <= 65535):
-        typer.secho(
-            f"--port must be between 0 and 65535 (got {port}).", fg=typer.colors.RED
-        )
-        raise typer.Exit(code=1)
+    _validate_port(port)  # 1..65535 (port 0 would print a wrong URL for a random bind)
     try:
         import uvicorn
         from .api import create_app, default_projects_root

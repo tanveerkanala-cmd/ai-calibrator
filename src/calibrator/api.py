@@ -123,7 +123,7 @@ class JudgeLabelsBody(BaseModel):
 
 class CiBody(BaseModel):
     threshold: float = Field(0.8, ge=0.0, le=1.0)
-    tolerance: float = Field(0.0, ge=0.0)
+    tolerance: float = Field(0.0, ge=0.0, le=1.0)  # le bounds it AND rejects inf (a rate delta is 0..1)
     judge_passes: int = Field(1, ge=1, le=9)
     baseline: str | None = None
 

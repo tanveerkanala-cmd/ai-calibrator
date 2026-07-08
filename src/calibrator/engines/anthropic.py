@@ -104,6 +104,7 @@ class AnthropicEngine(Engine):
             # content can be None/empty on a malformed or OpenAI-compatible proxy
             # response — don't let that raise a raw TypeError.
             blocks = resp.content or []
-            return next((b.text for b in blocks if getattr(b, "type", None) == "text"), "")
+            # `or ""` guards a text block whose .text is None — the contract is a str.
+            return next((b.text or "" for b in blocks if getattr(b, "type", None) == "text"), "")
 
         return call_json(_call) if schema is not None else _call()

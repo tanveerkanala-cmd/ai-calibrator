@@ -58,9 +58,11 @@ def refine_spec(project: Project, scorecard: Scorecard, engine: Engine) -> list[
     existing = set(project.spec.standards) | set(project.spec.do_not) if project.spec else set()
     fresh: list[str] = []
     for s in as_list(out.get("new_standards")):
-        if isinstance(s, str) and s.strip() and s not in existing:
-            existing.add(s)
-            fresh.append(s)
+        if isinstance(s, str):
+            st = s.strip()  # dedup + store by trimmed content, so " foo " ≠ "foo" doesn't slip a dup in
+            if st and st not in existing:
+                existing.add(st)
+                fresh.append(st)
     return fresh
 
 

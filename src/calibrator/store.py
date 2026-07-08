@@ -58,6 +58,16 @@ def _close_quietly(fd: int) -> None:
         pass
 
 
+def _unlink_quietly(path: str | Path) -> None:
+    """Remove a temp/stub file, swallowing errors — used in cleanup paths so a
+    failing unlink (e.g. a Windows PermissionError) can't mask the ORIGINAL
+    exception we're unwinding."""
+    try:
+        Path(path).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def open_private_append(path: str | Path):
     """Open a file for appending, owner-only (0600) — for local logs that may hold
     system prompts / model outputs / user queries, which must not be world-readable
@@ -89,7 +99,7 @@ def atomic_write_text(path: str | Path, text: str) -> Path:
         fh = os.fdopen(fd, "w", encoding="utf-8")
     except BaseException:  # fdopen didn't take the fd — close it (quietly, so the
         _close_quietly(fd)   # original error propagates) and drop the temp file
-        tmp.unlink(missing_ok=True)
+        _unlink_quietly(tmp)
         raise
     try:
         with fh:
@@ -100,7 +110,7 @@ def atomic_write_text(path: str | Path, text: str) -> Path:
         tmp = None
     finally:
         if tmp is not None:
-            tmp.unlink(missing_ok=True)
+            _unlink_quietly(tmp)
     return target
 
 
@@ -141,7 +151,7 @@ def save_project(project: Project, path: str | Path) -> Path:
         fh = os.fdopen(fd, "w", encoding="utf-8")
     except BaseException:  # fdopen didn't take the fd — close it (quietly, so the
         _close_quietly(fd)   # original error propagates) and drop the temp file
-        tmp.unlink(missing_ok=True)
+        _unlink_quietly(tmp)
         raise
     try:
         with fh:
@@ -152,7 +162,7 @@ def save_project(project: Project, path: str | Path) -> Path:
         tmp = None  # ownership transferred to `target`; nothing to clean up
     finally:
         if tmp is not None:
-            tmp.unlink(missing_ok=True)  # an error before replace left a stray temp
+            _unlink_quietly(tmp)  # an error before replace left a stray temp
 
     _fsync_dir(directory)
     return target
@@ -239,7 +249,7 @@ def write_project_gitignore(path: str | Path) -> Path:
         fh = os.fdopen(fd, "w", encoding="utf-8")
     except BaseException:  # fdopen didn't take the fd — don't leak it, drop the stub
         _close_quietly(fd)
-        target.unlink(missing_ok=True)
+        _unlink_quietly(target)
         raise
     try:
         with fh:
@@ -247,6 +257,6 @@ def write_project_gitignore(path: str | Path) -> Path:
     except BaseException:
         # ANY failure after the create (not just OSError) left a 0-byte file —
         # remove it so the next call isn't permanently blocked by the O_EXCL check.
-        target.unlink(missing_ok=True)
+        _unlink_quietly(target)
         raise
     return target
