@@ -167,13 +167,16 @@ def ci_dict(result: CiResult) -> dict:
 
 # --- the persisted gate record (what `calibrate run` boots against) ----------
 
-def config_hash(project: Project) -> str:
+def config_hash(project: Project, project_dir: str | Path | None = None) -> str:
     """Fingerprint of what a gate certifies: the compiled system prompt, the
-    subject binding, the grading contract (criteria + checks + weights), and the
-    test suite. If ANY of it changes — including new tests absorbed from live
-    feedback — a previous certification is STALE and must be re-earned."""
+    subject + judge bindings, the grading contract (criteria + checks + weights),
+    the test suite, AND — when ``project_dir`` is given — the knowledge index the
+    RAG-augmented AI retrieves from. If ANY of it changes (a new absorbed test, a
+    reweighted criterion, or a re-ingested/edited materials index) a previous
+    certification is STALE and must be re-earned."""
     if project.spec is None:
         return ""
+    from . import rag
     # Reordering list entries in the YAML is not a behavior change and must not
     # spuriously stale a certification. Criteria and tests are already sorted
     # below; render the prompt from a COPY whose prompt-affecting list fields are
@@ -195,14 +198,17 @@ def config_hash(project: Project) -> str:
                 # the certification just as a criterion change does.
                 + "\n@@judge=" + project.engines.judge
                 + "\n@@criteria=" + json.dumps(criteria, sort_keys=True, ensure_ascii=False)
-                + "\n@@tests=" + json.dumps(tests, sort_keys=True, ensure_ascii=False))
+                + "\n@@tests=" + json.dumps(tests, sort_keys=True, ensure_ascii=False)
+                # The retrieval index is part of the deployed AI now that eval/run
+                # query it — so its content is part of what the gate certifies.
+                + "\n@@rag=" + (rag.index_fingerprint(project_dir) if project_dir is not None else ""))
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
 def save_gate(project: Project, result: CiResult, project_dir: str | Path) -> Path:
     """Persist the gate verdict (pass AND fail — a red gate is a fact, not a secret)."""
     record = ci_dict(result)
-    record["config_hash"] = config_hash(project)
+    record["config_hash"] = config_hash(project, project_dir)
     record["finished_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
     return atomic_write_text(Path(project_dir) / "evals" / GATE_FILE,
                              json.dumps(record, indent=2, ensure_ascii=False))
@@ -232,8 +238,8 @@ def certification_status(project: Project, project_dir: str | Path) -> tuple[str
         return "none", "no gate on record — run `calibrate ci` to certify this AI"
     run = gate.get("run_id") or "?"
     when = gate.get("finished_at") or "unknown time"
-    if gate.get("config_hash") != config_hash(project):
-        return "stale", (f"the last gate ({run}, {when}) certified a DIFFERENT spec/subject — "
+    if gate.get("config_hash") != config_hash(project, project_dir):
+        return "stale", (f"the last gate ({run}, {when}) certified a DIFFERENT spec/subject/index — "
                          "re-run `calibrate ci`")
     if gate.get("ok"):
         rate = gate.get("pass_rate")

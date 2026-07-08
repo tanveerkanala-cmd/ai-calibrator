@@ -128,3 +128,38 @@ def test_runtime_and_eval_inject_identically(tmp_path):
     c.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": query}]})
     assert spy.systems[0] == eval_system            # runtime injects exactly what eval graded
     assert "30 days from delivery" in spy.systems[0]
+
+
+def test_reingested_index_stales_certification(tmp_path):
+    """The tightening: the cert fingerprints the INDEX content, so rebuilding it
+    from edited materials re-stales — while an unchanged index keeps it valid."""
+    from calibrator.ci import certification_status, config_hash, save_gate, CiResult, CiStage
+
+    p = _indexed_project(tmp_path)   # builds an index with the "30 days" chunk
+
+    # config_hash includes the index only when project_dir is given
+    # the index contributes to the hash (present with project_dir, empty without)
+    assert config_hash(p, tmp_path) != config_hash(p)
+
+    # simulate a passing gate for the CURRENT index
+    save_gate(p, CiResult(stages=[CiStage("lint", "pass", "")], run_id="run-0001",
+                          pass_rate=1.0, weighted_score=1.0), tmp_path)
+    assert certification_status(p, tmp_path)[0] == "pass"
+
+    # editing materials WITHOUT re-ingesting → index unchanged → still certified
+    assert certification_status(p, tmp_path)[0] == "pass"
+
+    # re-ingest with DIFFERENT content (rebuild the index) → stale
+    rag.build_index(tmp_path, [{"id": "c1", "text": "The window is now 45 days.", "source": "p.md"}])
+    status, detail = certification_status(p, tmp_path)
+    assert status == "stale" and "index" in detail
+
+
+def test_config_hash_no_index_is_backward_compatible(tmp_path):
+    """A project with no index: config_hash with/without project_dir is identical
+    (the @@rag component is empty), so all prior certs behave unchanged."""
+    from calibrator.ci import config_hash
+    from calibrator.models import BehaviorSpec, EvalCriterion, Project, Weight
+    p = Project(name="p", goal="g")
+    p.spec = BehaviorSpec(goal="g", eval_criteria=[EvalCriterion(id="c", description="d", weight=Weight.HIGH)])
+    assert config_hash(p, tmp_path) == config_hash(p)   # no knowledge.lancedb → same hash

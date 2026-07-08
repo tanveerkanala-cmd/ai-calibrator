@@ -82,6 +82,38 @@ def retrieve(project_dir: str | Path, query: str, top_k: int = TOP_K) -> list[st
         return []
 
 
+def index_fingerprint(project_dir: str | Path) -> str:
+    """A stable content hash of the knowledge index (every chunk's id+text+source),
+    or '' when no index exists or the extra is absent.
+
+    Part of the certification fingerprint: re-ingesting EDITED materials rebuilds
+    the index, changing this hash, so the gate goes stale — because eval/run
+    retrieve from the index, a changed index is a changed deployed AI. Editing a
+    material WITHOUT re-ingesting leaves the index (and this hash) unchanged,
+    which is correct: the served AI hasn't changed until you rebuild."""
+    db_path = Path(project_dir) / "knowledge.lancedb"
+    if not db_path.exists():
+        return ""
+    try:
+        import hashlib
+        import json
+
+        import lancedb
+        db = lancedb.connect(str(db_path))
+        if TABLE not in db.table_names():
+            return ""
+        # Read the whole table (to_list is a SEARCH-result method, not a table
+        # method) selecting only the content columns — no vectors.
+        arrow = db.open_table(TABLE).to_arrow().select(["id", "text", "source"])
+        items = sorted(
+            (str(r.get("id", "")), str(r.get("text", "")), str(r.get("source", "")))
+            for r in arrow.to_pylist()
+        )
+        return hashlib.sha256(json.dumps(items, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
+    except Exception:
+        return ""  # best-effort — a fingerprint failure must not break certification
+
+
 def knowledge_block(chunks: list[str]) -> str:
     """Format retrieved chunks as a system-prompt section, or '' if none."""
     if not chunks:
