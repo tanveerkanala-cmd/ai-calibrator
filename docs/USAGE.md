@@ -216,7 +216,7 @@ Calibrates the **judge** — the eval is only as trustworthy as the LLM doing th
 grading. Confirm or correct a sample of the judge's verdicts from the latest run;
 it reports how often the judge agreed with you, overall and **per criterion**, and
 flags the criteria where the judge is unreliable (too subjective — reword them, or
-grade with `eval --judge-passes`). The §9 "calibrate the judge" mitigation, made
+grade with `eval --judge-passes`). The "calibrate the judge" mitigation, made
 concrete. Your answers are saved to `evals/<run>/human-labels.json` — they're an
 asset: `calibrate train-engine judge` uses them as **ground truth** (§6b).
 
@@ -236,12 +236,12 @@ calibrate ci my-ai --threshold 0.9 --tolerance 0.05   # e.g. nightly, or on ever
 Attach a **deterministic check** to a criterion so it's graded exactly by code —
 not the noisy LLM judge — for objectively-verifiable behavior. Kinds: `contains`,
 `not_contains`, `regex`, `max_chars`, `min_chars`, `non_empty`. e.g.
-`calibrate add-check my-ai cites contains "30-day"`. This is §9's layer-1
-(deterministic checks): the reliability floor under the judge.
+`calibrate add-check my-ai cites contains "30-day"`. This is the layer-1
+(deterministic-check) reliability floor under the judge.
 
 ### `calibrate examples-to-tests` (no engine)
 Turns the spec's good/bad **examples** into regression tests (each example's input
-becomes a test graded against all criteria) — §9's "golden examples as regression
+becomes a test graded against all criteria) — "golden examples as regression
 anchors", so the exact cases you cared about stay pinned in the suite.
 
 ### `calibrate coverage` (no engine — instant)

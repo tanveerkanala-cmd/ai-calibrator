@@ -45,10 +45,11 @@ end-to-end against a real local model via Ollama.
 Roadmap: `docs/BUILD-PLAN.md` · Architecture: `docs/ARCHITECTURE.md` ·
 Contributing: [`CONTRIBUTING.md`](CONTRIBUTING.md)
 
-## Quickstart (dev)
+## Quickstart
 
 ```bash
-pip install -e '.[cloud]'
+# from a clone of this repo:
+pip install '.[cloud]'                   # or '.[all]' for every engine + the web UI
 export ANTHROPIC_API_KEY=sk-ant-...      # your own key; nothing is stored in the repo
 calibrate --help
 calibrate init my-support-ai --goal "Answer customer product questions in our voice."

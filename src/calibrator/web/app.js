@@ -11,8 +11,17 @@ async function api(method, path, body) {
   }
   const res = await fetch("/api" + path, opts);
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.detail || res.statusText);
+  if (!res.ok) throw new Error(detailMessage(data.detail) || res.statusText);
   return data;
+}
+
+// FastAPI validation errors arrive as detail=[{loc,msg,...}]; a plain
+// `new Error(array)` renders "[object Object]". Turn it into readable text.
+function detailMessage(detail) {
+  if (Array.isArray(detail)) {
+    return detail.map((e) => (e && e.msg) ? e.msg : JSON.stringify(e)).join("; ");
+  }
+  return typeof detail === "string" ? detail : (detail ? JSON.stringify(detail) : "");
 }
 
 function banner(msg) {
