@@ -11,7 +11,24 @@ from __future__ import annotations
 from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+# YAML re-interprets these Unicode line separators as line breaks, so a value
+# containing one does NOT survive a project.yaml round-trip (save→load changes
+# it). They can arrive from an ingested document (PDF/DOCX line separators).
+# Normalizing them to "\n" at construction is semantic-preserving and makes every
+# persisted field round-trip stably. (Hypothesis property test found this.)
+_YAML_LINE_SEPARATORS = str.maketrans({"\u0085": "\n", "\u2028": "\n", "\u2029": "\n"})
+
+
+def _normalize_yaml_text(v: object) -> object:
+    if isinstance(v, str):
+        return v.translate(_YAML_LINE_SEPARATORS)
+    if isinstance(v, list):
+        return [_normalize_yaml_text(x) for x in v]
+    if isinstance(v, dict):
+        return {k: _normalize_yaml_text(x) for k, x in v.items()}
+    return v
 
 
 class PreservingModel(BaseModel):
@@ -23,6 +40,13 @@ class PreservingModel(BaseModel):
     save). The data is inert to this version but survives; ``calibrate lint``
     flags it so a typo doesn't hide forever."""
     model_config = ConfigDict(extra="allow")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _strip_yaml_hostile_separators(cls, data: object) -> object:
+        # Only the exotic U+0085/U+2028/U+2029 separators, normalized to "\n" so
+        # every stored string survives the YAML round-trip unchanged.
+        return _normalize_yaml_text(data) if isinstance(data, dict) else data
 
 
 class TaskType(str, Enum):
