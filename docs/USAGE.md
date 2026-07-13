@@ -433,12 +433,24 @@ calibrate finetune --base mistralai/Mistral-7B-Instruct-v0.3   # pick the open b
 It assembles a chat-format dataset from your spec's examples (human-authored /
 corrected — never the model's own output), recommends a LoRA recipe for the base
 model (`--base`, a Hugging Face model id; default `Qwen/Qwen2.5-7B-Instruct`),
-and emits a runnable training script. You train on a GPU (local ~16 GB+, or a rented cloud
-GPU), then run the **prove-it gate** — keep the fine-tune *only* if it beats your
-configured baseline on the same evals:
+and emits a **device-aware** training script (CUDA / Apple-Silicon MPS / CPU).
+
+**One-command run** — build the bundle, install the training stack (with your
+OK), and train, in a single step:
+```bash
+calibrate train                    # detects your hardware, offers to install torch/transformers/…, then trains
+calibrate train --base Qwen/Qwen2.5-3B-Instruct    # a smaller base fits a 10–12 GB GPU or an M-series Mac
+calibrate train --qlora            # load the base in 4-bit (CUDA + bitsandbytes) so a 7B fits a consumer card
+```
+(Or install once — `pip install 'ai-calibrator[train]'` — and run `python
+train.py` yourself.) Then run the **prove-it gate** — keep the fine-tune *only*
+if it beats your configured baseline on the same evals:
 ```bash
 calibrate finetune --gate --baseline <run-id> --candidate <run-id>
 ```
+Fitting the hardware: a fp16 LoRA of a 7B wants ~16 GB VRAM; below that use
+`--qlora` (CUDA) or a smaller `--base`. On Apple Silicon a 0.5–3B base trains on
+the MPS GPU comfortably; the 7B needs ~24 GB+ unified memory.
 Non-technical users never see any of this. Details in
 [`ARCHITECTURE.md`](ARCHITECTURE.md) §3.1.
 

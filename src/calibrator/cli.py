@@ -1632,8 +1632,94 @@ def finetune(
     for f in result.files:
         typer.echo(f"    {f}")
     typer.echo(
-        "\nNext: train on a GPU (see finetune/README.md), then prove it wins:\n"
+        "\nNext: run it in one step —  calibrate train  (installs prereqs + trains),\n"
+        "or train manually on a GPU (see finetune/README.md). Then prove it wins:\n"
         "  calibrate finetune --gate --baseline <run> --candidate <run>"
+    )
+
+
+@app.command()
+def train(
+    path: Path = typer.Argument(Path("."), help="Project directory."),
+    base: Optional[str] = typer.Option(None, "--base", help="Open base model (e.g. Qwen/Qwen2.5-3B-Instruct)."),
+    qlora: bool = typer.Option(False, "--qlora", help="Load the base in 4-bit (CUDA + bitsandbytes only) — fits a smaller GPU."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Install missing training dependencies without prompting."),
+) -> None:
+    """Fine-tune your calibrated AI locally, in ONE step: build the bundle, install
+    the prereqs (with your OK), and run training. (Advanced tier)
+
+    Detects your hardware (CUDA / Apple-Silicon MPS / CPU), installs the training
+    stack if it's missing, downloads the base model, and trains a LoRA adapter.
+    Then prove it actually helps with `calibrate finetune --gate` — never rely on a
+    fine-tune that doesn't beat your prompt+RAG baseline."""
+    import importlib.util
+    import os
+    import subprocess
+
+    project = _load(path)
+    if project.spec is None:
+        typer.secho("Nothing to fine-tune — run `calibrate compile` first.", fg=typer.colors.YELLOW)
+        raise typer.Exit(code=1)
+
+    # 1. build / refresh the bundle (dataset + recipe + train.py)
+    from .finetune import export_finetune
+    try:
+        result = export_finetune(project, project_dir=path, base_model=base)
+    except ValueError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    if result.examples == 0:
+        typer.secho("No training examples — add examples (or capture eval corrections) first.", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    if result.examples < 20:
+        typer.secho(f"⚠ Only {result.examples} example(s). A fine-tune usually needs 50+ to beat the "
+                    "prompt+RAG baseline — the gate may well REJECT this. Training anyway.",
+                    fg=typer.colors.YELLOW)
+    typer.echo(f"Bundle: {result.bundle_dir}/  ({result.examples} example(s), {result.method} on {result.base_model})")
+
+    # 2. ensure the training stack (offered, not forced)
+    need = [m for m in ("torch", "transformers", "trl", "peft", "datasets", "accelerate")
+            if importlib.util.find_spec(m) is None]
+    if qlora and importlib.util.find_spec("bitsandbytes") is None:
+        need.append("bitsandbytes")
+    if need:
+        typer.secho(f"\nTraining needs: {', '.join(need)}  (torch is a large download — several GB).",
+                    fg=typer.colors.YELLOW)
+        typer.echo("  (or install once yourself:  pip install 'ai-calibrator[train]')")
+        if not yes and not typer.confirm("  Install them now?", default=True):
+            raise typer.Exit(code=1)
+        if subprocess.run([sys.executable, "-m", "pip", "install", *need]).returncode != 0:
+            typer.secho("Dependency install failed — install manually and retry.", fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+
+    # 3. hardware
+    import torch
+    device = ("cuda" if torch.cuda.is_available()
+              else "mps" if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available()
+              else "cpu")
+    if qlora and device != "cuda":
+        typer.secho("--qlora needs a CUDA GPU (bitsandbytes) — training in full precision instead.",
+                    fg=typer.colors.YELLOW)
+        qlora = False
+    typer.secho(f"\nTraining on {device.upper()} — first run downloads the base model …", fg=typer.colors.CYAN)
+
+    # 4. run the tool's generated, device-aware train.py
+    env = {**os.environ, "PYTORCH_ENABLE_MPS_FALLBACK": "1", "TOKENIZERS_PARALLELISM": "false"}
+    if qlora:
+        env["QLORA"] = "1"
+    if subprocess.run([sys.executable, "train.py"], cwd=result.bundle_dir, env=env).returncode != 0:
+        typer.secho("\nTraining failed (see the output above). Common fixes: fewer GB → smaller --base "
+                    "or --qlora (CUDA); on Apple Silicon a 7B needs ~24GB+ unified memory.", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    adapter = Path(result.bundle_dir) / "adapter"
+    typer.secho(f"\n✓ Trained a LoRA adapter → {adapter}/", fg=typer.colors.GREEN)
+    typer.echo(
+        "\nNext — PROVE it helps before relying on it (a fine-tune isn't automatically better):\n"
+        "  1. serve the fine-tuned model (merge the adapter + `ollama create`, or an endpoint)\n"
+        "  2. point the project's `subject` engine at it and run `calibrate eval`\n"
+        "  3. calibrate finetune --gate --baseline <pre-ft-run> --candidate <new-run>\n"
+        "     — keep it ONLY if the gate says it beats your baseline."
     )
 
 

@@ -162,3 +162,38 @@ def test_eval_rounds_bounds_validated_before_project(tmp_path):
     for bad in ("0", "101"):
         r = runner.invoke(app, ["eval", str(d), f"--rounds={bad}"])
         assert r.exit_code == 1 and "between 1 and 100" in r.output and _has_no_traceback(r.output)
+
+
+def test_train_requires_a_compiled_spec(tmp_path):
+    (tmp_path / "project.yaml").write_text("name: p\ngoal: g\n")   # no spec
+    r = runner.invoke(app, ["train", str(tmp_path)])
+    assert r.exit_code == 1 and "compile" in r.output and _has_no_traceback(r.output)
+
+
+def test_train_requires_examples(tmp_path):
+    # a compiled spec but no examples → the Advanced tier has nothing to learn from
+    import yaml
+    (tmp_path / "project.yaml").write_text(yaml.safe_dump({
+        "name": "p", "goal": "g",
+        "spec": {"goal": "g", "eval_criteria": [{"id": "c1", "description": "d", "weight": "high"}]},
+    }))
+    r = runner.invoke(app, ["train", str(tmp_path)])
+    assert r.exit_code == 1 and "training examples" in r.output.lower() and _has_no_traceback(r.output)
+
+
+def test_train_offers_deps_and_respects_decline(tmp_path, monkeypatch):
+    """If the training stack is missing, it OFFERS to install and does nothing on
+    'no' — never a silent pip install."""
+    import importlib.util
+    import yaml
+    (tmp_path / "project.yaml").write_text(yaml.safe_dump({
+        "name": "p", "goal": "g",
+        "spec": {"goal": "g", "examples": [{"input": "hi", "good_output": "hello there"}],
+                 "eval_criteria": [{"id": "c1", "description": "d", "weight": "high"}]},
+    }))
+    real = importlib.util.find_spec
+    monkeypatch.setattr(importlib.util, "find_spec", lambda m: None if m == "torch" else real(m))
+    r = runner.invoke(app, ["train", str(tmp_path)], input="n\n")   # decline the install prompt
+    assert r.exit_code == 1
+    assert "torch" in r.output and "ai-calibrator[train]" in r.output   # guided, not silent
+    assert _has_no_traceback(r.output)
