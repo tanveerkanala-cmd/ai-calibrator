@@ -715,3 +715,21 @@ def test_ingest_with_materials_succeeds(tmp_path):
     c.post("/api/projects", json={"name": "p", "goal": "g"})
     c.post("/api/projects/p/materials", files={"file": ("f.md", b"policy text", "text/markdown")})
     assert c.post("/api/projects/p/ingest").status_code == 200
+
+
+def test_api_bulk_add_examples(tmp_path):
+    import pytest
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from calibrator.api import create_app
+    from calibrator.models import BehaviorSpec, Project
+    from calibrator.store import save_project
+    p = Project(name="ex", goal="g"); p.spec = BehaviorSpec(goal="g")
+    save_project(p, tmp_path / "ex")
+    c = TestClient(create_app(tmp_path))
+    r = c.post("/api/projects/ex/examples", json={"examples": [
+        {"question": "a", "answer": "A"}, {"input": "b", "output": "B"}, {"input": "a", "output": "dup"}]})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["added"] == 2 and body["skipped"] == 1 and body["unique_inputs"] == 2

@@ -197,3 +197,17 @@ def test_train_offers_deps_and_respects_decline(tmp_path, monkeypatch):
     assert r.exit_code == 1
     assert "torch" in r.output and "ai-calibrator[train]" in r.output   # guided, not silent
     assert _has_no_traceback(r.output)
+
+
+def test_examples_requires_spec_then_imports(tmp_path):
+    import yaml
+    (tmp_path / "project.yaml").write_text("name: p\ngoal: g\n")   # no spec
+    r = runner.invoke(app, ["examples", str(tmp_path)])
+    assert r.exit_code == 1 and "compile" in r.output and _has_no_traceback(r.output)
+    # give it a spec, then import a CSV through the command
+    (tmp_path / "project.yaml").write_text(yaml.safe_dump({"name": "p", "goal": "g", "spec": {"goal": "g"}}))
+    csv = tmp_path / "qa.csv"; csv.write_text("question,answer\nHi?,Hello!\nBye?,See ya!\n")
+    r = runner.invoke(app, ["examples", str(tmp_path), "--import", str(csv)])
+    assert r.exit_code == 0 and "Imported 2" in r.output and "48 more" in r.output
+    from calibrator.store import load_project
+    assert len(load_project(tmp_path).spec.examples) == 2

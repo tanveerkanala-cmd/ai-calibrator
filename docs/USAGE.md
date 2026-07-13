@@ -425,6 +425,18 @@ Each value is a `model@provider` string. Providers: `anthropic`, `openai`,
 
 ## 6. Advanced mode — fine-tuning ✅ (opt-in, technical users)
 
+**First, the data.** A fine-tune is only as good as its examples, and most owners
+already have some (past replies, an FAQ, a spreadsheet). Collect + curate them:
+```bash
+calibrate examples                          # review: how many you have, how far from a solid fine-tune
+calibrate examples --import support-qa.csv  # bulk-import input/output pairs (.csv/.jsonl/.json/.yaml)
+calibrate examples --dedup                  # drop duplicate inputs
+```
+Column/key names are matched flexibly (`input`/`question`/`prompt`…,
+`good_output`/`output`/`answer`…). Examples also grow from `calibrate teach` and
+captured eval corrections. Rule of thumb: ~50+ before a fine-tune tends to beat
+the prompt+RAG baseline.
+
 For technical users, when evals show configuration alone isn't enough:
 ```bash
 calibrate finetune                 # → <project>/finetune/ : dataset.jsonl, recipe.yaml, train.py, README

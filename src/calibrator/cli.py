@@ -1723,6 +1723,65 @@ def train(
     )
 
 
+@app.command()
+def examples(
+    path: Path = typer.Argument(Path("."), help="Project directory."),
+    import_file: Optional[Path] = typer.Option(
+        None, "--import", help="Bulk-import input/output pairs from a .csv / .jsonl / .json / .yaml file."),
+    dedup: bool = typer.Option(False, "--dedup", help="Remove duplicate examples (same input)."),
+) -> None:
+    """Review, import, and dedup training examples — the fuel for fine-tuning. (no engine)
+
+    Most owners already HAVE examples (past replies, an FAQ, a spreadsheet). Import
+    them in one shot: `calibrate examples --import my-qa.csv`. Column/key names are
+    matched flexibly (input/question/prompt…, good_output/output/answer…)."""
+    from .examples_io import dedup_examples, examples_status, load_examples_file, merge_examples
+
+    if _load(path).spec is None:
+        typer.secho("No spec yet — run `calibrate compile` first (examples attach to the behavior spec).",
+                    fg=typer.colors.YELLOW)
+        raise typer.Exit(code=1)
+
+    if import_file is not None:
+        try:
+            new = load_examples_file(import_file)
+        except ValueError as exc:
+            typer.secho(str(exc), fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+        with project_lock(path):                 # load→mutate→save under the lock (fresh reload)
+            project = _load(path)
+            added, skipped = merge_examples(project.spec, new)
+            save_project(project, path)
+        msg = f"✓ Imported {added} example(s) from {import_file.name}"
+        typer.secho(msg + (f" ({skipped} duplicate(s) skipped)." if skipped else "."), fg=typer.colors.GREEN)
+
+    if dedup:
+        with project_lock(path):
+            project = _load(path)
+            removed = dedup_examples(project.spec)
+            save_project(project, path)
+        typer.secho(f"✓ Removed {removed} duplicate example(s)." if removed else "No duplicates to remove.",
+                    fg=typer.colors.GREEN)
+
+    project = _load(path)
+    st = examples_status(project.spec)
+    dupe_note = f" ({st['duplicates']} duplicate(s) — `--dedup` to clean)" if st["duplicates"] else ""
+    typer.secho(f"\n{st['unique_inputs']} unique training example(s){dupe_note}; "
+                f"{st['with_output']} with an output.", bold=True)
+    if st["enough_to_finetune"]:
+        typer.secho(f"✓ Enough to try a fine-tune (recommended ≥{st['recommended']}). Next:  calibrate train",
+                    fg=typer.colors.GREEN)
+    else:
+        typer.secho(f"→ {st['short_by']} more for a solid fine-tune (recommended ≥{st['recommended']}). "
+                    "Add via --import <file>, `calibrate teach`, or captured eval corrections.",
+                    fg=typer.colors.CYAN)
+    for ex in project.spec.examples[:6]:
+        out = (ex.good_output or "")[:60]
+        typer.echo(f"  • {ex.input[:60]}" + (f"  →  {out}" if out else "  (no output yet)"))
+    if len(project.spec.examples) > 6:
+        typer.echo(f"  … and {len(project.spec.examples) - 6} more")
+
+
 def main() -> None:
     # A limited terminal encoding (ascii / cp1252 console) must degrade glyphs
     # (✓ ⚠ →) to '?', never crash — Rich's --help rendering raised a raw

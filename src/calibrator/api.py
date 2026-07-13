@@ -91,6 +91,11 @@ class LogBody(BaseModel):
     enabled: bool
 
 
+class ExamplesBody(BaseModel):
+    examples: list[dict] = Field(default_factory=list)   # [{input, good_output?, ...}] — flexible keys
+    dedup: bool = True
+
+
 class MergeDetectBody(BaseModel):
     sources: list[str]
 
@@ -345,6 +350,21 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
                     applied += 1
             save_project(project, d)
         return {"applied": applied, "state": _state(project)}
+
+    @app.post("/api/projects/{name}/examples")
+    def add_examples(name: str, body: ExamplesBody):
+        """Bulk-add training examples (the fuel for the Advanced tier). Same
+        flexible shapes as `calibrate examples --import` — but from the request
+        body, never a server file path (no path-traversal surface)."""
+        from .examples_io import _row_to_example, examples_status, merge_examples
+        new = [ex for row in body.examples if isinstance(row, dict) and (ex := _row_to_example(row))]
+        with _locked(name) as d:
+            project = _load(name)
+            if project.spec is None:
+                raise HTTPException(400, "No spec yet — run compile first (examples attach to the spec).")
+            added, skipped = merge_examples(project.spec, new, dedup=body.dedup)
+            save_project(project, d)
+        return {"added": added, "skipped": skipped, **examples_status(_load(name).spec)}
 
     @app.post("/api/projects/{name}/compile")
     def compile_(name: str, make_engine=Depends(_engine_factory)):
