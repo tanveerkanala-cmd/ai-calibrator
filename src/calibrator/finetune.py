@@ -26,13 +26,18 @@ from .store import atomic_write_text
 DEFAULT_BASE = "Qwen/Qwen2.5-7B-Instruct"  # an open base you can actually LoRA
 
 _TRAIN_PY = '''#!/usr/bin/env python3
-"""LoRA fine-tune from dataset.jsonl. Run on a GPU:
+"""LoRA fine-tune from dataset.jsonl. Runs on CUDA, Apple Silicon (MPS), or CPU.
 
-    pip install "transformers>=4.44" "trl>=0.9" peft datasets accelerate
+    pip install "transformers>=4.46" "trl>=0.12" peft datasets accelerate
     python train.py            # writes the LoRA adapter to ./__OUT__/
-"""
-import json
 
+On a memory-limited CUDA GPU: `pip install bitsandbytes` and set QLORA=1 to load
+the base in 4-bit (CUDA only -- not supported on Apple Silicon). On MPS, if an op
+is unimplemented, export PYTORCH_ENABLE_MPS_FALLBACK=1."""
+import json
+import os
+
+import torch
 from datasets import Dataset
 from peft import LoraConfig
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -42,18 +47,35 @@ BASE = "__BASE__"
 OUT = "__OUT__"
 
 
+def _device() -> str:
+    if torch.cuda.is_available():
+        return "cuda"
+    if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
 def main() -> None:
     with open("dataset.jsonl", encoding="utf-8") as f:
         rows = [json.loads(line) for line in f if line.strip()]
     if not rows:
-        raise SystemExit("dataset.jsonl is empty — add training examples first.")
+        raise SystemExit("dataset.jsonl is empty -- add training examples first.")
 
+    device = _device()
     tokenizer = AutoTokenizer.from_pretrained(BASE)
     texts = [tokenizer.apply_chat_template(r["messages"], tokenize=False) for r in rows]
     dataset = Dataset.from_list([{"text": t} for t in texts])
 
-    model = AutoModelForCausalLM.from_pretrained(BASE, device_map="auto")
-    peft_config = LoraConfig(r=16, lora_alpha=32, lora_dropout=0.05, task_type="CAUSAL_LM")
+    qlora = bool(os.getenv("QLORA")) and device == "cuda"
+    if qlora:                                          # 4-bit -- CUDA + bitsandbytes only
+        from transformers import BitsAndBytesConfig
+        model = AutoModelForCausalLM.from_pretrained(BASE, quantization_config=BitsAndBytesConfig(
+            load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=torch.bfloat16))
+    else:
+        # fp32 off-CUDA (MPS/CPU are unstable in half precision for training)
+        dtype = torch.bfloat16 if device == "cuda" else torch.float32
+        model = AutoModelForCausalLM.from_pretrained(BASE, dtype=dtype).to(device)
+
     config = SFTConfig(
         output_dir=OUT,
         num_train_epochs=5,
@@ -62,12 +84,14 @@ def main() -> None:
         gradient_accumulation_steps=8,
         logging_steps=5,
         dataset_text_field="text",
-        max_seq_length=2048,
+        max_length=2048,
+        bf16=(device == "cuda"),
     )
+    peft_config = LoraConfig(r=16, lora_alpha=32, lora_dropout=0.05, task_type="CAUSAL_LM")
     trainer = SFTTrainer(model=model, args=config, train_dataset=dataset, peft_config=peft_config)
     trainer.train()
     trainer.save_model(OUT)
-    print(f"saved LoRA adapter to {OUT}/")
+    print(f"saved LoRA adapter to {OUT}/ (trained on {device})")
 
 
 if __name__ == "__main__":
@@ -122,7 +146,8 @@ def recommend_recipe(n_examples: int, *, base_model: str | None = None) -> dict:
         "lora_dropout": 0.05,
         "max_seq_len": 2048,
         "output_dir": "adapter",
-        "hardware": "LoRA of a 7B needs ~16GB VRAM; below that, run on a rented cloud GPU.",
+        "hardware": "Runs on CUDA/MPS/CPU (auto). fp16 LoRA of a 7B ~16GB VRAM; "
+                    "below that use QLORA=1 (4-bit, CUDA only) or a smaller --base.",
     }
 
 
@@ -142,11 +167,17 @@ configured baseline on the same evals** — that's the gate below.
 Dataset: **{n} example(s)** assembled from your spec's good examples. More (and
 human-corrected) examples → a better fine-tune.
 
-## 1. Train (needs a GPU — LoRA of a 7B ~16GB VRAM, else rent a cloud GPU)
+## 1. Train (runs on CUDA, Apple Silicon/MPS, or CPU — auto-detected)
 ```bash
-pip install "transformers>=4.44" "trl>=0.9" peft datasets accelerate
+pip install "transformers>=4.46" "trl>=0.12" peft datasets accelerate
 python train.py        # writes the LoRA adapter to ./{recipe["output_dir"]}/
 ```
+Fitting the base to your hardware: a fp16 LoRA of a 7B wants ~16GB VRAM. Below
+that, either (a) `pip install bitsandbytes` and `QLORA=1 python train.py` to load
+the 7B in 4-bit (CUDA only — fits a 10-12GB card), or (b) regenerate with a
+smaller base: `calibrate finetune --base Qwen/Qwen2.5-3B-Instruct` (or `-1.5B-`).
+On Apple Silicon it trains on the MPS GPU (fp32; no bitsandbytes) — a 0.5–3B base
+fits comfortably; the 7B needs ~24GB+ unified memory.
 
 ## 2. Prove it beats the baseline
 1. Serve the fine-tuned model (merge + `ollama create`, or an endpoint).
