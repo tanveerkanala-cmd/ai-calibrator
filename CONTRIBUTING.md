@@ -9,7 +9,7 @@ is out of scope.
 ## Dev setup
 
 ```bash
-git clone <this repo> && cd ai-calibrator
+git clone https://github.com/tanveerkanala-cmd/ai-calibrator.git && cd ai-calibrator
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -e '.[dev]'    # pytest, ruff, mypy, bandit + the api extra for API tests
 ```

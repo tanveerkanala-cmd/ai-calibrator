@@ -32,6 +32,10 @@ dependencies = [
     "regex>=2024.5.10",
 ]
 
+[project.urls]
+Repository = "https://github.com/tanveerkanala-cmd/ai-calibrator"
+Issues = "https://github.com/tanveerkanala-cmd/ai-calibrator/issues"
+
 [project.optional-dependencies]
 cloud = ["anthropic>=0.49", "openai>=1.40"]
 api = ["fastapi>=0.110", "uvicorn>=0.29", "python-multipart>=0.0.9"]
