@@ -28,9 +28,15 @@ def test_non_ascii_roundtrip_under_c_locale(tmp_path):
         "assert load_golden(d) == {'t1': '退款 refund ✓'}\n"
         "print('OK')\n"
     )
+    # Write the (non-ASCII) script to a UTF-8 FILE and run the file — passing it via
+    # `python -c` fails on Linux under LC_ALL=C because the OS can't encode a
+    # non-ASCII argv (works on macOS, which uses UTF-8 for argv). The file path is
+    # ASCII; Python reads the source as UTF-8 (PEP 3120) regardless of locale.
+    script_file = tmp_path / "roundtrip.py"
+    script_file.write_text(script, encoding="utf-8")
     env = {**os.environ, "LC_ALL": "C", "LANG": "C", "PYTHONUTF8": "0"}
-    r = subprocess.run([sys.executable, "-c", script, str(tmp_path)],
-                       capture_output=True, text=True, env=env)
+    r = subprocess.run([sys.executable, str(script_file), str(tmp_path)],
+                       capture_output=True, encoding="utf-8", errors="replace", env=env)
     assert r.returncode == 0, f"stdout={r.stdout}\nstderr={r.stderr}"
     assert "OK" in r.stdout
 

@@ -61,10 +61,14 @@ def test_serve_rejects_out_of_range_port(tmp_path):
 
 
 def test_serve_help_works():
-    # Sanity: the command still parses and the option is documented.
+    # Sanity: the command still parses and the option is documented. Rich colorizes
+    # + wraps help (and CI has no TTY), so strip ANSI and collapse whitespace before
+    # checking — otherwise `--port` can be split or styled and the substring misses.
+    import re
     result = runner.invoke(app, ["serve", "--help"])
     assert result.exit_code == 0
-    assert "--port" in result.output
+    compact = re.sub(r"\s+", "", re.sub(r"\x1b\[[0-9;]*m", "", result.output))
+    assert "--port" in compact
 
 
 def test_redteam_rejects_out_of_range_max_probes(tmp_path):

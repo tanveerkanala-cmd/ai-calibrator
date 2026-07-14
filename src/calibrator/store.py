@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import time
 from pathlib import Path
 
 import yaml
@@ -56,6 +57,23 @@ def _close_quietly(fd: int) -> None:
         os.close(fd)
     except OSError:
         pass
+
+
+def _atomic_replace(src: str | Path, dst: str | Path) -> None:
+    """``os.replace``, retried on Windows's transient PermissionError.
+
+    On POSIX a rename over an open file always succeeds. On Windows the replace
+    fails ("Access is denied") if another thread/process has the target briefly
+    open — so under concurrent saves it can spuriously raise. A short backoff lets
+    the contender finish; POSIX errors still raise immediately."""
+    for attempt in range(50):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if os.name != "nt" or attempt == 49:
+                raise
+            time.sleep(min(0.005 * (attempt + 1), 0.1))
 
 
 def _unlink_quietly(path: str | Path) -> None:
@@ -106,7 +124,7 @@ def atomic_write_text(path: str | Path, text: str) -> Path:
             fh.write(text)
             fh.flush()
             os.fsync(fh.fileno())
-        os.replace(tmp, target)
+        _atomic_replace(tmp, target)
         tmp = None
     finally:
         if tmp is not None:
@@ -158,7 +176,7 @@ def save_project(project: Project, path: str | Path) -> Path:
             fh.write(data)
             fh.flush()
             os.fsync(fh.fileno())  # durability: bytes hit disk before the rename
-        os.replace(tmp, target)  # atomic on the same filesystem
+        _atomic_replace(tmp, target)  # atomic on the same filesystem (retries on Windows)
         tmp = None  # ownership transferred to `target`; nothing to clean up
     finally:
         if tmp is not None:
