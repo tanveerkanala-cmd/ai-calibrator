@@ -18,8 +18,8 @@ jobs:
           - { os: windows-latest, python: "3.12" }  # exercises the msvcrt lock path
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
       - name: Install (dev extra — no cloud SDKs needed; tests use fake engines)
@@ -35,8 +35,8 @@ jobs:
     # that would crash on Windows (cp1252) or a POSIX box with LC_ALL=C.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - run: pip install -e '.[dev]'
@@ -48,8 +48,8 @@ jobs:
     # Low findings (the fixed `ant` subprocess, best-effort except-pass) don't gate.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - run: pip install -e '.[dev]'
