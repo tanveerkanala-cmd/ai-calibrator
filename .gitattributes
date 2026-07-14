@@ -1,0 +1,10 @@
+# Normalize line endings across machines (your Mac + a Linux/Windows GPU box, and
+# the Windows CI runner): store text as LF in the repo, check out native locally.
+* text=auto eol=lf
+
+# Binary-ish assets — never munge line endings.
+*.png binary
+*.jpg binary
+*.gif binary
+*.safetensors binary
+*.lancedb binary
