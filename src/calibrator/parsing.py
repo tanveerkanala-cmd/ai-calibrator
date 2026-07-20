@@ -15,6 +15,23 @@ TEXT_SUFFIXES = {
     ".json", ".yaml", ".yml", ".log", ".html", ".htm",
 }
 
+# Extracted-text ceiling for compressed formats (PDF/DOCX are zip containers —
+# a small file can decompress to gigabytes and OOM the ingest before ingest's
+# own char caps apply). Generous: far above any real policy document.
+MAX_EXTRACTED_CHARS = 10_000_000
+
+
+def _capped_join(parts, sep: str = "\n") -> str:
+    """Join text parts, stopping once MAX_EXTRACTED_CHARS is reached."""
+    out: list[str] = []
+    total = 0
+    for part in parts:
+        out.append(part)
+        total += len(part) + len(sep)
+        if total >= MAX_EXTRACTED_CHARS:
+            break
+    return sep.join(out)[:MAX_EXTRACTED_CHARS]
+
 
 def read_document(path: str | Path) -> str:
     """Return the plain-text content of a file (best effort)."""
@@ -40,7 +57,13 @@ def _read_pdf(p: Path) -> str:
             "PDF parsing needs the `docs` extra:  pip install -e '.[docs]'"
         ) from exc
     reader = PdfReader(str(p))
-    return "\n".join((page.extract_text() or "") for page in reader.pages)
+    return _capped_join((page.extract_text() or "") for page in reader.pages)
+
+
+# A .docx is a zip; entries declare their decompressed size up front. Refusing
+# oversized declarations BEFORE parsing stops a zip bomb from OOM-ing the XML
+# parser itself (the char cap only bounds what we keep afterwards).
+MAX_DOCX_DECOMPRESSED_BYTES = 200 * 1024 * 1024
 
 
 def _read_docx(p: Path) -> str:
@@ -50,8 +73,19 @@ def _read_docx(p: Path) -> str:
         raise RuntimeError(
             "DOCX parsing needs the `docs` extra:  pip install -e '.[docs]'"
         ) from exc
+    import zipfile
+    try:
+        with zipfile.ZipFile(p) as z:
+            declared = sum(info.file_size for info in z.infolist())
+    except zipfile.BadZipFile as exc:
+        raise ValueError(f"{p.name}: not a valid .docx (zip) file") from exc
+    if declared > MAX_DOCX_DECOMPRESSED_BYTES:
+        raise ValueError(
+            f"{p.name}: declared decompressed size {declared / 1e6:.0f} MB exceeds the "
+            f"{MAX_DOCX_DECOMPRESSED_BYTES // (1024 * 1024)} MB safety cap"
+        )
     document = docx.Document(str(p))
-    return "\n".join(par.text for par in document.paragraphs)
+    return _capped_join(par.text for par in document.paragraphs)
 
 
 def chunk_text(text: str, *, size: int = 1000) -> list[str]:

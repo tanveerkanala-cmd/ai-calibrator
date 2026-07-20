@@ -677,9 +677,12 @@ def run(
         color = typer.colors.RED if status == "fail" else typer.colors.YELLOW
         typer.secho(f"⚠ UNCERTIFIED ({status}): {detail}", fg=color, bold=True)
 
+    is_local = host in ("127.0.0.1", "localhost", "::1")
     try:
         from .runtime import create_ai_app
-        application = create_ai_app(path, guard=guard)
+        # Non-local bind: widen the Host allowlist to that ONE host, so the
+        # anti-rebinding/CSRF guard keeps protecting it (mirrors `serve`).
+        application = create_ai_app(path, guard=guard, allowed_hosts=None if is_local else [host])
         import uvicorn
     except (RuntimeError, ValueError, NotImplementedError) as exc:
         typer.secho(str(exc), fg=typer.colors.RED)
@@ -688,7 +691,7 @@ def run(
         typer.secho("Serving needs the `api` extra:  pip install -e '.[api]'", fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
-    if host not in ("127.0.0.1", "localhost", "::1"):
+    if not is_local:
         typer.secho(f"⚠  Binding to {host} exposes the (unauthenticated) AI beyond localhost.",
                     fg=typer.colors.YELLOW)
     typer.echo(f"Serving '{project.name}' (subject: {project.engines.subject}"

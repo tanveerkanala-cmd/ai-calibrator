@@ -18,7 +18,9 @@ by swapping one ``base_url``. Three honesty properties make it more than a proxy
   ``logs/guard.jsonl``. The tests never stop running.
 
 Client ``system`` messages are ignored by design — the calibrated spec is the
-authority. No auth: bind localhost only (the CLI warns otherwise).
+authority. No auth: bind localhost only (the CLI warns otherwise). A shared
+Host/Origin guard (webguard.py) blocks browser CSRF and DNS rebinding — the
+two attacks localhost binding does NOT stop.
 
 NOTE: no ``from __future__ import annotations`` here — FastAPI must resolve the
 endpoint annotations (``Request``/``Response``) at runtime, and those are
@@ -40,6 +42,7 @@ from .engines.base import Engine
 from .eval import conversation_prompt
 from .models import Project
 from .store import load_project
+from .webguard import install_guard
 
 MAX_CHAT_CHARS = 200_000   # total message content cap — protects the engine
 RECENT_COMPLETIONS = 512   # how many completions stay addressable by id for /v1/feedback
@@ -118,7 +121,8 @@ def _log_guard(project_dir: Path, record: dict) -> None:
         pass
 
 
-def create_ai_app(project_dir: str | Path, *, engine: Engine | None = None, guard: bool = False):
+def create_ai_app(project_dir: str | Path, *, engine: Engine | None = None, guard: bool = False,
+                  allowed_hosts: list[str] | None = None):
     """Build the FastAPI app serving the calibrated AI at ``/v1``.
 
     ``engine`` overrides the subject binding (used by tests); the project is
@@ -143,6 +147,10 @@ def create_ai_app(project_dir: str | Path, *, engine: Engine | None = None, guar
     status, detail = certification_status(project, directory)
 
     app = FastAPI(title=f"{project.name} — calibrated AI", docs_url=None, redoc_url=None)
+    # Same Host/Origin guard as `calibrate serve` — localhost binding alone
+    # doesn't stop CSRF (a no-preflight cross-origin POST would burn the
+    # owner's engine API key) or DNS rebinding. See webguard.py.
+    install_guard(app, allowed_hosts)
     # id → {"turns": [user turns], "output": answer}; lets /v1/feedback reference
     # a completion by id (the flywheel's capture point).
     recent: OrderedDict[str, dict] = OrderedDict()

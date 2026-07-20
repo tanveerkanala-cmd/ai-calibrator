@@ -283,3 +283,39 @@ def test_completion_ids_unique_past_ring_buffer(tmp_path):
         r = c.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "q"}]})
         ids.add(r.json()["id"])
     assert len(ids) == RECENT_COMPLETIONS + 25  # every id distinct
+
+
+def test_cross_origin_post_is_blocked(tmp_path):
+    """The serving endpoint spends the owner's engine key — a hostile page must
+    not be able to drive it via a no-preflight cross-origin POST (CSRF)."""
+    _seed(tmp_path)
+    c = _client(tmp_path, RecordingEngine(["ok"]))
+    payload = {"messages": [{"role": "user", "content": "q"}]}
+    # no Origin (scripts/SDKs/TestClient) and same-origin Origin are allowed
+    assert c.post("/v1/chat/completions", json=payload).status_code == 200
+    assert c.post("/v1/chat/completions", json=payload,
+                  headers={"Origin": "http://testserver"}).status_code == 200
+    # cross-origin Origin on a mutating request is rejected (CSRF guard)
+    assert c.post("/v1/chat/completions", json=payload,
+                  headers={"Origin": "https://evil.example"}).status_code == 403
+
+
+def test_foreign_host_is_blocked(tmp_path):
+    """DNS rebinding: a Host outside the allowlist is rejected outright."""
+    _seed(tmp_path)
+    c = _client(tmp_path, RecordingEngine(["ok"]))
+    assert c.get("/").status_code == 200  # default Host "testserver" allowed
+    assert c.get("/", headers={"Host": "evil.example"}).status_code == 400
+
+
+def test_csrf_guard_stays_on_when_host_is_widened(tmp_path):
+    """--host <addr> widens the allowlist to that one host; the cross-origin
+    guard must survive the widening (mirrors the serve/api guarantee)."""
+    _seed(tmp_path)
+    app = create_ai_app(tmp_path, engine=RecordingEngine(["ok"]), allowed_hosts=["192.168.1.50"])
+    client = TestClient(app, base_url="http://192.168.1.50")
+    payload = {"messages": [{"role": "user", "content": "q"}]}
+    assert client.post("/v1/chat/completions", json=payload,
+                       headers={"Origin": "http://192.168.1.50:8600"}).status_code == 200
+    assert client.post("/v1/chat/completions", json=payload,
+                       headers={"Origin": "https://evil.example"}).status_code == 403

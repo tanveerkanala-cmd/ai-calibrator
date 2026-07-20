@@ -13,13 +13,11 @@ import os
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
-from urllib.parse import urlsplit
 
 import yaml
 
 try:
     from fastapi import Depends, FastAPI, HTTPException, UploadFile
-    from fastapi.responses import JSONResponse
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel, Field, ValidationError
 except ImportError as exc:  # pragma: no cover - depends on optional extra
@@ -28,6 +26,7 @@ except ImportError as exc:  # pragma: no cover - depends on optional extra
 from .auth import all_status
 from .models import EngineBinding, Project, TaskType
 from .store import load_project, project_lock, save_project, write_project_gitignore
+from .webguard import install_guard
 
 WEB_DIR = Path(__file__).parent / "web"
 
@@ -158,7 +157,6 @@ def _engine_factory():
 
 
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB cap on material uploads
-_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1", "testserver"}
 
 
 def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | None = None) -> "FastAPI":
@@ -166,24 +164,9 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
     root.mkdir(parents=True, exist_ok=True)
     app = FastAPI(title="AI Calibrator")
 
-    allowed = set(_LOOPBACK_HOSTS) | {h.lower() for h in (allowed_hosts or [])}
-
-    @app.middleware("http")
-    async def _guard(request, call_next):
-        # Always enforced — never fully disabled. The Host allowlist blocks
-        # DNS-rebinding; the Origin check blocks cross-origin CSRF on mutating
-        # requests. To expose beyond localhost, bind a specific reachable address
-        # (serve adds it to the allowlist) so BOTH checks still protect you.
-        # Fail closed: an absent/unparseable Host is rejected.
-        raw = request.headers.get("host") or ""
-        host = (raw.split("]")[0].lstrip("[") if raw.startswith("[") else raw.split(":")[0]).lower().rstrip(".")
-        if host not in allowed:
-            return JSONResponse(status_code=400, content={"detail": "host not allowed"})
-        if request.method not in ("GET", "HEAD", "OPTIONS"):
-            origin = request.headers.get("origin")
-            if origin and (urlsplit(origin).hostname or "").lower().rstrip(".") not in allowed:
-                return JSONResponse(status_code=403, content={"detail": "cross-origin request blocked"})
-        return await call_next(request)
+    # Always enforced — never fully disabled. Shared with `calibrate run`
+    # (runtime.py); see webguard.py for the threat model.
+    install_guard(app, allowed_hosts)
 
     def _safe(name: str) -> str:
         s = "".join(c for c in name if c.isalnum() or c in "-_ ").strip()
