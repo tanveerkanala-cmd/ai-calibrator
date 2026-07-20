@@ -5,10 +5,9 @@ local), and run the workflow. For the *why* behind the design, see
 [`ARCHITECTURE.md`](ARCHITECTURE.md); for the build roadmap, see
 [`BUILD-PLAN.md`](BUILD-PLAN.md).
 
-> **Build status (v0 — early).** Commands marked **✅** run today. Commands
-> marked **🔜** are scaffolded and currently print which milestone delivers them.
-> This guide describes the full intended workflow so you understand the product,
-> and flags exactly what's live right now.
+> **Build status (v0 — early).** Every command in this guide runs today; the
+> ✅ markers are kept from the build-out phase. Expect rough edges — this is a
+> young tool.
 
 ---
 
@@ -22,15 +21,15 @@ interviews you, writes the playbook, then quizzes itself until it passes.
 Two depths:
 - **Guided mode** (default) — configure an AI via system prompt + retrieval
   (RAG) + evals. Runs on any machine.
-- **Advanced mode** (opt-in, technical users) — adds a fine-tuning toolchain.
-  (🔜 v1.)
+- **Advanced mode** (opt-in, technical users) — adds a fine-tuning toolchain
+  (§6).
 
 ---
 
 ## 2. Install
 
 ```bash
-git clone <your-repo-url> ai-calibrator
+git clone https://github.com/tanveerkanala-cmd/ai-calibrator.git
 cd ai-calibrator
 pip install -e '.[cloud]'        # the [cloud] extra adds the Anthropic + OpenAI SDKs
 calibrate --help

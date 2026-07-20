@@ -10,12 +10,17 @@ Ollama server, in which case nothing leaves your machine).
 - **API keys are read from environment variables only** (`ANTHROPIC_API_KEY`,
   `OPENAI_API_KEY`) — never written to `project.yaml`, exports, reports, logs,
   or training bundles.
-- **`calibrate serve` binds `127.0.0.1` by default** and has **no
-  authentication**. It refuses silently-broad exposure: binding any non-local
-  host prints an explicit warning. Do not expose it to a network; put nothing
-  in front of it that forwards untrusted traffic.
-- The API guards project names and run ids against path traversal, caps upload
-  sizes, and validates Host/Origin headers against DNS rebinding.
+- **`calibrate serve` and `calibrate run` bind `127.0.0.1` by default** and
+  have **no authentication**. Both refuse silently-broad exposure: binding any
+  non-local host prints an explicit warning. Do not expose them to a network;
+  put nothing in front of them that forwards untrusted traffic.
+- On a **multi-user machine**, note that `127.0.0.1` is reachable by every
+  local account: another user on the same host could drive your unauthenticated
+  server (and spend your configured API key). Run the tool on machines you
+  don't share, or in an isolated container/VM if you must.
+- Both servers validate Host/Origin headers (shared guard, `webguard.py`)
+  against DNS rebinding and browser CSRF, and the API additionally guards
+  project names and run ids against path traversal and caps upload sizes.
 - `calibrate init` drops a `.gitignore` into new projects so eval outputs, logs,
   and credentials can't be swept into a user's repository by accident.
 - Local logs (`logs/*.jsonl`) and the project lock are created owner-only

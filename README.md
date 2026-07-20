@@ -1,5 +1,7 @@
 # AI Calibrator (working name: "Anvil")
 
+[![ci](https://github.com/tanveerkanala-cmd/ai-calibrator/actions/workflows/ci.yml/badge.svg)](https://github.com/tanveerkanala-cmd/ai-calibrator/actions/workflows/ci.yml)
+
 Turn your knowledge and standards into a **tested, reliable AI** — without
 writing prompts, code, or datasets. You bring your materials and answer
 questions; the tool builds, tests, and *proves* an AI that behaves the way you
