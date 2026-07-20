@@ -1,7 +1,6 @@
-# AI Calibration Tool — Architecture
+# AI Calibrator — Architecture
 
-**Working name:** "Anvil" (placeholder — see Open Items)
-**Status:** v0.2 draft. The four gating decisions (§13) are RESOLVED:
+**Status:** v0.2. The four gating decisions (§13) are RESOLVED:
 local-first desktop · LLM/text (expandable) · configure-only v0 · pluggable
 engines, **cloud (Claude) default, BYO key** + local (Ollama) opt-in.
 Per-role model assignments: §5.1.
@@ -11,7 +10,7 @@ Per-role model assignments: §5.1.
 
 ## 0. How to read this doc
 
-Inline callouts mark the two things the author asked me to flag everywhere:
+Two kinds of inline callout are used throughout:
 
 > ❓ **DECISION** — a fork where your answer changes the architecture. The big
 > four are consolidated in §13 and are being resolved now.
@@ -475,7 +474,7 @@ do not yet affect the pass rate. Plus a ranked failure list feeding Stage 5.
 
 ## 10. Phasing / roadmap
 
-- **v0 (Guided mode — the college-project core):** Goal → Ingest → Interview →
+- **v0 (Guided mode — the core):** Goal → Ingest → Interview →
   Compile (spec + system prompt + RAG) → Evaluate → Refine. Local engine default
   (pluggable). Ships the whole loop for the common case, on any hardware tier.
 - **v1 (Advanced mode):** the fine-tuning toolchain (§3.1) — dataset assembly,
@@ -506,8 +505,8 @@ do not yet affect the pass rate. Plus a ranked failure list feeding Stage 5.
 - **Fine-tuning dataset quality.** Never let the model write both prompts *and*
   ideal answers (self-distillation teaches nothing new). Require human-corrected
   examples. Keep fine-tuning behind the gate.
-- **Scope creep.** Multimodal + full SaaS + autonomy all at once kills a college
-  project. v0 must stay tight.
+- **Scope creep.** Multimodal + full SaaS + autonomy all at once would sink a
+  young project. v0 must stay tight.
 
 ---
 
@@ -532,10 +531,10 @@ do not yet affect the pass rate. Plus a ranked failure list feeding Stage 5.
 
 ---
 
-## 14. Open items (low priority)
+## 14. Open items — RESOLVED
 
-- **Name.** "Anvil" is a placeholder (forge/shape behavior). Alternatives:
-  Lodestar, Praxis, Rubric, Bench, Calibrate. Decide before public repo.
-- **License.** For OSS + permissive adoption: MIT or Apache-2.0 (Apache adds a
-  patent grant). Decide before first public commit.
-- **Repo init + CI.** `git init`, license, README, contribution guide once §13-Q1 lands.
+- **Name.** ~~"Anvil" is a placeholder.~~ Shipped as **AI Calibrator**
+  (`ai-calibrator` / `calibrate`).
+- **License.** ~~MIT or Apache-2.0.~~ **MIT** (see `LICENSE`).
+- **Repo init + CI.** ~~Once §13-Q1 lands.~~ Done — repo, CI (3 OSes ×
+  3 Python versions + locale + bandit jobs), README, CONTRIBUTING all exist.

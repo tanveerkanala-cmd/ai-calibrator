@@ -1,6 +1,12 @@
-# v0 Build Plan
+# v0 Build Plan (historical)
 
-Companion to `ARCHITECTURE.md`. This is the *map*: what we build, in what order,
+> **Status: completed.** This is the original v0 roadmap, kept as a record of
+> how the project was sequenced and why. Everything below — including the
+> items marked "later" (cloud adapters, the API, the web UI) and the v1
+> Advanced tier — has since shipped. For what the tool does *today*, see
+> [`USAGE.md`](USAGE.md).
+
+Companion to `ARCHITECTURE.md`. This is the *map*: what to build, in what order,
 and how the pieces fit. v0 = **Guided mode**, local-first, Core + CLI (UI later).
 
 ## Scope of v0
@@ -52,7 +58,7 @@ is just serializable data on disk:
 
 ## Milestones (each ends with something runnable)
 
-- **M0 — Foundation (this session).** Repo, `pyproject`, `models.py`, the
+- **M0 — Foundation.** Repo, `pyproject`, `models.py`, the
   `Engine` interface + `OllamaEngine`, a runnable `cli.py` (`init`, `status`,
   stubs). *Done when:* `calibrate init` creates a project and `calibrate status`
   reads it; `OllamaEngine.complete()` talks to a local model.
@@ -73,12 +79,12 @@ is just serializable data on disk:
 - **M6 — Local API + Desktop UI.** FastAPI over the Core; Tauri + React shell.
 - **v1 — Advanced tier.** The fine-tuning toolchain (§3.1).
 
-## Where parallelism / ultra fits
+## Build order rationale
 
-M0–M1 are coherence-critical and sequential — build single-threaded. From **M2
-onward** several modules are independent (interview, compile, eval each behind
-the same contracts), so that's the point to fan out with a workflow, plus a
-cross-codebase test-generation pass and an adversarial review.
+M0–M1 are coherence-critical and were built sequentially — the data contracts
+and store shape everything downstream. From M2 onward the modules are
+independent (interview, compile, eval each sit behind the same contracts), so
+they could be developed and reviewed in parallel.
 
 ## Testing
 

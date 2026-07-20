@@ -1,4 +1,4 @@
-# AI Calibrator (working name: "Anvil")
+# AI Calibrator
 
 [![ci](https://github.com/tanveerkanala-cmd/ai-calibrator/actions/workflows/ci.yml/badge.svg)](https://github.com/tanveerkanala-cmd/ai-calibrator/actions/workflows/ci.yml)
 
