@@ -13,10 +13,10 @@ from hypothesis import settings
 from hypothesis.stateful import RuleBasedStateMachine, initialize, invariant, rule
 from hypothesis import strategies as st
 
-from calibrator.ci import config_hash
-from calibrator.models import BehaviorSpec, Check, EvalCriterion, Example, Project, Weight
-from calibrator.models import TestCase as CaseModel  # aliased: pytest would try to collect `TestCase`
-from calibrator.store import load_project, save_project
+from ai_calibrator.ci import config_hash
+from ai_calibrator.models import BehaviorSpec, Check, EvalCriterion, Example, Project, Weight
+from ai_calibrator.models import TestCase as CaseModel  # aliased: pytest would try to collect `TestCase`
+from ai_calibrator.store import load_project, save_project
 
 _TXT = st.text(st.characters(min_codepoint=32, codec="utf-8"), min_size=1, max_size=40)
 

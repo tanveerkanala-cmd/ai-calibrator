@@ -2,9 +2,9 @@
 
 import yaml
 
-from calibrator.interop import _provider_id, export_promptfoo, to_promptfoo
-from calibrator.models import BehaviorSpec, EvalCriterion, Project, Weight
-from calibrator.models import TestCase as Case
+from ai_calibrator.interop import _provider_id, export_promptfoo, to_promptfoo
+from ai_calibrator.models import BehaviorSpec, EvalCriterion, Project, Weight
+from ai_calibrator.models import TestCase as Case
 
 
 def _project():

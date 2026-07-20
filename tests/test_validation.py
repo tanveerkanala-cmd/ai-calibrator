@@ -11,12 +11,12 @@ from pathlib import Path
 
 import pytest
 
-from calibrator.engines.base import call_json, require_object
-from calibrator.ingest import extract_gaps
-from calibrator.models import BehaviorSpec, EvalCriterion, Project, TaskType, Weight
-from calibrator.models import TestCase as CaseModel
-from calibrator.parsing import chunk_text
-from calibrator.pipeline import calibrate_loop
+from ai_calibrator.engines.base import call_json, require_object
+from ai_calibrator.ingest import extract_gaps
+from ai_calibrator.models import BehaviorSpec, EvalCriterion, Project, TaskType, Weight
+from ai_calibrator.models import TestCase as CaseModel
+from ai_calibrator.parsing import chunk_text
+from ai_calibrator.pipeline import calibrate_loop
 
 
 # --- chunk_text size ---------------------------------------------------------
@@ -98,8 +98,8 @@ def test_call_json_accepts_object():
 def test_spec_from_dict_tolerates_null_and_wrongtyped_list_fields():
     """An engine emitting a list field as null / string / dict must not crash —
     `out.get(k, [])` returns None for explicit null. (audit: 8 findings, this class)"""
-    from calibrator.compile import spec_from_dict
-    from calibrator.models import TaskType
+    from ai_calibrator.compile import spec_from_dict
+    from ai_calibrator.models import TaskType
 
     # explicit null for every list field (was: TypeError 'NoneType' is not iterable)
     nulls = {"persona": None, "standards": None, "do_not": None, "edge_cases": None,
@@ -118,14 +118,14 @@ def test_stages_tolerate_null_list_fields():
     """Every engine-output list access across the pipeline tolerates explicit null."""
     from pathlib import Path
 
-    from calibrator.compile import generate_tests
-    from calibrator.ingest import extract_gaps
-    from calibrator.interview import generate_questions
-    from calibrator.models import (
+    from ai_calibrator.compile import generate_tests
+    from ai_calibrator.ingest import extract_gaps
+    from ai_calibrator.interview import generate_questions
+    from ai_calibrator.models import (
         BehaviorSpec, CriterionResult, EvalCriterion, Gap, Scorecard, TestResult, Weight,
     )
-    from calibrator.pipeline import refine_spec
-    from calibrator.redteam import generate_probes
+    from ai_calibrator.pipeline import refine_spec
+    from ai_calibrator.redteam import generate_probes
 
     class NullEng:
         name = "null@test"
@@ -148,8 +148,8 @@ def test_synthesize_spec_tolerates_non_string_fields():
     """Engine emits truthy NON-string values where strings are expected — the
     compiler must coerce/drop them, never raise a Pydantic ValidationError.
     (Regression: the re-stress found persona.voice=123 crashing compile.)"""
-    from calibrator.compile import synthesize_spec
-    from calibrator.models import InterviewItem
+    from ai_calibrator.compile import synthesize_spec
+    from ai_calibrator.models import InterviewItem
 
     class Bad:
         name = "bad@test"
@@ -183,8 +183,8 @@ def test_synthesize_spec_tolerates_non_string_fields():
 
 
 def test_generate_questions_tolerates_non_string_fields():
-    from calibrator.interview import generate_questions
-    from calibrator.models import Gap
+    from ai_calibrator.interview import generate_questions
+    from ai_calibrator.models import Gap
 
     class Bad:
         name = "bad@test"
@@ -203,7 +203,7 @@ def test_generate_questions_tolerates_non_string_fields():
 
 
 def test_extract_gaps_tolerates_non_string_fields():
-    from calibrator.ingest import extract_gaps
+    from ai_calibrator.ingest import extract_gaps
 
     class Bad:
         name = "bad@test"
@@ -238,7 +238,7 @@ def test_stage_raises_clear_error_when_engine_ignores_schema():
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
-from calibrator.api import create_app  # noqa: E402
+from ai_calibrator.api import create_app  # noqa: E402
 
 
 @pytest.mark.parametrize(
@@ -262,7 +262,7 @@ def test_project_name_length_cap():
     import pytest as _pytest
     from pydantic import ValidationError
 
-    from calibrator.models import Project
+    from ai_calibrator.models import Project
 
     Project(name="a" * 120, goal="g")           # at the cap: fine
     with _pytest.raises(ValidationError):

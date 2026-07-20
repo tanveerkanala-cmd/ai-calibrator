@@ -2,9 +2,9 @@
 
 from typer.testing import CliRunner
 
-from calibrator.cli import app
-from calibrator.models import BehaviorSpec, EdgeCase, EvalCriterion, Example, TaskType, Weight
-from calibrator.stakeholders import (
+from ai_calibrator.cli import app
+from ai_calibrator.models import BehaviorSpec, EdgeCase, EvalCriterion, Example, TaskType, Weight
+from ai_calibrator.stakeholders import (
     build_merged_spec,
     detect_conflicts,
     gather,

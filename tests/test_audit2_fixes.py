@@ -1,12 +1,12 @@
 """Regression tests for the 2nd line-by-line audit fixes."""
 
-from calibrator.models import BehaviorSpec, TaskType
+from ai_calibrator.models import BehaviorSpec, TaskType
 
 
 # CRITICAL — gather() indices must be order-independent (detect/apply are
 # separate API requests; a reordered `sources` must NOT misalign the drops).
 def test_gather_indices_are_order_independent():
-    from calibrator.stakeholders import gather
+    from ai_calibrator.stakeholders import gather
     a = BehaviorSpec(goal="g", standards=["a-standard"], do_not=["a-never"])
     b = BehaviorSpec(goal="g", standards=["b-standard"], do_not=["b-never"])
 
@@ -18,7 +18,7 @@ def test_gather_indices_are_order_independent():
 
 
 def test_build_merged_spec_drops_are_stable_across_source_order():
-    from calibrator.stakeholders import build_merged_spec, gather
+    from ai_calibrator.stakeholders import build_merged_spec, gather
     a = BehaviorSpec(goal="g", standards=["keep-alice"], do_not=[])
     b = BehaviorSpec(goal="g", standards=["drop-bob"], do_not=[])
     # find bob's index, then drop it — must remove bob's rule regardless of order
@@ -30,7 +30,7 @@ def test_build_merged_spec_drops_are_stable_across_source_order():
 
 # Modelfile: a system prompt containing `"""` must not break the SYSTEM block
 def test_modelfile_neutralizes_triple_quotes():
-    from calibrator.export import _modelfile
+    from ai_calibrator.export import _modelfile
     mf = _modelfile("qwen2.5:7b", 'Say """hello""" and be """nice""".')
     body = mf.split('SYSTEM """\n', 1)[1].rsplit('\n"""', 1)[0]
     assert '"""' not in body                 # no run of 3+ quotes survives in the body
@@ -39,14 +39,14 @@ def test_modelfile_neutralizes_triple_quotes():
 
 # snapshot: a corrupt golden.json must not traceback
 def test_load_golden_tolerates_corrupt_json(tmp_path):
-    from calibrator.snapshot import GOLDEN_FILE, load_golden
+    from ai_calibrator.snapshot import GOLDEN_FILE, load_golden
     (tmp_path / GOLDEN_FILE).write_text("{ this is not json ")
     assert load_golden(tmp_path) is None
 
 
 # judge_check: a label missing 'passed' must not be silently saved as a FAIL
 def test_save_labels_requires_passed(tmp_path):
-    from calibrator.judge_check import load_labels, save_labels
+    from ai_calibrator.judge_check import load_labels, save_labels
     save_labels(tmp_path, "run-0001", [
         {"test_id": "t1", "criterion_id": "c1", "passed": True},   # valid
         {"test_id": "t2", "criterion_id": "c2"},                   # no 'passed' → skipped
@@ -60,8 +60,8 @@ def test_save_labels_requires_passed(tmp_path):
 def test_prove_engine_skips_none_output(tmp_path):
     import json
 
-    from calibrator.store import open_private_append
-    from calibrator.train_engine import prove_engine
+    from ai_calibrator.store import open_private_append
+    from ai_calibrator.train_engine import prove_engine
     logs = tmp_path / "logs"; logs.mkdir()
     with open_private_append(logs / "judge.jsonl") as fh:
         fh.write(json.dumps({"role": "judge", "prompt": "p1", "output": "real"}) + "\n")
@@ -79,7 +79,7 @@ def test_prove_engine_skips_none_output(tmp_path):
 def test_loads_tolerant_rejects_non_str():
     import pytest
 
-    from calibrator.engines.base import loads_tolerant
+    from ai_calibrator.engines.base import loads_tolerant
     assert loads_tolerant('{"a": 1}') == {"a": 1}        # str still works
     with pytest.raises(ValueError):
         loads_tolerant(b'{"a": 1}')                       # bytes rejected, not auto-decoded
@@ -89,8 +89,8 @@ def test_loads_tolerant_rejects_non_str():
 
 # max_chars/min_chars must reject negative limits (they were always-fail garbage)
 def test_run_check_rejects_negative_length_limits():
-    from calibrator.checks import run_check
-    from calibrator.models import Check
+    from ai_calibrator.checks import run_check
+    from ai_calibrator.models import Check
     for kind in ("max_chars", "min_chars"):
         passed, why = run_check(Check(kind=kind, value="-5"), "hello")
         assert passed is False and "non-negative" in why
@@ -105,7 +105,7 @@ def test_open_private_append_tightens_existing_file(tmp_path):
     import stat as statmod
     if os.name == "nt":
         return
-    from calibrator.store import open_private_append
+    from ai_calibrator.store import open_private_append
     p = tmp_path / "log.jsonl"
     p.write_text("old\n")
     os.chmod(p, 0o644)                      # world-readable, as a pre-fix file would be
@@ -119,7 +119,7 @@ def test_open_private_append_tightens_existing_file(tmp_path):
 def test_fd_guard_preserves_original_error_and_cleans_up(tmp_path, monkeypatch):
     import pytest
 
-    import calibrator.store as store
+    import ai_calibrator.store as store
 
     class Boom(Exception):
         pass
@@ -149,10 +149,10 @@ def test_rightsize_grades_with_rag_when_indexed(tmp_path):
     import pytest
     pytest.importorskip("lancedb")
     pytest.importorskip("sentence_transformers")
-    from calibrator import rag
-    from calibrator.models import BehaviorSpec, EvalCriterion, Project, Weight
-    from calibrator.models import TestCase as Case
-    from calibrator.rightsize import rightsize
+    from ai_calibrator import rag
+    from ai_calibrator.models import BehaviorSpec, EvalCriterion, Project, Weight
+    from ai_calibrator.models import TestCase as Case
+    from ai_calibrator.rightsize import rightsize
 
     rag.build_index(tmp_path, [{"id": "c1", "text": "The return window is 30 days.", "source": "p.md"}])
     p = Project(name="p", goal="g")
@@ -184,10 +184,10 @@ def test_redteam_and_teach_and_try_use_rag_when_indexed(tmp_path):
     import pytest
     pytest.importorskip("lancedb")
     pytest.importorskip("sentence_transformers")
-    from calibrator import rag
-    from calibrator.models import BehaviorSpec, EvalCriterion, Project, Weight
-    from calibrator.redteam import run_redteam
-    from calibrator.teach import propose_candidates
+    from ai_calibrator import rag
+    from ai_calibrator.models import BehaviorSpec, EvalCriterion, Project, Weight
+    from ai_calibrator.redteam import run_redteam
+    from ai_calibrator.teach import propose_candidates
 
     rag.build_index(tmp_path, [{"id": "c1", "text": "The return window is 30 days.", "source": "p.md"}])
     p = Project(name="p", goal="answer returns")

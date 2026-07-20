@@ -2,11 +2,11 @@
 
 import pytest
 
-from calibrator.models import BehaviorSpec, Persona
+from ai_calibrator.models import BehaviorSpec, Persona
 
 
 def test_render_system_prompt_no_double_space_when_voice_empty():
-    from calibrator.compile import render_system_prompt
+    from ai_calibrator.compile import render_system_prompt
     spec = BehaviorSpec(goal="g", persona=Persona(voice="", reading_level="grade 8"))
     out = render_system_prompt(spec)
     assert "VOICE:  " not in out                       # no double space
@@ -14,14 +14,14 @@ def test_render_system_prompt_no_double_space_when_voice_empty():
 
 
 def test_load_golden_non_dict_is_unpinned(tmp_path):
-    from calibrator.snapshot import GOLDEN_FILE, load_golden
+    from ai_calibrator.snapshot import GOLDEN_FILE, load_golden
     (tmp_path / GOLDEN_FILE).write_text("[1, 2, 3]")   # valid JSON, but not a dict
     assert load_golden(tmp_path) is None               # treated as no/corrupt golden, not {}
 
 
 def test_refine_spec_dedups_by_trimmed_content(tmp_path):
-    from calibrator.models import CriterionResult, Project, Scorecard, TestResult
-    from calibrator.pipeline import refine_spec
+    from ai_calibrator.models import CriterionResult, Project, Scorecard, TestResult
+    from ai_calibrator.pipeline import refine_spec
 
     class Gen:
         name = "g@t"
@@ -37,7 +37,7 @@ def test_refine_spec_dedups_by_trimmed_content(tmp_path):
 
 
 def test_agreement_dict_no_divzero_on_empty_criterion(tmp_path):
-    from calibrator.judge_check import JudgeAgreement, agreement_dict
+    from ai_calibrator.judge_check import JudgeAgreement, agreement_dict
     ag = JudgeAgreement(total=0, agreed=0, by_criterion={"c1": (0, 0)})
     out = agreement_dict(ag)                            # must not raise ZeroDivisionError
     assert out["by_criterion"]["c1"]["rate"] == 0.0
@@ -45,7 +45,7 @@ def test_agreement_dict_no_divzero_on_empty_criterion(tmp_path):
 
 def test_validate_port_helper():
     import typer
-    from calibrator.cli import _validate_port
+    from ai_calibrator.cli import _validate_port
     for ok in (1, 80, 8600, 65535):
         _validate_port(ok)                             # no raise
     for bad in (0, -1, 65536, 100000):
@@ -56,7 +56,7 @@ def test_validate_port_helper():
 def test_ci_body_rejects_infinite_tolerance():
     from pydantic import ValidationError
 
-    from calibrator.api import CiBody
+    from ai_calibrator.api import CiBody
     with pytest.raises(ValidationError):
         CiBody(tolerance=float("inf"))
     with pytest.raises(ValidationError):

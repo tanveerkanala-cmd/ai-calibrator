@@ -2,8 +2,8 @@
 
 import pytest
 
-from calibrator.models import BehaviorSpec, EvalCriterion, Project, Weight
-from calibrator.models import TestCase as CaseModel
+from ai_calibrator.models import BehaviorSpec, EvalCriterion, Project, Weight
+from ai_calibrator.models import TestCase as CaseModel
 
 
 # #7 — name validator normalizes + enforces the cap on the STORED value
@@ -19,7 +19,7 @@ def test_project_name_stripped_and_capped():
 
 # #8 — safe_token rejects traversal shapes the charset would otherwise allow
 def test_safe_token_rejects_traversal():
-    from calibrator.coerce import safe_token
+    from ai_calibrator.coerce import safe_token
     assert safe_token("org/Model-7B.v2", "x") == "org/Model-7B.v2"
     for bad in ["../etc", "a/../b", "/abs", "trailing/", ".."]:
         with pytest.raises(ValueError):
@@ -28,7 +28,7 @@ def test_safe_token_rejects_traversal():
 
 # #9 — config_hash re-earns certification when the JUDGE changes
 def test_config_hash_includes_judge():
-    from calibrator.ci import config_hash
+    from ai_calibrator.ci import config_hash
     p = Project(name="p", goal="g")
     p.spec = BehaviorSpec(goal="g", eval_criteria=[EvalCriterion(id="c", description="d", weight=Weight.HIGH)])
     before = config_hash(p)
@@ -38,7 +38,7 @@ def test_config_hash_includes_judge():
 
 # #13 — FileLock is not re-entrant: a double acquire fails fast (no deadlock)
 def test_filelock_double_acquire_raises(tmp_path):
-    from calibrator.locking import FileLock
+    from ai_calibrator.locking import FileLock
     lock = FileLock(tmp_path / ".lock")
     lock.acquire()
     try:
@@ -50,7 +50,7 @@ def test_filelock_double_acquire_raises(tmp_path):
 
 # #14 — empty project.yaml → friendly ValueError, not a cryptic pydantic wall
 def test_empty_project_yaml_is_friendly(tmp_path):
-    from calibrator.store import load_project
+    from ai_calibrator.store import load_project
     (tmp_path / "project.yaml").write_text("")
     with pytest.raises(ValueError, match="is empty"):
         load_project(tmp_path)
@@ -58,7 +58,7 @@ def test_empty_project_yaml_is_friendly(tmp_path):
 
 # #15 — write_project_gitignore never clobbers an existing file (atomic O_EXCL)
 def test_gitignore_never_clobbers(tmp_path):
-    from calibrator.store import write_project_gitignore
+    from ai_calibrator.store import write_project_gitignore
     (tmp_path / ".gitignore").write_text("# mine\n")
     write_project_gitignore(tmp_path)
     assert (tmp_path / ".gitignore").read_text(encoding="utf-8") == "# mine\n"
@@ -67,7 +67,7 @@ def test_gitignore_never_clobbers(tmp_path):
 # #16 — OpenAI empty choices → friendly RuntimeError, not IndexError
 def test_openai_empty_choices_is_friendly(monkeypatch):
     pytest.importorskip("openai")
-    from calibrator.engines.openai import OpenAIEngine
+    from ai_calibrator.engines.openai import OpenAIEngine
 
     class FakeResp:
         choices = []
@@ -98,11 +98,11 @@ def test_openai_empty_choices_is_friendly(monkeypatch):
 def test_ground_truth_overrides_systemless_logged_row(tmp_path):
     import json
 
-    from calibrator.eval import judge_prompt, save_scorecard
-    from calibrator.judge_check import save_labels
-    from calibrator.models import CriterionResult, Scorecard, TestResult
-    from calibrator.store import save_project
-    from calibrator.train_engine import export_engine_bundle
+    from ai_calibrator.eval import judge_prompt, save_scorecard
+    from ai_calibrator.judge_check import save_labels
+    from ai_calibrator.models import CriterionResult, Scorecard, TestResult
+    from ai_calibrator.store import save_project
+    from ai_calibrator.train_engine import export_engine_bundle
 
     p = Project(name="p", goal="g")
     p.spec = BehaviorSpec(goal="g", eval_criteria=[EvalCriterion(id="c1", description="cites policy", weight=Weight.HIGH)])
@@ -131,7 +131,7 @@ def test_ground_truth_overrides_systemless_logged_row(tmp_path):
 def test_load_labels_requires_passed(tmp_path):
     import json
 
-    from calibrator.judge_check import load_labels
+    from ai_calibrator.judge_check import load_labels
     d = tmp_path / "evals" / "run-0001"
     d.mkdir(parents=True)
     (d / "human-labels.json").write_text(json.dumps({"run_id": "run-0001", "labels": [
@@ -145,7 +145,7 @@ def test_load_labels_requires_passed(tmp_path):
 def test_ingest_cap_is_respected():
     from pathlib import Path
 
-    from calibrator.ingest import _join_capped
+    from ai_calibrator.ingest import _join_capped
     docs = [(Path(f"f{i}.md"), "x" * 50) for i in range(20)]
     out = _join_capped(docs, cap=200)
     assert len(out) <= 200
@@ -155,7 +155,7 @@ def test_ingest_cap_is_respected():
 # Found by a LIVE run against the real API; tested here with a fake SDK (no key).
 def test_openai_sdk_errors_are_friendly(monkeypatch):
     openai = pytest.importorskip("openai")
-    from calibrator.engines.openai import OpenAIEngine
+    from ai_calibrator.engines.openai import OpenAIEngine
 
     def _raiser(exc):
         class C:
@@ -188,7 +188,7 @@ def test_openai_sdk_errors_are_friendly(monkeypatch):
 def test_gitignore_write_failure_leaves_no_stub(tmp_path, monkeypatch):
     import os as _os
 
-    from calibrator import store
+    from ai_calibrator import store
 
     real_fdopen = _os.fdopen
 

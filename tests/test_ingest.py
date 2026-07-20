@@ -1,7 +1,7 @@
 """M1 ingest logic, verified with a mocked engine (no network / SDK needed)."""
 
-from calibrator.ingest import GAP_SCHEMA, extract_gaps, ingest_project
-from calibrator.models import Project, TaskType
+from ai_calibrator.ingest import GAP_SCHEMA, extract_gaps, ingest_project
+from ai_calibrator.models import Project, TaskType
 
 
 class FakeEngine:

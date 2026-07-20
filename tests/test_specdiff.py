@@ -1,7 +1,7 @@
 """Behavior diff between two specs (deterministic)."""
 
-from calibrator.models import BehaviorSpec, EdgeCase, EvalCriterion, Weight
-from calibrator.specdiff import diff_specs
+from ai_calibrator.models import BehaviorSpec, EdgeCase, EvalCriterion, Weight
+from ai_calibrator.specdiff import diff_specs
 
 
 def test_diff_detects_all_categories():

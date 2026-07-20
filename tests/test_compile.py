@@ -4,7 +4,7 @@ import json
 
 import yaml
 
-from calibrator.compile import (
+from ai_calibrator.compile import (
     SPEC_SCHEMA,
     TESTS_SCHEMA,
     compile_project,
@@ -13,7 +13,7 @@ from calibrator.compile import (
     render_system_prompt,
     synthesize_spec,
 )
-from calibrator.models import BehaviorSpec, EvalCriterion, InterviewItem, Material, Project, TaskType, Weight
+from ai_calibrator.models import BehaviorSpec, EvalCriterion, InterviewItem, Material, Project, TaskType, Weight
 
 SPEC_PAYLOAD = {
     "persona": {"voice": "warm, concise", "reading_level": "8th grade"},
@@ -150,8 +150,8 @@ def test_compile_project_writes_bundle(tmp_path):
 
 def test_compile_preserves_taught_standards(tmp_path):
     """Standards added via teach must survive a later compile (was: silent data loss)."""
-    from calibrator.compile import compile_project
-    from calibrator.teach import Judged, apply_learned
+    from ai_calibrator.compile import compile_project
+    from ai_calibrator.teach import Judged, apply_learned
 
     project = _project()  # has an interview answer + facts
     apply_learned(project, [Judged(input="q", output="good", approved=True, reason="r")],
@@ -168,7 +168,7 @@ def test_compile_preserves_taught_standards(tmp_path):
 def test_compile_preserves_spec_when_no_interview_answers(tmp_path):
     """With no interview answers (e.g. a teach-bootstrapped project), compile must
     preserve the existing spec, not overwrite it with one synthesized from nothing."""
-    from calibrator.compile import compile_project
+    from ai_calibrator.compile import compile_project
 
     project = Project(name="t", goal="g")  # no interview answers
     project.spec = BehaviorSpec(goal="g", standards=["BOOTSTRAPPED"],
@@ -179,9 +179,9 @@ def test_compile_preserves_spec_when_no_interview_answers(tmp_path):
 
 
 def test_tests_from_examples():
-    from calibrator.compile import tests_from_examples
-    from calibrator.models import Example
-    from calibrator.models import TestCase as Case
+    from ai_calibrator.compile import tests_from_examples
+    from ai_calibrator.models import Example
+    from ai_calibrator.models import TestCase as Case
 
     spec = BehaviorSpec(goal="g", examples=[
         Example(input="Can I return this?", good_output="Yes, within 30 days"),
@@ -202,9 +202,9 @@ def test_rag_config_shape():
 def test_tests_from_examples_dedups_against_follow_ups():
     """Audit finding: an absorbed multi-turn exchange (fb test input=turn 1,
     example input=last turn) was double-pinned by examples-to-tests."""
-    from calibrator.compile import tests_from_examples
-    from calibrator.models import Example
-    from calibrator.models import TestCase as Case
+    from ai_calibrator.compile import tests_from_examples
+    from ai_calibrator.models import Example
+    from ai_calibrator.models import TestCase as Case
 
     spec = BehaviorSpec(goal="g", examples=[
         Example(input="How are things?", bad_output="meh", good_output="Great!"),  # last turn of fb_1

@@ -8,8 +8,8 @@ import ast
 
 import pytest
 
-from calibrator.coerce import safe_token
-from calibrator.models import BehaviorSpec, EvalCriterion, Project, TestCase, Weight
+from ai_calibrator.coerce import safe_token
+from ai_calibrator.models import BehaviorSpec, EvalCriterion, Project, TestCase, Weight
 
 
 def test_safe_token_accepts_real_ids_rejects_injection():
@@ -21,7 +21,7 @@ def test_safe_token_accepts_real_ids_rejects_injection():
 
 
 def test_finetune_rejects_malicious_base(tmp_path):
-    from calibrator.finetune import export_finetune
+    from ai_calibrator.finetune import export_finetune
     p = Project(name="p", goal="g")
     p.spec = BehaviorSpec(goal="g", examples=[])
     with pytest.raises(ValueError, match="model/path token"):
@@ -30,7 +30,7 @@ def test_finetune_rejects_malicious_base(tmp_path):
 
 def test_export_run_py_is_valid_python_and_uninjected(tmp_path):
     """A normal export produces a parseable run.py with the model as a plain literal."""
-    from calibrator.export import export_bundle
+    from ai_calibrator.export import export_bundle
 
     p = Project(name="p", goal="g")
     p.spec = BehaviorSpec(goal="g", eval_criteria=[EvalCriterion(id="c", description="d", weight=Weight.HIGH)])
@@ -43,7 +43,7 @@ def test_export_run_py_is_valid_python_and_uninjected(tmp_path):
 
 
 def test_export_rejects_malicious_subject_binding(tmp_path):
-    from calibrator.export import export_bundle
+    from ai_calibrator.export import export_bundle
     p = Project(name="p", goal="g")
     p.spec = BehaviorSpec(goal="g", eval_criteria=[EvalCriterion(id="c", description="d", weight=Weight.HIGH)])
     p.engines.subject = 'evil"; import os#@ollama'      # breakout attempt in the model part
@@ -52,6 +52,6 @@ def test_export_rejects_malicious_subject_binding(tmp_path):
 
 
 def test_train_engine_rejects_traversal_role(tmp_path):
-    from calibrator.train_engine import export_engine_bundle
+    from ai_calibrator.train_engine import export_engine_bundle
     with pytest.raises(ValueError, match="role must be one of"):
         export_engine_bundle(tmp_path, "../../etc/x")

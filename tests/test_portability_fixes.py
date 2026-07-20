@@ -14,9 +14,9 @@ def test_non_ascii_roundtrip_under_c_locale(tmp_path):
     script = (
         "import sys, pathlib\n"
         "d = pathlib.Path(sys.argv[1])\n"
-        "from calibrator.models import Project, BehaviorSpec, EvalCriterion, Weight, TestCase\n"
-        "from calibrator.store import save_project, load_project\n"
-        "from calibrator.snapshot import save_golden, load_golden\n"
+        "from ai_calibrator.models import Project, BehaviorSpec, EvalCriterion, Weight, TestCase\n"
+        "from ai_calibrator.store import save_project, load_project\n"
+        "from ai_calibrator.snapshot import save_golden, load_golden\n"
         "p = Project(name='café-测试', goal='回答问题 ☕🎯')\n"
         "p.spec = BehaviorSpec(goal=p.goal, standards=['用中文回答 ☕'],\n"
         "    eval_criteria=[EvalCriterion(id='c1', description='准确 accurate', weight=Weight.HIGH)])\n"
@@ -44,7 +44,7 @@ def test_non_ascii_roundtrip_under_c_locale(tmp_path):
 def test_project_name_rejects_path_unsafe_chars():
     from pydantic import ValidationError
 
-    from calibrator.models import Project
+    from ai_calibrator.models import Project
     for bad in ["a/b", "a\\b", "c:name", "a*b", "a?b", 'a"b', "a<b", "a|b", ".", ".."]:
         with pytest.raises(ValidationError):
             Project(name=bad, goal="g")
@@ -54,7 +54,7 @@ def test_project_name_rejects_path_unsafe_chars():
 
 
 def test_ollama_timeout_rejects_non_finite(monkeypatch):
-    from calibrator.engines.ollama import DEFAULT_TIMEOUT, _default_timeout
+    from ai_calibrator.engines.ollama import DEFAULT_TIMEOUT, _default_timeout
     for junk in ["inf", "-inf", "nan", "1e999", "-5", "0", "abc"]:
         monkeypatch.setenv("CALIBRATOR_OLLAMA_TIMEOUT", junk)
         assert _default_timeout() == DEFAULT_TIMEOUT, junk    # falls back, no inf/nan
@@ -63,7 +63,7 @@ def test_ollama_timeout_rejects_non_finite(monkeypatch):
 
 
 def test_gitignore_cleanup_on_non_oserror(tmp_path, monkeypatch):
-    import calibrator.store as store
+    import ai_calibrator.store as store
 
     def boom(*a, **k):
         raise RuntimeError("not an OSError")
@@ -76,7 +76,7 @@ def test_gitignore_cleanup_on_non_oserror(tmp_path, monkeypatch):
 def test_project_name_rejects_windows_reserved(tmp_path):
     from pydantic import ValidationError
 
-    from calibrator.models import Project
+    from ai_calibrator.models import Project
     for bad in ["CON", "con", "PRN", "nul", "COM1", "LPT9", "aux.txt", "NUL.log", "name."]:
         with pytest.raises(ValidationError):
             Project(name=bad, goal="g")
@@ -91,9 +91,9 @@ def test_api_returns_clean_error_not_500_on_corrupt_scorecard(tmp_path):
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
-    from calibrator.api import create_app
-    from calibrator.models import BehaviorSpec, EvalCriterion, Project, Weight
-    from calibrator.store import save_project
+    from ai_calibrator.api import create_app
+    from ai_calibrator.models import BehaviorSpec, EvalCriterion, Project, Weight
+    from ai_calibrator.store import save_project
 
     p = Project(name="apibot", goal="g")
     p.spec = BehaviorSpec(goal="g", eval_criteria=[EvalCriterion(id="c1", description="desc long enough", weight=Weight.HIGH)])

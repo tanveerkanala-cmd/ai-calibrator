@@ -4,15 +4,15 @@ import re
 
 import pytest
 
-from calibrator.eval import low_confidence_results, next_run_id, run_eval, save_scorecard
-from calibrator.models import (
+from ai_calibrator.eval import low_confidence_results, next_run_id, run_eval, save_scorecard
+from ai_calibrator.models import (
     BehaviorSpec,
     EvalCriterion,
     Project,
     Weight,
 )
-from calibrator.models import TestCase as CaseModel  # aliased: avoids pytest collecting the model
-from calibrator.pipeline import calibrate_loop, refine_spec
+from ai_calibrator.models import TestCase as CaseModel  # aliased: avoids pytest collecting the model
+from ai_calibrator.pipeline import calibrate_loop, refine_spec
 
 # Marker convention: the subject emits "ACCEPTABLE" for a good answer; the judge
 # passes a criterion iff the output it sees contains that marker.
@@ -76,7 +76,7 @@ def test_run_eval_all_pass():
 
 
 def test_pass_rate_excludes_ungradeable_tests():
-    from calibrator.models import CriterionResult, Scorecard, TestResult
+    from ai_calibrator.models import CriterionResult, Scorecard, TestResult
     card = Scorecard(run_id="r", results=[
         TestResult(test_id="graded", output="x", criteria=[CriterionResult(criterion_id="c", passed=True)]),
         TestResult(test_id="ungradeable", output="x", criteria=[]),  # no criteria → not counted
@@ -174,7 +174,7 @@ def test_run_eval_rejects_bad_judge_passes():
 
 
 def test_deterministic_check_is_graded_by_code_not_judge():
-    from calibrator.models import Check
+    from ai_calibrator.models import Check
 
     class SpyJudge(PassJudge):
         called = False
@@ -209,7 +209,7 @@ def test_deterministic_check_is_graded_by_code_not_judge():
 def test_mixed_criterion_order_is_preserved():
     """Results must follow test.expects order even when checked + judged criteria mix
     (regression: the deterministic/judged split used to reorder to [checked, judged])."""
-    from calibrator.models import Check
+    from ai_calibrator.models import Check
 
     class Subject:
         name = "subject@test"
@@ -289,7 +289,7 @@ def test_weighted_score_hand_math_and_weight_stamping():
     assert card.weighted_score == pytest.approx(0.5)
     assert r.passed is False                     # binary pass/fail unchanged
     # scorecard round-trips the weight
-    from calibrator.models import Scorecard
+    from ai_calibrator.models import Scorecard
     again = Scorecard.model_validate_json(card.model_dump_json())
     assert again.results[0].criteria[0].weight == Weight.HIGH
     assert again.weighted_score == pytest.approx(0.5)
@@ -297,7 +297,7 @@ def test_weighted_score_hand_math_and_weight_stamping():
 
 def test_weighted_score_backward_compat_unweighted_scorecard():
     """Old scorecards (no recorded weight) score as all-medium — same relative math."""
-    from calibrator.models import CriterionResult, Scorecard, TestResult
+    from ai_calibrator.models import CriterionResult, Scorecard, TestResult
     old = Scorecard(run_id="r", results=[TestResult(test_id="t", output="o", criteria=[
         CriterionResult(criterion_id="a", passed=True, score=1.0),   # weight=None
         CriterionResult(criterion_id="b", passed=False, score=0.0),

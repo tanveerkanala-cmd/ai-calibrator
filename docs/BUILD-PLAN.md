@@ -28,7 +28,7 @@ ai-calibrator/
   pyproject.toml
   README.md
   docs/            ARCHITECTURE.md, BUILD-PLAN.md
-  src/calibrator/
+  src/ai_calibrator/
     __init__.py
     models.py        # data contracts (the spine — everything imports this)
     engines/

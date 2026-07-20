@@ -4,9 +4,9 @@ import re
 
 import pytest
 
-from calibrator.drift import compare_scorecards, load_scorecard, run_drift
-from calibrator.eval import next_run_id, run_eval, save_scorecard
-from calibrator.models import (
+from ai_calibrator.drift import compare_scorecards, load_scorecard, run_drift
+from ai_calibrator.eval import next_run_id, run_eval, save_scorecard
+from ai_calibrator.models import (
     BehaviorSpec,
     CriterionResult,
     EvalCriterion,
@@ -14,8 +14,8 @@ from calibrator.models import (
     Scorecard,
     Weight,
 )
-from calibrator.models import TestCase as Case
-from calibrator.models import TestResult as Result  # aliased: avoids pytest collecting the model
+from ai_calibrator.models import TestCase as Case
+from ai_calibrator.models import TestResult as Result  # aliased: avoids pytest collecting the model
 
 
 def _card(run_id, results):

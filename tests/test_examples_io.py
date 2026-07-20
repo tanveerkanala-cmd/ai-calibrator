@@ -2,10 +2,10 @@
 
 import pytest
 
-from calibrator.examples_io import (
+from ai_calibrator.examples_io import (
     dedup_examples, examples_status, load_examples_file, merge_examples,
 )
-from calibrator.models import BehaviorSpec, Example
+from ai_calibrator.models import BehaviorSpec, Example
 
 
 def test_csv_with_flexible_headers(tmp_path):

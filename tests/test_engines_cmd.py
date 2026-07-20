@@ -2,8 +2,8 @@
 
 from typer.testing import CliRunner
 
-from calibrator.cli import app
-from calibrator.store import load_project
+from ai_calibrator.cli import app
+from ai_calibrator.store import load_project
 
 runner = CliRunner()
 
@@ -59,5 +59,5 @@ def test_engines_all_plus_role_is_rejected(tmp_path):
     r = runner.invoke(app, ["engines", str(d), "subject", "gpt-4o@openai", "--all", "gemma4:e4b@ollama"])
     assert r.exit_code == 1 and "not both" in r.output
     # nothing changed
-    from calibrator.store import load_project
+    from ai_calibrator.store import load_project
     assert load_project(d).engines.subject != "gemma4:e4b@ollama"

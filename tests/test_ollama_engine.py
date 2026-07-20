@@ -9,8 +9,8 @@ response) — including the clear-error fix for missing response keys.
 import httpx
 import pytest
 
-import calibrator.engines.ollama as ollama_mod
-from calibrator.engines.ollama import OllamaEngine
+import ai_calibrator.engines.ollama as ollama_mod
+from ai_calibrator.engines.ollama import OllamaEngine
 
 
 class FakeResp:
@@ -129,7 +129,7 @@ def test_timeout_env_override(monkeypatch):
 
 
 def test_engine_spec_errors_are_actionable():
-    from calibrator.engines.base import get_engine
+    from ai_calibrator.engines.base import get_engine
     import pytest as _pytest
     with _pytest.raises(ValueError, match="Valid providers: anthropic, openai, ollama"):
         get_engine("some-model@bogus")

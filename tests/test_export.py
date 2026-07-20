@@ -2,15 +2,15 @@
 
 import ast
 
-from calibrator.export import DEFAULT_LOCAL_BASE, export_bundle
-from calibrator.models import (
+from ai_calibrator.export import DEFAULT_LOCAL_BASE, export_bundle
+from ai_calibrator.models import (
     BehaviorSpec,
     EngineBinding,
     EvalCriterion,
     Project,
     Weight,
 )
-from calibrator.models import TestCase as CaseModel
+from ai_calibrator.models import TestCase as CaseModel
 
 
 def _project(subject="claude-sonnet-4-6@anthropic"):

@@ -1,7 +1,7 @@
 """Adversarial red-team — probe generation, violation detection, promotion."""
 
-from calibrator.models import BehaviorSpec, Project
-from calibrator.redteam import generate_probes, promote_to_tests, run_redteam
+from ai_calibrator.models import BehaviorSpec, Project
+from ai_calibrator.redteam import generate_probes, promote_to_tests, run_redteam
 
 
 class GenEngine:

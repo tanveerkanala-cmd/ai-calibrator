@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typer.testing import CliRunner
 
-from calibrator.cli import app
+from ai_calibrator.cli import app
 
 runner = CliRunner()
 
@@ -139,7 +139,7 @@ def test_help_survives_ascii_and_cp1252_terminals():
         env = {**os.environ, "PYTHONIOENCODING": enc}
         r = subprocess.run(
             [sys.executable, "-c",
-             "import sys; sys.argv=['calibrate','--help']; from calibrator.cli import main; main()"],
+             "import sys; sys.argv=['calibrate','--help']; from ai_calibrator.cli import main; main()"],
             env=env, capture_output=True, timeout=60)  # bytes: the child writes in `enc`
         stderr = r.stderr.decode(enc, errors="replace")
         assert r.returncode == 0, f"{enc}: {stderr[-300:]}"
@@ -213,5 +213,5 @@ def test_examples_requires_spec_then_imports(tmp_path):
     csv = tmp_path / "qa.csv"; csv.write_text("question,answer\nHi?,Hello!\nBye?,See ya!\n")
     r = runner.invoke(app, ["examples", str(tmp_path), "--import", str(csv)])
     assert r.exit_code == 0 and "Imported 2" in r.output and "48 more" in r.output
-    from calibrator.store import load_project
+    from ai_calibrator.store import load_project
     assert len(load_project(tmp_path).spec.examples) == 2

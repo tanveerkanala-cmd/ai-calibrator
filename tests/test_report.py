@@ -1,7 +1,7 @@
 """Calibration report — confidence score + nutrition-label rendering."""
 
-from calibrator.coverage import analyze_coverage
-from calibrator.models import (
+from ai_calibrator.coverage import analyze_coverage
+from ai_calibrator.models import (
     BehaviorSpec,
     CriterionResult,
     EvalCriterion,
@@ -10,9 +10,9 @@ from calibrator.models import (
     Scorecard,
     Weight,
 )
-from calibrator.models import TestCase as Case
-from calibrator.models import TestResult as Result  # aliased: avoids pytest collecting the model
-from calibrator.report import calibration_confidence, render_report, report_dict
+from ai_calibrator.models import TestCase as Case
+from ai_calibrator.models import TestResult as Result  # aliased: avoids pytest collecting the model
+from ai_calibrator.report import calibration_confidence, render_report, report_dict
 
 
 def _project():
@@ -71,8 +71,8 @@ def test_badge_colors_track_certification(tmp_path):
     """Green ONLY for a passing gate that certifies the current config."""
     import re as _re
 
-    from calibrator.ci import run_ci
-    from calibrator.report import badge_dict
+    from ai_calibrator.ci import run_ci
+    from ai_calibrator.report import badge_dict
 
     class Judge:
         name = "j@test"
@@ -113,9 +113,9 @@ def test_badge_colors_track_certification(tmp_path):
 
 
 def test_html_certificate_numbers_trace_to_computed_values(tmp_path):
-    from calibrator.coverage import analyze_coverage
-    from calibrator.models import Check, CriterionResult, Scorecard, TestResult
-    from calibrator.report import render_html_report
+    from ai_calibrator.coverage import analyze_coverage
+    from ai_calibrator.models import Check, CriterionResult, Scorecard, TestResult
+    from ai_calibrator.report import render_html_report
 
     p = Project(name="my-ai", goal="answer <returns> & stuff")
     p.spec = BehaviorSpec(goal="g", eval_criteria=[

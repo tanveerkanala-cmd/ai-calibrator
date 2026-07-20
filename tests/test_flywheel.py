@@ -2,9 +2,9 @@
 
 import json
 
-from calibrator.flywheel import absorb_feedback, append_feedback, read_feedback
-from calibrator.models import BehaviorSpec, EvalCriterion, Project, Weight
-from calibrator.models import TestCase as CaseModel
+from ai_calibrator.flywheel import absorb_feedback, append_feedback, read_feedback
+from ai_calibrator.models import BehaviorSpec, EvalCriterion, Project, Weight
+from ai_calibrator.models import TestCase as CaseModel
 
 
 def _project():
@@ -83,7 +83,7 @@ def test_absorb_bootstraps_spec_and_fb_ids_dont_collide(tmp_path):
 
 def test_absorbing_feedback_makes_certification_stale(tmp_path):
     """The whole point: learning from live use un-certifies until re-proven."""
-    from calibrator.ci import config_hash
+    from ai_calibrator.ci import config_hash
 
     p = _project()
     before = config_hash(p)
@@ -107,7 +107,7 @@ def test_concurrent_appends_never_lost_during_absorb(tmp_path):
     lock (which absorb callers hold) — conservation must be exact."""
     import threading
 
-    from calibrator.store import project_lock
+    from ai_calibrator.store import project_lock
 
     N = 150
     done = threading.Event()

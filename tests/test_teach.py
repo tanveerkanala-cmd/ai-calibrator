@@ -1,8 +1,8 @@
 """Calibrate-by-example — candidate proposal, standard inference, application."""
 
-from calibrator.models import BehaviorSpec, Project
-from calibrator.models import TestCase as Case
-from calibrator.teach import Judged, apply_learned, infer_standards, propose_candidates
+from ai_calibrator.models import BehaviorSpec, Project
+from ai_calibrator.models import TestCase as Case
+from ai_calibrator.teach import Judged, apply_learned, infer_standards, propose_candidates
 
 
 class GenEngine:
@@ -106,8 +106,8 @@ def test_apply_learned_coerces_non_string_judged_fields():
 def test_apply_learned_dedups_within_batch_and_across_lists():
     """Audit: the same sentence must never land in both standards and do_not,
     and within-batch duplicates collapse to one."""
-    from calibrator.models import BehaviorSpec
-    from calibrator.teach import apply_learned
+    from ai_calibrator.models import BehaviorSpec
+    from ai_calibrator.teach import apply_learned
 
     project = Project(name="p", goal="g")
     project.spec = BehaviorSpec(goal="g", do_not=["CONFLICT"])

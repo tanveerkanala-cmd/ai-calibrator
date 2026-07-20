@@ -13,8 +13,8 @@ import time
 
 import pytest
 
-from calibrator.models import InterviewItem, Project
-from calibrator.store import load_project, project_lock, save_project
+from ai_calibrator.models import InterviewItem, Project
+from ai_calibrator.store import load_project, project_lock, save_project
 
 
 def test_concurrent_save_no_corruption(tmp_path):
@@ -102,7 +102,7 @@ def test_lock_allows_parallelism_across_different_projects(tmp_path):
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
-from calibrator.api import create_app  # noqa: E402
+from ai_calibrator.api import create_app  # noqa: E402
 
 
 def test_concurrent_create_exactly_one_winner(tmp_path):

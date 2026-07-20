@@ -426,7 +426,7 @@ backend as a sidecar) + **React/TypeScript** UI. *Electron* is the fallback if
 Tauri's Python-sidecar packaging proves fiddly.
 
 > **v0 status:** the API (FastAPI) and a served **web UI** (static, bundled in
-> `calibrator/web/`, launched by `calibrate serve`) are built and tested — they
+> `ai_calibrator/web/`, launched by `calibrate serve`) are built and tested — they
 > drive the full Guided loop in a browser today. The Tauri native packaging
 > wraps this same localhost UI and is the remaining step.
 

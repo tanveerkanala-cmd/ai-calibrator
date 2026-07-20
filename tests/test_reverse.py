@@ -1,8 +1,8 @@
 """Reverse-calibrate — extract a tested spec from an existing system prompt."""
 
-from calibrator.models import BehaviorSpec, TaskType
-from calibrator.reverse import reverse_project, reverse_spec
-from calibrator.store import load_project
+from ai_calibrator.models import BehaviorSpec, TaskType
+from ai_calibrator.reverse import reverse_project, reverse_spec
+from ai_calibrator.store import load_project
 
 PROMPT = ("You are a concise research assistant. Always cite sources. Never speculate. "
           "If a query is ambiguous, ask to clarify.")

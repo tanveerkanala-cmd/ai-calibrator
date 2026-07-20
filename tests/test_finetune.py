@@ -3,21 +3,21 @@
 import ast
 import json
 
-from calibrator.finetune import (
+from ai_calibrator.finetune import (
     DEFAULT_BASE,
     assemble_dataset,
     beats_baseline,
     export_finetune,
     recommend_recipe,
 )
-from calibrator.models import (
+from ai_calibrator.models import (
     BehaviorSpec,
     CriterionResult,
     Example,
     Project,
     Scorecard,
 )
-from calibrator.models import TestResult as ResultRow  # aliased: avoid pytest collecting the model
+from ai_calibrator.models import TestResult as ResultRow  # aliased: avoid pytest collecting the model
 
 
 def _project_with_examples():

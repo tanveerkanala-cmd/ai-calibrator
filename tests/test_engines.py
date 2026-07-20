@@ -2,7 +2,7 @@
 
 import pytest
 
-from calibrator.engines.base import call_json, loads_tolerant, parse_engine_spec
+from ai_calibrator.engines.base import call_json, loads_tolerant, parse_engine_spec
 
 
 def test_parse_engine_spec():

@@ -2,8 +2,8 @@
 
 import pytest
 
-from calibrator.models import Project, TaskType
-from calibrator.store import load_project, save_project
+from ai_calibrator.models import Project, TaskType
+from ai_calibrator.store import load_project, save_project
 
 
 def test_save_load_roundtrip(tmp_path):
@@ -24,7 +24,7 @@ def test_load_missing_raises(tmp_path):
 
 
 def test_atomic_write_text_writes_completely_and_leaves_no_temp(tmp_path):
-    from calibrator.store import atomic_write_text
+    from ai_calibrator.store import atomic_write_text
     p = tmp_path / "sub" / "f.json"
     atomic_write_text(p, '{"a": 1}')
     assert p.read_text(encoding="utf-8") == '{"a": 1}'
@@ -34,7 +34,7 @@ def test_atomic_write_text_writes_completely_and_leaves_no_temp(tmp_path):
 def test_atomic_write_text_never_truncates_on_failure(tmp_path, monkeypatch):
     import os
 
-    from calibrator.store import atomic_write_text
+    from ai_calibrator.store import atomic_write_text
     p = tmp_path / "f.txt"
     p.write_text("ORIGINAL")  # prior complete content
 
@@ -52,8 +52,8 @@ def test_save_scorecard_is_atomic(tmp_path, monkeypatch):
     """The scorecard (eval's source of truth) must never be left truncated. (stress finding)"""
     import os
 
-    from calibrator.eval import save_scorecard
-    from calibrator.models import CriterionResult, Scorecard, TestResult
+    from ai_calibrator.eval import save_scorecard
+    from ai_calibrator.models import CriterionResult, Scorecard, TestResult
     card = Scorecard(run_id="run-0001", results=[
         TestResult(test_id="t1", output="x" * 10000, criteria=[CriterionResult(criterion_id="c", passed=True)])])
 
@@ -73,7 +73,7 @@ def test_unknown_fields_survive_round_trip(tmp_path):
     (audit finding: pydantic's default extra='ignore' silently destroyed them)"""
     import yaml as _yaml
 
-    from calibrator.store import load_project, save_project
+    from ai_calibrator.store import load_project, save_project
 
     d = tmp_path / "p"
     d.mkdir()
@@ -98,7 +98,7 @@ def test_yaml_tab_error_is_friendly(tmp_path):
     with the location and a tab hint — not a raw pyyaml ScannerError."""
     import pytest as _pytest
 
-    from calibrator.store import load_project
+    from ai_calibrator.store import load_project
 
     d = tmp_path / "p"
     d.mkdir()
@@ -111,7 +111,7 @@ def test_yaml_tab_error_is_friendly(tmp_path):
 
 
 def test_write_project_gitignore(tmp_path):
-    from calibrator.store import write_project_gitignore
+    from ai_calibrator.store import write_project_gitignore
 
     target = write_project_gitignore(tmp_path)
     body = target.read_text(encoding="utf-8")

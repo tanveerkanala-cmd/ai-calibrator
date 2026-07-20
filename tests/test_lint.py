@@ -1,8 +1,8 @@
 """Spec-lint — proactive quality checks on a behavior spec."""
 
-from calibrator.lint import lint_contradictions, lint_spec
-from calibrator.models import BehaviorSpec, EvalCriterion, Weight
-from calibrator.models import TestCase as Case
+from ai_calibrator.lint import lint_contradictions, lint_spec
+from ai_calibrator.models import BehaviorSpec, EvalCriterion, Weight
+from ai_calibrator.models import TestCase as Case
 
 
 def test_clean_spec_has_no_errors():
@@ -62,8 +62,8 @@ def test_lint_contradictions_reuses_conflict_detector():
 
 def test_lint_flags_unknown_fields():
     """Preserved-but-unrecognized fields (typo / newer version) surface as warnings."""
-    from calibrator.lint import lint_unknown_fields
-    from calibrator.models import Project
+    from ai_calibrator.lint import lint_unknown_fields
+    from ai_calibrator.models import Project
 
     project = Project.model_validate({
         "name": "p", "goal": "g",

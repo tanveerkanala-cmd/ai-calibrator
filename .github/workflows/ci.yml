@@ -58,4 +58,4 @@ jobs:
           python-version: "3.12"
       - run: pip install -e '.[dev]'
       - name: Bandit (medium+ severity)
-        run: bandit -r src/calibrator --severity-level medium -q
+        run: bandit -r src/ai_calibrator --severity-level medium -q

@@ -1,4 +1,4 @@
-from calibrator.parsing import chunk_text, read_document
+from ai_calibrator.parsing import chunk_text, read_document
 
 
 def test_read_text_file(tmp_path):
@@ -25,7 +25,7 @@ def test_chunk_empty_text():
 
 def test_capped_join_bounds_extracted_text(monkeypatch):
     """Decompression-bomb guard: extracted text stops growing at the cap."""
-    from calibrator import parsing
+    from ai_calibrator import parsing
 
     monkeypatch.setattr(parsing, "MAX_EXTRACTED_CHARS", 25)
     joined = parsing._capped_join(iter(["a" * 10, "b" * 10, "c" * 10, "d" * 10]))
@@ -41,7 +41,7 @@ def test_docx_declared_size_cap(monkeypatch, tmp_path):
     import pytest
 
     pytest.importorskip("docx")
-    from calibrator import parsing
+    from ai_calibrator import parsing
 
     bomb = tmp_path / "bomb.docx"
     with zipfile.ZipFile(bomb, "w") as z:

@@ -53,10 +53,10 @@ dev = ["pytest>=8.0", "pytest-cov>=5.0", "fastapi>=0.110", "python-multipart>=0.
 all = ["ai-calibrator[cloud,api,rag,docs]"]
 
 [project.scripts]
-calibrate = "calibrator.cli:main"
+calibrate = "ai_calibrator.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/calibrator"]
+packages = ["src/ai_calibrator"]
 
 [tool.ruff.lint]
 # Bug-focused static-analysis gate: pyflakes (F), bugbear (B), syntax (E9).
@@ -68,5 +68,5 @@ select = ["E9", "F", "B"]
 ignore = ["B008", "B904"]
 
 [tool.bandit]
-# Security lint:  bandit -r src/calibrator
+# Security lint:  bandit -r src/ai_calibrator
 exclude_dirs = ["tests"]

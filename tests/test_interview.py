@@ -1,7 +1,7 @@
 """M2 interview generation, verified with a mocked engine (no network)."""
 
-from calibrator.interview import QUESTION_SCHEMA, generate_questions
-from calibrator.models import Gap, Project, TaskType
+from ai_calibrator.interview import QUESTION_SCHEMA, generate_questions
+from ai_calibrator.models import Gap, Project, TaskType
 
 
 class FakeEngine:

@@ -44,7 +44,7 @@ Ground rules the codebase already follows — please keep them true:
 
 ## Project layout
 
-`src/calibrator/` — the package (src-layout). `models.py` holds the data
+`src/ai_calibrator/` — the package (src-layout). `models.py` holds the data
 contracts (pydantic); `compile.py` / `eval.py` the core pipeline; one module per
 verify feature (`lint.py`, `coverage.py`, `drift.py`, `snapshot.py`,
 `judge_check.py`, `ci.py`, …); `cli.py` (typer) and `api.py` (FastAPI) are thin

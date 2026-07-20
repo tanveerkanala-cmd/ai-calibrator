@@ -1,8 +1,8 @@
 """Behavioral coverage — deterministic spec↔test analysis."""
 
-from calibrator.coverage import analyze_coverage, coverage_dict
-from calibrator.models import BehaviorSpec, EvalCriterion, Weight
-from calibrator.models import TestCase as Case
+from ai_calibrator.coverage import analyze_coverage, coverage_dict
+from ai_calibrator.models import BehaviorSpec, EvalCriterion, Weight
+from ai_calibrator.models import TestCase as Case
 
 
 def _spec(crits, **kw):

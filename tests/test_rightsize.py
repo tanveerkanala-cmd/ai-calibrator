@@ -2,9 +2,9 @@
 
 import re
 
-from calibrator.models import BehaviorSpec, EvalCriterion, Project, Weight
-from calibrator.models import TestCase as Case
-from calibrator.rightsize import DEFAULT_LADDER, rightsize
+from ai_calibrator.models import BehaviorSpec, EvalCriterion, Project, Weight
+from ai_calibrator.models import TestCase as Case
+from ai_calibrator.rightsize import DEFAULT_LADDER, rightsize
 
 
 class MarkerSubject:

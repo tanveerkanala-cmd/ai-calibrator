@@ -8,7 +8,7 @@ import pytest
 
 # CWE-59 — ingest must skip symlinks (a shared project can't read files outside materials/)
 def test_ingest_skips_symlinks(tmp_path):
-    from calibrator.ingest import parse_materials
+    from ai_calibrator.ingest import parse_materials
 
     materials = tmp_path / "proj" / "materials"
     materials.mkdir(parents=True)
@@ -29,7 +29,7 @@ def test_ingest_skips_symlinks(tmp_path):
 
 # CWE-59 defense-in-depth — a symlinked directory component is also excluded
 def test_ingest_skips_oversize(tmp_path):
-    from calibrator.ingest import MAX_MATERIAL_BYTES, parse_materials
+    from ai_calibrator.ingest import MAX_MATERIAL_BYTES, parse_materials
 
     materials = tmp_path / "materials"
     materials.mkdir()
@@ -38,7 +38,7 @@ def test_ingest_skips_oversize(tmp_path):
     big.write_text("x" * 100)
     # force it "oversize" by monkeypatching the cap low via a huge file is slow; instead
     # assert the cap constant is enforced by making a file exceed a tiny patched cap
-    import calibrator.ingest as ing
+    import ai_calibrator.ingest as ing
     orig = ing.MAX_MATERIAL_BYTES
     ing.MAX_MATERIAL_BYTES = 10
     try:
@@ -54,8 +54,8 @@ def test_ingest_skips_oversize(tmp_path):
 def test_logs_and_lock_are_private(tmp_path):
     if os.name == "nt":
         pytest.skip("POSIX permissions")
-    from calibrator.engine_log import LoggingEngine
-    from calibrator.locking import FileLock
+    from ai_calibrator.engine_log import LoggingEngine
+    from ai_calibrator.locking import FileLock
 
     class Fake:
         name = "f@test"
@@ -77,8 +77,8 @@ def test_logs_and_lock_are_private(tmp_path):
 def test_check_unicode_normalization():
     import unicodedata
 
-    from calibrator.checks import run_check
-    from calibrator.models import Check
+    from ai_calibrator.checks import run_check
+    from ai_calibrator.models import Check
 
     composed = "café"                 # café (single é)
     decomposed = unicodedata.normalize("NFD", composed)  # cafe + combining accent

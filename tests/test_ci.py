@@ -2,11 +2,11 @@
 
 import re
 
-from calibrator.ci import ci_dict, run_ci
-from calibrator.eval import run_eval, save_scorecard
-from calibrator.models import BehaviorSpec, EvalCriterion, Project, Weight
-from calibrator.models import TestCase as CaseModel
-from calibrator.snapshot import save_golden
+from ai_calibrator.ci import ci_dict, run_ci
+from ai_calibrator.eval import run_eval, save_scorecard
+from ai_calibrator.models import BehaviorSpec, EvalCriterion, Project, Weight
+from ai_calibrator.models import TestCase as CaseModel
+from ai_calibrator.snapshot import save_golden
 
 
 class Judge:
@@ -139,7 +139,7 @@ def test_ci_explicit_baseline(tmp_path):
 
 def test_gate_record_persisted_and_certification_status(tmp_path):
     """ci persists its verdict (pass AND fail); `run`'s boot gate reads it."""
-    from calibrator.ci import certification_status, config_hash, latest_gate
+    from ai_calibrator.ci import certification_status, config_hash, latest_gate
 
     p = _project()
     assert certification_status(p, tmp_path)[0] == "none"        # never gated
@@ -163,7 +163,7 @@ def test_gate_record_persisted_and_certification_status(tmp_path):
 
 
 def test_gate_record_survives_lint_fail(tmp_path):
-    from calibrator.ci import latest_gate
+    from ai_calibrator.ci import latest_gate
 
     p = _project()
     p.spec.eval_criteria = []
@@ -174,7 +174,7 @@ def test_gate_record_survives_lint_fail(tmp_path):
 
 def test_gate_file_does_not_confuse_run_listing(tmp_path):
     """evals/last-gate.json (a FILE) must not break latest_run_id's dir scan."""
-    from calibrator.eval import latest_run_id
+    from ai_calibrator.eval import latest_run_id
 
     p = _project()
     run_ci(p, Subject("GOOD"), Judge(), project_dir=tmp_path)
@@ -183,8 +183,8 @@ def test_gate_file_does_not_confuse_run_listing(tmp_path):
 
 def test_certification_stales_when_tests_or_checks_change(tmp_path):
     """config_hash covers the grading contract + suite, not just the prompt."""
-    from calibrator.ci import certification_status
-    from calibrator.models import Check
+    from ai_calibrator.ci import certification_status
+    from ai_calibrator.models import Check
 
     p = _project()
     run_ci(p, Subject("GOOD"), Judge(), project_dir=tmp_path)
@@ -202,7 +202,7 @@ def test_certification_stales_when_tests_or_checks_change(tmp_path):
 def test_criteria_reordering_does_not_stale_certification(tmp_path):
     """Audit finding: criteria were hashed in list order (tests are sorted) —
     reordering YAML entries spuriously staled the certification."""
-    from calibrator.ci import certification_status, config_hash
+    from ai_calibrator.ci import certification_status, config_hash
 
     p = _project()
     p.spec.eval_criteria.append(EvalCriterion(id="c2", description="another thing", weight=Weight.LOW))
@@ -221,8 +221,8 @@ def test_criteria_reordering_does_not_stale_certification(tmp_path):
 def test_config_hash_ignores_list_reordering(tmp_path):
     """Audit round 18: reordering standards/do_not/edge_cases (or criteria) in the
     YAML must NOT stale a certification — only real content changes do."""
-    from calibrator.ci import config_hash
-    from calibrator.models import EdgeCase
+    from ai_calibrator.ci import config_hash
+    from ai_calibrator.models import EdgeCase
 
     p = _project()
     p.spec.standards = ["Always cite the policy number.", "Be warm and concise."]

@@ -1,8 +1,8 @@
 """Golden-output snapshots — pin outputs and detect text changes."""
 
-from calibrator.models import Scorecard
-from calibrator.models import TestResult as Result  # aliased: avoids pytest collecting the model
-from calibrator.snapshot import compare, load_golden, outputs_of, save_golden
+from ai_calibrator.models import Scorecard
+from ai_calibrator.models import TestResult as Result  # aliased: avoids pytest collecting the model
+from ai_calibrator.snapshot import compare, load_golden, outputs_of, save_golden
 
 
 def _card(run_id, outs):

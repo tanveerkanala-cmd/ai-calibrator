@@ -1,8 +1,8 @@
 """Judge calibration — measure judge↔human agreement from saved verdicts."""
 
-from calibrator.judge_check import agreement_dict, gradings, judge_agreement
-from calibrator.models import CriterionResult, Scorecard
-from calibrator.models import TestResult as Result
+from ai_calibrator.judge_check import agreement_dict, gradings, judge_agreement
+from ai_calibrator.models import CriterionResult, Scorecard
+from ai_calibrator.models import TestResult as Result
 
 
 def _card():
@@ -45,7 +45,7 @@ def test_agreement_dict_shape():
 
 def test_labels_persist_and_merge(tmp_path):
     """Labels are an asset: saved per run, merged on re-label, junk-tolerant."""
-    from calibrator.judge_check import all_labels, load_labels, save_labels
+    from ai_calibrator.judge_check import all_labels, load_labels, save_labels
 
     save_labels(tmp_path, "run-0001", [
         {"test_id": "t1", "criterion_id": "c1", "passed": True},
@@ -70,7 +70,7 @@ def test_labels_persist_and_merge(tmp_path):
 def test_labels_reject_traversal_run_id(tmp_path):
     import pytest as _pytest
 
-    from calibrator.judge_check import save_labels
+    from ai_calibrator.judge_check import save_labels
 
     for bad in ["../x", "a/b", "", "  "]:
         with _pytest.raises(ValueError):
@@ -82,7 +82,7 @@ def test_load_labels_filters_half_formed_entries(tmp_path):
     downstream — load applies the same filter as save. (audit finding)"""
     import json as _json
 
-    from calibrator.judge_check import load_labels
+    from ai_calibrator.judge_check import load_labels
 
     d = tmp_path / "evals" / "run-0001"
     d.mkdir(parents=True)

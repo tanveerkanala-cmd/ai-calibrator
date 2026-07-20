@@ -20,7 +20,7 @@ ANY = st.recursive(
 # --- coerce: must NEVER crash, and honor its contracts on ANY input ----------
 @given(ANY)
 def test_coerce_never_crashes(x):
-    from calibrator.coerce import as_list, as_opt_str, as_str, is_str
+    from ai_calibrator.coerce import as_list, as_opt_str, as_str, is_str
     assert isinstance(as_list(x), list)
     assert isinstance(as_str(x), str)
     r = as_opt_str(x)
@@ -30,7 +30,7 @@ def test_coerce_never_crashes(x):
 
 @given(TEXT)
 def test_safe_token_output_is_safe_or_rejects(s):
-    from calibrator.coerce import safe_token
+    from ai_calibrator.coerce import safe_token
     try:
         out = safe_token(s, "field")
     except ValueError:
@@ -44,7 +44,7 @@ def test_safe_token_output_is_safe_or_rejects(s):
 # --- parsing: loads_tolerant only ever raises ValueError; chunk_text is lossless-ish
 @given(TEXT)
 def test_loads_tolerant_only_raises_valueerror(s):
-    from calibrator.engines.base import loads_tolerant
+    from ai_calibrator.engines.base import loads_tolerant
     try:
         loads_tolerant(s)
     except ValueError:
@@ -54,7 +54,7 @@ def test_loads_tolerant_only_raises_valueerror(s):
 
 @given(TEXT, st.integers(min_value=1, max_value=500))
 def test_chunk_text_covers_input_without_loss(text, size):
-    from calibrator.parsing import chunk_text
+    from ai_calibrator.parsing import chunk_text
     chunks = chunk_text(text, size=size)
     assert isinstance(chunks, list)
     # every chunk is bounded, and concatenation preserves the non-space content
@@ -71,8 +71,8 @@ def test_chunk_text_covers_input_without_loss(text, size):
 )
 @settings(deadline=None)   # regex path has a timeout
 def test_run_check_never_crashes(kind, value, output):
-    from calibrator.checks import run_check
-    from calibrator.models import Check
+    from ai_calibrator.checks import run_check
+    from ai_calibrator.models import Check
     try:
         chk = Check(kind=kind, value=value)
     except Exception:
@@ -84,7 +84,7 @@ def test_run_check_never_crashes(kind, value, output):
 # --- scoring: pass_rate / weighted_score always in [0,1] (or 0 for empty) -----
 @given(st.lists(st.lists(st.tuples(st.booleans(), st.sampled_from(["high", "medium", "low"])), max_size=6), max_size=8))
 def test_scorecard_metrics_in_unit_interval(spec):
-    from calibrator.models import CriterionResult, Scorecard, TestResult, Weight
+    from ai_calibrator.models import CriterionResult, Scorecard, TestResult, Weight
     results = []
     for i, crits in enumerate(spec):
         crs = [CriterionResult(criterion_id=f"c{j}", passed=p, score=1.0 if p else 0.0,
@@ -98,7 +98,7 @@ def test_scorecard_metrics_in_unit_interval(spec):
 # --- fmt: honest percentages — never "100%" unless exactly 1.0 ----------------
 @given(st.floats(min_value=0.0, max_value=1.0, allow_nan=False))
 def test_pct_never_falsely_100(x):
-    from calibrator.fmt import pct
+    from ai_calibrator.fmt import pct
     s = pct(x)
     assert isinstance(s, str)
     if s == "100%":
@@ -109,7 +109,7 @@ def test_pct_never_falsely_100(x):
 
 @given(st.floats(allow_nan=False, allow_infinity=False, min_value=-1.0, max_value=1.0))
 def test_pct_delta_is_a_string(x):
-    from calibrator.fmt import pct_delta
+    from ai_calibrator.fmt import pct_delta
     assert isinstance(pct_delta(x), str)
 
 
@@ -119,8 +119,8 @@ def test_pct_delta_is_a_string(x):
     st.lists(st.text(st.characters(min_codepoint=32, codec="utf-8"), min_size=1, max_size=30), max_size=6, unique=True),
 )
 def test_config_hash_is_order_independent(standards, do_not):
-    from calibrator.ci import config_hash
-    from calibrator.models import BehaviorSpec, Project
+    from ai_calibrator.ci import config_hash
+    from ai_calibrator.models import BehaviorSpec, Project
 
     def make(std, dn):
         p = Project(name="p", goal="g")
@@ -146,7 +146,7 @@ _SAFE = st.text(st.characters(min_codepoint=32, codec="utf-8"), max_size=60)
 def test_project_yaml_roundtrip_is_idempotent(standards, do_not, goal, extra):
     import yaml
 
-    from calibrator.models import Project
+    from ai_calibrator.models import Project
     reserved = set(Project.model_fields)
     extras = {k: v for k, v in extra.items() if k not in reserved}
     # Build via model_validate — the REAL path unknown fields take (loading a
@@ -165,8 +165,8 @@ def test_project_yaml_roundtrip_is_idempotent(standards, do_not, goal, extra):
 # --- config_hash: a CONTENT change must change the hash (no collision) --------
 @given(st.lists(_SAFE.filter(lambda s: s.strip()), min_size=1, max_size=5, unique=True), _SAFE.filter(lambda s: s.strip()))
 def test_config_hash_detects_a_new_standard(standards, extra):
-    from calibrator.ci import config_hash
-    from calibrator.models import BehaviorSpec, Project
+    from ai_calibrator.ci import config_hash
+    from ai_calibrator.models import BehaviorSpec, Project
 
     def make(std):
         p = Project(name="p", goal="g")
@@ -183,7 +183,7 @@ def test_config_hash_detects_a_new_standard(standards, extra):
 @given(st.lists(st.tuples(st.booleans(), st.sampled_from(["high", "medium", "low"])), min_size=1, max_size=8),
        st.integers(min_value=0, max_value=7))
 def test_weighted_score_monotonic_on_flip(crits, idx):
-    from calibrator.models import CriterionResult, Scorecard, TestResult, Weight
+    from ai_calibrator.models import CriterionResult, Scorecard, TestResult, Weight
 
     def card_from(cs):
         crs = [CriterionResult(criterion_id=f"c{j}", passed=p, score=1.0 if p else 0.0, weight=Weight(w))
@@ -204,14 +204,14 @@ def test_weighted_score_monotonic_on_flip(crits, idx):
 def test_loads_tolerant_preserves_valid_json(obj):
     import json
 
-    from calibrator.engines.base import loads_tolerant
+    from ai_calibrator.engines.base import loads_tolerant
     assert loads_tolerant(json.dumps(obj)) == obj
 
 
 # --- pct_delta: a real nonzero delta must never render as a "zero" string ------
 @given(st.floats(allow_nan=False, allow_infinity=False, min_value=-1.0, max_value=1.0))
 def test_pct_delta_never_masks_a_real_change(x):
-    from calibrator.fmt import pct_delta
+    from ai_calibrator.fmt import pct_delta
     s = pct_delta(x)
     if x != 0.0:
         assert s not in ("0%", "+0%", "-0%", "±0%", "0.0%", "+0.0%")   # must not read as "no change"
@@ -221,8 +221,8 @@ def test_pct_delta_never_masks_a_real_change(x):
 @given(ANY)
 @settings(max_examples=200)
 def test_spec_from_dict_never_crashes_on_arbitrary_engine_output(out):
-    from calibrator.compile import spec_from_dict
-    from calibrator.models import TaskType
+    from ai_calibrator.compile import spec_from_dict
+    from ai_calibrator.models import TaskType
     if not isinstance(out, dict):
         return
     try:
@@ -238,7 +238,7 @@ def test_spec_from_dict_never_crashes_on_arbitrary_engine_output(out):
 # --- engine spec parsing: any string parses cleanly or raises ValueError, never else
 @given(TEXT)
 def test_parse_engine_spec_never_crashes(s):
-    from calibrator.engines.base import parse_engine_spec, validate_engine_spec
+    from ai_calibrator.engines.base import parse_engine_spec, validate_engine_spec
     try:
         model, provider = parse_engine_spec(s)
         assert isinstance(model, str) and isinstance(provider, str)
@@ -257,7 +257,7 @@ def test_parse_engine_spec_never_crashes(s):
     max_size=3), max_size=6))
 @settings(max_examples=200)
 def test_encode_messages_never_crashes(messages):
-    from calibrator.runtime import encode_messages
+    from ai_calibrator.runtime import encode_messages
     try:
         out = encode_messages(messages)
     except (ValueError, KeyError, TypeError):
@@ -268,8 +268,8 @@ def test_encode_messages_never_crashes(messages):
 # --- tests_from_examples: ids are unique and generation is deterministic -------
 @given(st.lists(st.tuples(_SAFE.filter(lambda s: s.strip()), _SAFE), max_size=8))
 def test_tests_from_examples_unique_ids_deterministic(pairs):
-    from calibrator.compile import tests_from_examples
-    from calibrator.models import BehaviorSpec, Example
+    from ai_calibrator.compile import tests_from_examples
+    from ai_calibrator.models import BehaviorSpec, Example
     spec = BehaviorSpec(goal="g", examples=[Example(input=i, good_output=o) for i, o in pairs])
     t1 = tests_from_examples(spec)
     t2 = tests_from_examples(spec)
@@ -283,7 +283,7 @@ def test_tests_from_examples_unique_ids_deterministic(pairs):
 def test_scorecard_json_roundtrip(spec):
     import json
 
-    from calibrator.models import CriterionResult, Scorecard, TestResult, Weight
+    from ai_calibrator.models import CriterionResult, Scorecard, TestResult, Weight
     results = []
     for i, crits in enumerate(spec):
         crs = [CriterionResult(criterion_id=f"c{j}", passed=p, score=1.0 if p else 0.0,

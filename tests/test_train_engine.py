@@ -5,11 +5,11 @@ import json
 import pytest
 from typer.testing import CliRunner
 
-from calibrator.cli import app
-from calibrator.engine_log import LoggingEngine, wrap_engine
-from calibrator.models import Project
-from calibrator.store import save_project
-from calibrator.train_engine import (
+from ai_calibrator.cli import app
+from ai_calibrator.engine_log import LoggingEngine, wrap_engine
+from ai_calibrator.models import Project
+from ai_calibrator.store import save_project
+from ai_calibrator.train_engine import (
     agreement,
     assemble_role_dataset,
     export_engine_bundle,
@@ -166,7 +166,7 @@ def test_cli_log_toggle(tmp_path):
     assert "OFF" in runner.invoke(app, ["log", str(tmp_path)]).output
     r = runner.invoke(app, ["log", str(tmp_path), "--on"])
     assert r.exit_code == 0 and "ON" in r.output
-    from calibrator.store import load_project
+    from ai_calibrator.store import load_project
     assert load_project(tmp_path).log_interactions is True
 
 
@@ -186,9 +186,9 @@ def test_cli_train_engine_validations(tmp_path):
 
 def _seed_labeled_project(tmp_path):
     """Project + scorecard + one human label that CONTRADICTS the logged judge."""
-    from calibrator.eval import JUDGE_SYSTEM, judge_prompt, save_scorecard
-    from calibrator.judge_check import save_labels
-    from calibrator.models import BehaviorSpec, CriterionResult, EvalCriterion, Scorecard, TestCase, TestResult, Weight
+    from ai_calibrator.eval import JUDGE_SYSTEM, judge_prompt, save_scorecard
+    from ai_calibrator.judge_check import save_labels
+    from ai_calibrator.models import BehaviorSpec, CriterionResult, EvalCriterion, Scorecard, TestCase, TestResult, Weight
 
     p = Project(name="p", goal="g")
     p.spec = BehaviorSpec(goal="g", eval_criteria=[
@@ -212,7 +212,7 @@ def _seed_labeled_project(tmp_path):
 
 
 def test_human_judge_rows_built_from_labels(tmp_path):
-    from calibrator.train_engine import human_judge_rows
+    from ai_calibrator.train_engine import human_judge_rows
 
     expected_prompt = _seed_labeled_project(tmp_path)
     rows = human_judge_rows(tmp_path)
@@ -236,7 +236,7 @@ def test_export_bundle_ground_truth_overrides_conflicting_log_row(tmp_path):
 
 def test_export_bundle_skips_stale_labels(tmp_path):
     """Labels for vanished tests/criteria are skipped, never mis-built."""
-    from calibrator.judge_check import save_labels
+    from ai_calibrator.judge_check import save_labels
 
     _seed_labeled_project(tmp_path)
     save_labels(tmp_path, "run-0001", [

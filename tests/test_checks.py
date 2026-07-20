@@ -1,7 +1,7 @@
 """Deterministic eval checks (§9 layer 1)."""
 
-from calibrator.checks import run_check
-from calibrator.models import Check
+from ai_calibrator.checks import run_check
+from ai_calibrator.models import Check
 
 
 def test_contains():
@@ -37,7 +37,7 @@ def test_regex_catastrophic_pattern_times_out_instead_of_hanging():
     (regression: stdlib re hung ~10s on such patterns; the regex-engine timeout bounds it)."""
     import time
 
-    from calibrator.checks import REGEX_TIMEOUT
+    from ai_calibrator.checks import REGEX_TIMEOUT
 
     start = time.perf_counter()
     ok, why = run_check(Check(kind="regex", value=r"(a|aa)+$"), "a" * 40 + "!")

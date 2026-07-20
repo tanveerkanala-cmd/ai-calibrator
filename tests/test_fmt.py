@@ -1,6 +1,6 @@
 """Honest percentage formatting — displayed numbers must never contradict truth."""
 
-from calibrator.fmt import pct, pct_delta
+from ai_calibrator.fmt import pct, pct_delta
 
 
 def test_pct_poles_are_exact_only():
@@ -22,10 +22,10 @@ def test_pct_delta_never_masks_a_real_change():
 def test_ci_eval_detail_is_honest_at_249_of_250(tmp_path):
     """Integration: a scorecard with one failure among 250 must render >99%, and a
     just-below-threshold fail must disambiguate the boundary."""
-    from calibrator.ci import _drift_stage, run_ci  # noqa: F401  (drift smoke below)
-    from calibrator.ci import CiResult
-    from calibrator.eval import save_scorecard
-    from calibrator.models import (BehaviorSpec, CriterionResult, EvalCriterion, Project,
+    from ai_calibrator.ci import _drift_stage, run_ci  # noqa: F401  (drift smoke below)
+    from ai_calibrator.ci import CiResult
+    from ai_calibrator.eval import save_scorecard
+    from ai_calibrator.models import (BehaviorSpec, CriterionResult, EvalCriterion, Project,
                                    Scorecard, TestCase, TestResult, Weight)
 
     import re
@@ -58,7 +58,7 @@ def test_ci_eval_detail_is_honest_at_249_of_250(tmp_path):
     assert "(249/250)" in eval_stage.detail
 
     # badge honesty on the same card
-    from calibrator.report import badge_dict
+    from ai_calibrator.report import badge_dict
     b = badge_dict(p, tmp_path)
     assert b["message"].startswith(">99%")
 

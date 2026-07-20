@@ -6,10 +6,10 @@ pytest.importorskip("fastapi")  # skip if the `api` extra isn't installed
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from calibrator.api import _engine_factory, create_app  # noqa: E402
-from calibrator.models import BehaviorSpec, EvalCriterion, Project, Weight  # noqa: E402
-from calibrator.models import TestCase as CaseModel  # noqa: E402
-from calibrator.store import save_project  # noqa: E402
+from ai_calibrator.api import _engine_factory, create_app  # noqa: E402
+from ai_calibrator.models import BehaviorSpec, EvalCriterion, Project, Weight  # noqa: E402
+from ai_calibrator.models import TestCase as CaseModel  # noqa: E402
+from ai_calibrator.store import save_project  # noqa: E402
 
 
 class FakeEngine:
@@ -86,7 +86,7 @@ def test_ingest_without_materials_is_400(tmp_path):
 
 def test_submit_answers(tmp_path):
     # seed a project with an interview item directly, then answer via the API
-    from calibrator.models import InterviewItem
+    from ai_calibrator.models import InterviewItem
     proj = Project(name="p", goal="g")
     proj.interview = [InterviewItem(id="q1", dimension="tone", question="Voice?", draft_answer="warm")]
     save_project(proj, tmp_path / "p")
@@ -143,7 +143,7 @@ def test_foreign_host_is_blocked(tmp_path):
 
 
 def test_examples_to_tests_endpoint(tmp_path):
-    from calibrator.models import Example
+    from ai_calibrator.models import Example
     proj = Project(name="p", goal="g")
     proj.spec = BehaviorSpec(goal="g", examples=[Example(input="Can I return this?", good_output="yes")],
                              eval_criteria=[EvalCriterion(id="c1", description="d", weight=Weight.HIGH)])
@@ -170,8 +170,8 @@ def test_promptfoo_endpoint(tmp_path):
 
 
 def test_judge_check_endpoints(tmp_path):
-    from calibrator.eval import save_scorecard
-    from calibrator.models import CriterionResult, Scorecard, TestResult
+    from ai_calibrator.eval import save_scorecard
+    from ai_calibrator.models import CriterionResult, Scorecard, TestResult
 
     proj = Project(name="p", goal="g")
     proj.spec = BehaviorSpec(goal="g", eval_criteria=[EvalCriterion(id="c1", description="d", weight=Weight.HIGH)])
@@ -194,8 +194,8 @@ def test_judge_check_endpoints(tmp_path):
 
 
 def test_snapshot_endpoints(tmp_path):
-    from calibrator.eval import save_scorecard
-    from calibrator.models import Scorecard, TestResult
+    from ai_calibrator.eval import save_scorecard
+    from ai_calibrator.models import Scorecard, TestResult
 
     proj = Project(name="p", goal="g")
     proj.spec = BehaviorSpec(goal="g", eval_criteria=[EvalCriterion(id="c1", description="d", weight=Weight.HIGH)])
@@ -329,8 +329,8 @@ def test_report_endpoint(tmp_path):
 def test_drift_endpoint(tmp_path):
     import re as _re
 
-    from calibrator.eval import save_scorecard
-    from calibrator.models import CriterionResult, Scorecard, TestResult
+    from ai_calibrator.eval import save_scorecard
+    from ai_calibrator.models import CriterionResult, Scorecard, TestResult
 
     proj = Project(name="p", goal="g")
     proj.spec = BehaviorSpec(goal="g", eval_criteria=[EvalCriterion(id="c1", description="d", weight=Weight.HIGH)])
@@ -612,7 +612,7 @@ def test_badge_and_certification_endpoints(tmp_path):
 
 
 def test_absorb_endpoint(tmp_path):
-    from calibrator.flywheel import append_feedback
+    from ai_calibrator.flywheel import append_feedback
 
     c = _client(tmp_path)
     proj = Project(name="p", goal="g")
@@ -682,7 +682,7 @@ def test_overlong_project_name_is_400_not_500(tmp_path):
 
 
 def test_set_engines_endpoint(tmp_path):
-    from calibrator.store import load_project
+    from ai_calibrator.store import load_project
     c = _client(tmp_path)
     c.post("/api/projects", json={"name": "p", "goal": "g"})
 
@@ -722,9 +722,9 @@ def test_api_bulk_add_examples(tmp_path):
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
 
-    from calibrator.api import create_app
-    from calibrator.models import BehaviorSpec, Project
-    from calibrator.store import save_project
+    from ai_calibrator.api import create_app
+    from ai_calibrator.models import BehaviorSpec, Project
+    from ai_calibrator.store import save_project
     p = Project(name="ex", goal="g"); p.spec = BehaviorSpec(goal="g")
     save_project(p, tmp_path / "ex")
     c = TestClient(create_app(tmp_path))

@@ -8,9 +8,9 @@ pytest.importorskip("fastapi")  # runtime needs the `api` extra
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from calibrator.models import BehaviorSpec, Check, EvalCriterion, Project, Weight  # noqa: E402
-from calibrator.runtime import create_ai_app, encode_messages  # noqa: E402
-from calibrator.store import save_project  # noqa: E402
+from ai_calibrator.models import BehaviorSpec, Check, EvalCriterion, Project, Weight  # noqa: E402
+from ai_calibrator.runtime import create_ai_app, encode_messages  # noqa: E402
+from ai_calibrator.store import save_project  # noqa: E402
 
 
 class RecordingEngine:
@@ -58,7 +58,7 @@ def test_chat_completion_shape_and_calibrated_system_prompt(tmp_path):
 
 def test_history_encoding_matches_eval_harness(tmp_path):
     """What you tested is what you serve: live chats use conversation_prompt."""
-    from calibrator.eval import conversation_prompt
+    from ai_calibrator.eval import conversation_prompt
 
     _seed(tmp_path)
     eng = RecordingEngine()
@@ -170,7 +170,7 @@ def test_encode_messages_contract():
 
 def test_feedback_by_completion_id_and_explicit(tmp_path):
     """The flywheel capture point: feedback lands durably in logs/feedback.jsonl."""
-    from calibrator.flywheel import read_feedback
+    from ai_calibrator.flywheel import read_feedback
 
     _seed(tmp_path)
     c = _client(tmp_path, RecordingEngine(["Any time!"]))
@@ -199,9 +199,9 @@ def test_feedback_by_completion_id_and_explicit(tmp_path):
 
 def test_flywheel_end_to_end_chat_feedback_absorb(tmp_path):
     """use → flag → absorb → pinned: the full loop, and certification goes stale."""
-    from calibrator.ci import certification_status, save_gate, CiResult, CiStage
-    from calibrator.flywheel import absorb_feedback
-    from calibrator.store import load_project
+    from ai_calibrator.ci import certification_status, save_gate, CiResult, CiStage
+    from ai_calibrator.flywheel import absorb_feedback
+    from ai_calibrator.store import load_project
 
     p = _seed(tmp_path)
     # fake a passing gate for the CURRENT config so we can watch it go stale
@@ -274,7 +274,7 @@ def test_content_parts_form_is_accepted(tmp_path):
 def test_completion_ids_unique_past_ring_buffer(tmp_path):
     """Audit #10: ids used len(recent), which plateaus at the 512 cap and would
     collide within a second — routing feedback to the wrong conversation."""
-    from calibrator.runtime import RECENT_COMPLETIONS
+    from ai_calibrator.runtime import RECENT_COMPLETIONS
 
     _seed(tmp_path)
     c = _client(tmp_path, RecordingEngine(["ok"]))
