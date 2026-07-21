@@ -69,6 +69,13 @@ within a week.
   extractor reads your documents, so only ingest documents you trust. The
   red-team command (`calibrate redteam`) exists to probe the *configured* AI's
   rule-keeping, not to sanitize inputs.
+- Decompression bombs: DOCX ingestion streams the archive with a hard byte cap,
+  so a "zip bomb" is rejected without exhausting memory. PDF text extraction is
+  bounded per page and in total, but relies on `pypdf`, which materializes a
+  single page's text internally before the cap applies — a maliciously crafted
+  single-page PDF can still spike memory during extraction. One bad file no
+  longer aborts the whole ingest (it is skipped and reported), but only ingest
+  PDFs you trust.
 - Regex checks (`calibrate add-check … regex`) execute owner-authored patterns
   with a hard timeout (see `checks.py`) so a catastrophic pattern cannot hang an
   eval.

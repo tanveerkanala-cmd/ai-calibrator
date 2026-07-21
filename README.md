@@ -51,7 +51,7 @@ Contributing: [`CONTRIBUTING.md`](CONTRIBUTING.md)
 
 ```bash
 # from a clone of this repo:
-pip install '.[cloud]'                   # or '.[all]' for every engine + the web UI
+pip install '.[cloud]'                   # or '.[all]' for every engine + the web UI (note: [all] pulls a multi-GB ML stack via [rag])
 export ANTHROPIC_API_KEY=sk-ant-...      # your own key; nothing is stored in the repo
 calibrate --help
 calibrate init my-support-ai --goal "Answer customer product questions in our voice."

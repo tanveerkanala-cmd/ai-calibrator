@@ -38,6 +38,18 @@ calibrate --help
 Requires Python 3.10+. (If you'll only ever run local models, plain
 `pip install -e .` is enough.)
 
+The optional extras, mix as needed:
+
+| Extra | Adds |
+|-------|------|
+| `cloud` | Anthropic + OpenAI SDKs (skip if you only use local Ollama) |
+| `api` | the web UI + `calibrate serve` / `run` servers |
+| `docs` | PDF / DOCX ingestion (`.pdf`, `.docx` materials) |
+| `rag` | local retrieval index — **pulls a multi-GB ML stack** (sentence-transformers → PyTorch) |
+| `all` | `cloud` + `api` + `docs` + `rag` (so also multi-GB, via `rag`) |
+
+`pip install -e '.[cloud,api,docs]'` is the common no-GPU combination.
+
 ---
 
 ## 3. Choose your engine
