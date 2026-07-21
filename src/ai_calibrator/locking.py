@@ -23,7 +23,9 @@ Design notes:
 
 from __future__ import annotations
 
+import errno
 import os
+import time
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -72,9 +74,23 @@ class FileLock:
             if _BACKEND == "fcntl":
                 fcntl.flock(self._fd, fcntl.LOCK_EX)
             elif _BACKEND == "msvcrt":  # pragma: no cover - Windows only
-                # Lock one byte at offset 0; LK_LOCK blocks (retrying) until free.
+                # Lock one byte at offset 0. msvcrt.LK_LOCK is NOT truly
+                # blocking: it retries internally for ~10 s and then raises
+                # OSError(EDEADLK). Our critical sections routinely exceed 10 s
+                # (an eval/ci run holds the lock across minutes of engine calls),
+                # and the contract is to block until free — so loop, re-entering
+                # LK_LOCK's blocking wait each time the 10 s window lapses.
+                # EDEADLK is specifically "still held by another holder" (see the
+                # msvcrt docs); any other OSError is a real failure, re-raised.
                 os.lseek(self._fd, 0, os.SEEK_SET)
-                msvcrt.locking(self._fd, msvcrt.LK_LOCK, 1)
+                while True:
+                    try:
+                        msvcrt.locking(self._fd, msvcrt.LK_LOCK, 1)
+                        break
+                    except OSError as exc:
+                        if exc.errno != errno.EDEADLK:
+                            raise
+                        time.sleep(0.05)
             # _BACKEND == "none": best-effort no-op (atomic writes still apply).
         except OSError:
             # Never leak the descriptor if locking itself failed.

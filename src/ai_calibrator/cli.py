@@ -92,18 +92,20 @@ def init(
             )
             raise typer.Exit(code=1)
     target = path or Path(name)
+    # Validate the name BEFORE any filesystem op. The model catches names the CLI
+    # pre-checks miss (reserved device names like CON, trailing dot/space, control
+    # chars); on Windows those also make the lock's mkdir(target) fail at the OS
+    # level, so this must run before project_lock — surface a friendly message,
+    # not a raw pydantic traceback or an OSError.
+    try:
+        project = Project(name=name, goal=goal, task_type=task_type)
+    except ValidationError as exc:
+        msg = exc.errors()[0].get("msg", "invalid project name") if exc.errors() else "invalid project name"
+        typer.secho(f"Invalid project name: {msg}", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
     with project_lock(target):  # atomic against a concurrent `init` of the same path
         if (target / "project.yaml").exists():
             typer.secho(f"A project already exists at {target}/", fg=typer.colors.RED)
-            raise typer.Exit(code=1)
-        try:
-            # The model validates names the CLI pre-checks miss (reserved device
-            # names like CON, trailing dot/space, control chars) — surface those
-            # as a friendly message, not a raw pydantic traceback.
-            project = Project(name=name, goal=goal, task_type=task_type)
-        except ValidationError as exc:
-            msg = exc.errors()[0].get("msg", "invalid project name") if exc.errors() else "invalid project name"
-            typer.secho(f"Invalid project name: {msg}", fg=typer.colors.RED)
             raise typer.Exit(code=1)
         save_project(project, target)
         write_project_gitignore(target)

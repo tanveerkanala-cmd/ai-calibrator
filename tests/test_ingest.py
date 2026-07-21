@@ -80,36 +80,58 @@ def test_gap_schema_is_strict_compatible():
     assert set(item["required"]) == set(item["properties"])
 
 
-def test_ingest_isolates_per_file_failures(tmp_path):
+def test_ingest_isolates_per_file_failures(tmp_path, monkeypatch):
     """One unparseable file must NOT abort the whole batch — the good files are
     ingested and the bad one is reported in `skipped` (finding: non-isolated
-    ingest)."""
+    ingest). Dependency-free: the parser is stubbed to raise on one file, so the
+    test exercises the isolation logic without needing the optional docs extra."""
+    import ai_calibrator.ingest as ing
     from ai_calibrator.ingest import parse_materials
 
     materials = tmp_path / "materials"
     materials.mkdir()
     (materials / "good1.md").write_text("first policy")
     (materials / "good2.md").write_text("second policy")
-    (materials / "broken.docx").write_bytes(b"this is not a zip archive")  # corrupt
+    (materials / "broken.bin").write_text("triggers a parse failure")
+
+    real = ing.read_document
+
+    def flaky(path):
+        if path.name == "broken.bin":
+            raise ValueError("simulated parse failure")
+        return real(path)
+
+    monkeypatch.setattr(ing, "read_document", flaky)
 
     docs, skipped = parse_materials(materials)
 
     names = sorted(p.name for p, _ in docs)
-    assert names == ["good1.md", "good2.md"]           # good files survived
-    assert [rel for rel, _ in skipped] == ["broken.docx"]  # bad one named, not fatal
-    assert "not a valid" in skipped[0][1]
+    assert names == ["good1.md", "good2.md"]                 # good files survived
+    assert [rel for rel, _ in skipped] == ["broken.bin"]     # bad one named, not fatal
+    assert "simulated parse failure" in skipped[0][1]
 
 
-def test_ingest_project_surfaces_skipped(tmp_path):
+def test_ingest_project_surfaces_skipped(tmp_path, monkeypatch):
     """ingest_project carries the skip list through to IngestResult."""
+    import ai_calibrator.ingest as ing
+
     materials = tmp_path / "materials"
     materials.mkdir()
     (materials / "ok.md").write_text("real content")
-    (materials / "bad.docx").write_bytes(b"not a zip")
+    (materials / "bad.bin").write_text("boom")
+
+    real = ing.read_document
+
+    def flaky(path):
+        if path.name == "bad.bin":
+            raise ValueError("bad")
+        return real(path)
+
+    monkeypatch.setattr(ing, "read_document", flaky)
 
     proj = Project(name="p", goal="g")
     eng = FakeEngine({"facts": [], "gaps": []})
     result = ingest_project(proj, materials, eng, build_index=False)
 
     assert result.materials == 1
-    assert [rel for rel, _ in result.skipped] == ["bad.docx"]
+    assert [rel for rel, _ in result.skipped] == ["bad.bin"]
