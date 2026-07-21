@@ -301,7 +301,9 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             save_project(project, d)
         return {
             "materials": result.materials, "gaps": result.gaps,
-            "facts": result.facts, "indexed": result.indexed, "state": _state(project),
+            "facts": result.facts, "indexed": result.indexed,
+            "skipped": [{"path": rel, "reason": reason} for rel, reason in result.skipped],
+            "state": _state(project),
         }
 
     @app.post("/api/projects/{name}/interview")

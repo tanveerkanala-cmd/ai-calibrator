@@ -20,7 +20,7 @@ def test_ingest_skips_symlinks(tmp_path):
     except (OSError, NotImplementedError):
         pytest.skip("symlinks unavailable")
 
-    docs = parse_materials(materials)
+    docs, _skipped = parse_materials(materials)
     joined = " ".join(t for _, t in docs)
     assert "legit policy text" in joined
     assert "hunter2" not in joined                 # the symlinked secret is NOT read
@@ -42,11 +42,12 @@ def test_ingest_skips_oversize(tmp_path):
     orig = ing.MAX_MATERIAL_BYTES
     ing.MAX_MATERIAL_BYTES = 10
     try:
-        docs = parse_materials(materials)
+        docs, skipped = parse_materials(materials)
     finally:
         ing.MAX_MATERIAL_BYTES = orig
     names = sorted(p.name for p, _ in docs)
     assert names == ["ok.md"]                        # big.md (100 bytes > 10) skipped
+    assert any(rel == "big.md" and "size cap" in reason for rel, reason in skipped)
     assert MAX_MATERIAL_BYTES > 1_000_000            # real default is generous
 
 

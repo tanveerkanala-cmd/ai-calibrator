@@ -342,6 +342,11 @@ def ingest(
         f"{result.facts} fact(s).",
         fg=typer.colors.GREEN,
     )
+    if result.skipped:
+        typer.secho(f"  ⚠ skipped {len(result.skipped)} file(s) that couldn't be parsed:",
+                    fg=typer.colors.YELLOW)
+        for rel, reason in result.skipped:
+            typer.echo(f"    · {rel} — {reason}")
     if result.indexed is None:
         typer.echo("  retrieval index: skipped (install the `rag` extra to enable)")
     else:

@@ -78,3 +78,38 @@ def test_gap_schema_is_strict_compatible():
     item = GAP_SCHEMA["properties"]["gaps"]["items"]
     assert item["additionalProperties"] is False
     assert set(item["required"]) == set(item["properties"])
+
+
+def test_ingest_isolates_per_file_failures(tmp_path):
+    """One unparseable file must NOT abort the whole batch — the good files are
+    ingested and the bad one is reported in `skipped` (finding: non-isolated
+    ingest)."""
+    from ai_calibrator.ingest import parse_materials
+
+    materials = tmp_path / "materials"
+    materials.mkdir()
+    (materials / "good1.md").write_text("first policy")
+    (materials / "good2.md").write_text("second policy")
+    (materials / "broken.docx").write_bytes(b"this is not a zip archive")  # corrupt
+
+    docs, skipped = parse_materials(materials)
+
+    names = sorted(p.name for p, _ in docs)
+    assert names == ["good1.md", "good2.md"]           # good files survived
+    assert [rel for rel, _ in skipped] == ["broken.docx"]  # bad one named, not fatal
+    assert "not a valid" in skipped[0][1]
+
+
+def test_ingest_project_surfaces_skipped(tmp_path):
+    """ingest_project carries the skip list through to IngestResult."""
+    materials = tmp_path / "materials"
+    materials.mkdir()
+    (materials / "ok.md").write_text("real content")
+    (materials / "bad.docx").write_bytes(b"not a zip")
+
+    proj = Project(name="p", goal="g")
+    eng = FakeEngine({"facts": [], "gaps": []})
+    result = ingest_project(proj, materials, eng, build_index=False)
+
+    assert result.materials == 1
+    assert [rel for rel, _ in result.skipped] == ["bad.docx"]

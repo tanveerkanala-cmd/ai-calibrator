@@ -15,22 +15,37 @@ TEXT_SUFFIXES = {
     ".json", ".yaml", ".yml", ".log", ".html", ".htm",
 }
 
-# Extracted-text ceiling for compressed formats (PDF/DOCX are zip containers —
-# a small file can decompress to gigabytes and OOM the ingest before ingest's
-# own char caps apply). Generous: far above any real policy document.
+# Extracted-text ceiling for compressed formats. PDF/DOCX are zip/deflate
+# containers: a small file can decompress to gigabytes ("decompression bomb")
+# and OOM the ingest. The caps below bound *actual* decompression by streaming,
+# never by trusting a size the file declares about itself (an attacker forges
+# that — zipfile still decompresses the real stream).
 MAX_EXTRACTED_CHARS = 10_000_000
+MAX_DOCX_DECOMPRESSED_BYTES = 200 * 1024 * 1024
+MAX_PDF_PAGES = 10_000
+MAX_PDF_PAGE_CHARS = 2_000_000  # a single page over this is a bomb signal → truncate
+_DECOMP_CHUNK = 1 << 16  # 64 KiB
 
 
 def _capped_join(parts, sep: str = "\n") -> str:
-    """Join text parts, stopping once MAX_EXTRACTED_CHARS is reached."""
+    """Join text parts, hard-bounded to MAX_EXTRACTED_CHARS.
+
+    Truncates the *current* part to the remaining budget before appending, so a
+    single gigantic part can't be materialized into the accumulator whole (the
+    old version appended each part first, then capped — unbounded peak)."""
     out: list[str] = []
-    total = 0
+    budget = MAX_EXTRACTED_CHARS
+    first = True
     for part in parts:
-        out.append(part)
-        total += len(part) + len(sep)
-        if total >= MAX_EXTRACTED_CHARS:
+        if budget <= 0:
             break
-    return sep.join(out)[:MAX_EXTRACTED_CHARS]
+        if not first:
+            budget -= len(sep)
+        first = False
+        piece = part if len(part) <= budget else part[:budget]
+        out.append(piece)
+        budget -= len(piece)
+    return sep.join(out)
 
 
 def read_document(path: str | Path) -> str:
@@ -57,13 +72,46 @@ def _read_pdf(p: Path) -> str:
             "PDF parsing needs the `docs` extra:  pip install -e '.[docs]'"
         ) from exc
     reader = PdfReader(str(p))
-    return _capped_join((page.extract_text() or "") for page in reader.pages)
+    # Page-by-page with an immediate per-page + running truncation, so a bomb
+    # page can't accumulate into a multi-GB join. (Residual: pypdf materializes
+    # one page's text internally before we truncate it — a single crafted page
+    # can still spike memory. Bounded per file; see SECURITY.md. Only ingest
+    # PDFs you trust.)
+    out: list[str] = []
+    budget = MAX_EXTRACTED_CHARS
+    for i, page in enumerate(reader.pages):
+        if i >= MAX_PDF_PAGES or budget <= 0:
+            break
+        text = page.extract_text() or ""
+        if len(text) > MAX_PDF_PAGE_CHARS:
+            text = text[:MAX_PDF_PAGE_CHARS]
+        if len(text) > budget:
+            text = text[:budget]
+        out.append(text)
+        budget -= len(text)
+    return "\n".join(out)
 
 
-# A .docx is a zip; entries declare their decompressed size up front. Refusing
-# oversized declarations BEFORE parsing stops a zip bomb from OOM-ing the XML
-# parser itself (the char cap only bounds what we keep afterwards).
-MAX_DOCX_DECOMPRESSED_BYTES = 200 * 1024 * 1024
+def _zip_decompressed_size_capped(z, cap: int) -> None:
+    """Stream-decompress every zip member, aborting past `cap` bytes.
+
+    Reads the real deflate stream in bounded chunks and discards them, so peak
+    memory is one chunk — NOT the decompressed size. Trusts nothing the archive
+    self-declares: `ZipInfo.file_size` is attacker-controlled and does not bound
+    what `zipfile` actually decompresses."""
+    total = 0
+    for info in z.infolist():
+        with z.open(info) as fh:
+            while True:
+                chunk = fh.read(_DECOMP_CHUNK)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > cap:
+                    raise ValueError(
+                        f"decompressed size exceeds the "
+                        f"{cap // (1024 * 1024)} MB safety cap (possible zip bomb)"
+                    )
 
 
 def _read_docx(p: Path) -> str:
@@ -74,16 +122,13 @@ def _read_docx(p: Path) -> str:
             "DOCX parsing needs the `docs` extra:  pip install -e '.[docs]'"
         ) from exc
     import zipfile
+    # Bound the REAL decompression first; only then hand a verified-safe file to
+    # python-docx (which would otherwise decompress an unbounded stream).
     try:
         with zipfile.ZipFile(p) as z:
-            declared = sum(info.file_size for info in z.infolist())
+            _zip_decompressed_size_capped(z, MAX_DOCX_DECOMPRESSED_BYTES)
     except zipfile.BadZipFile as exc:
         raise ValueError(f"{p.name}: not a valid .docx (zip) file") from exc
-    if declared > MAX_DOCX_DECOMPRESSED_BYTES:
-        raise ValueError(
-            f"{p.name}: declared decompressed size {declared / 1e6:.0f} MB exceeds the "
-            f"{MAX_DOCX_DECOMPRESSED_BYTES // (1024 * 1024)} MB safety cap"
-        )
     document = docx.Document(str(p))
     return _capped_join(par.text for par in document.paragraphs)
 

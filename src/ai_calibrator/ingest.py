@@ -64,6 +64,7 @@ class IngestResult:
     facts: int
     gaps: int
     indexed: int | None  # None = vector index skipped (rag extra absent / disabled)
+    skipped: list[tuple[str, str]]  # (relpath, reason) — files that failed to parse
 
 
 def _excerpt(text: str, n: int = 240) -> str:
@@ -77,8 +78,15 @@ def _excerpt(text: str, n: int = 240) -> str:
 MAX_MATERIAL_BYTES = 50 * 1024 * 1024
 
 
-def parse_materials(source_dir: str | Path) -> list[tuple[Path, str]]:
+def parse_materials(
+    source_dir: str | Path,
+) -> tuple[list[tuple[Path, str]], list[tuple[str, str]]]:
     """Read every (non-hidden, non-symlink) file under `source_dir` into text.
+
+    Returns ``(docs, skipped)``. Each file is parsed in isolation: a corrupt PDF,
+    an oversized file, or a rejected zip bomb is recorded in ``skipped`` as
+    ``(relpath, reason)`` and the rest of the batch continues — one bad file
+    never aborts the whole ingest (and the caller can name the offender).
 
     Symlinks are SKIPPED (CWE-59): a shared/received project could plant a
     symlink in materials/ pointing at ~/.aws/credentials or /etc/passwd, and
@@ -86,9 +94,17 @@ def parse_materials(source_dir: str | Path) -> list[tuple[Path, str]]:
     real files that live inside the materials tree are ingested."""
     base = Path(source_dir)
     if not base.exists():
-        return []
+        return [], []
     base_real = base.resolve()
     docs: list[tuple[Path, str]] = []
+    skipped: list[tuple[str, str]] = []
+
+    def _rel(path: Path) -> str:
+        try:
+            return str(path.relative_to(base))
+        except ValueError:
+            return str(path)
+
     for p in sorted(base.rglob("*")):
         if p.name.startswith(".") or p.is_symlink() or not p.is_file():
             continue
@@ -98,13 +114,20 @@ def parse_materials(source_dir: str | Path) -> list[tuple[Path, str]]:
             if not p.resolve().is_relative_to(base_real):
                 continue
             if p.stat().st_size > MAX_MATERIAL_BYTES:
+                skipped.append((_rel(p), f"exceeds the {MAX_MATERIAL_BYTES // (1024 * 1024)} MB size cap"))
                 continue
-        except OSError:
+        except OSError as exc:
+            skipped.append((_rel(p), f"unreadable: {exc}"))
             continue
-        text = read_document(p)
+        # Per-file isolation: a bad parse skips this file, never the whole batch.
+        try:
+            text = read_document(p)
+        except Exception as exc:  # noqa: BLE001 — any parser failure is per-file
+            skipped.append((_rel(p), str(exc) or type(exc).__name__))
+            continue
         if text.strip():
             docs.append((p, text))
-    return docs
+    return docs, skipped
 
 
 def _join_capped(docs: list[tuple[Path, str]], cap: int) -> str:
@@ -165,7 +188,7 @@ def ingest_project(
     """Parse materials, extract facts + gaps, optionally index — and update the
     project in place."""
     base = Path(source_dir)
-    docs = parse_materials(base)
+    docs, skipped = parse_materials(base)
 
     materials: list[Material] = []
     chunks: list[dict] = []
@@ -195,4 +218,5 @@ def ingest_project(
         facts=len(facts),
         gaps=len(gaps),
         indexed=indexed,
+        skipped=skipped,
     )
