@@ -332,3 +332,51 @@ def test_refine_loop_never_duplicates_standards():
     assert "ALREADY_A_NEVER_RULE" not in project.spec.standards   # cross-list guard
     # round 2's refine returns nothing NEW → the loop stops instead of spinning
     assert len(cards) == 2
+
+
+class StringFalseJudge:
+    """A non-compliant judge that emits the STRING 'false' for the verdict —
+    bool('false') is True, which must NOT grade the criterion as passing."""
+    name = "judge@test"
+
+    def complete(self, prompt, *, system=None, schema=None):
+        ids = re.findall(r"^- (\S+):", prompt, re.M)
+        return {"results": [{"criterion_id": i, "passed": "false", "score": 0.0} for i in ids]}
+
+
+def test_judge_string_false_does_not_pass():
+    # Regression: the pass/fail boolean must be strictly coerced (as_bool), not
+    # bool()-truthy — else "false" inflates the score to a perfect pass.
+    card = run_eval(_project(), GoodSubject(), StringFalseJudge(), run_id="r")
+    assert card.pass_rate == 0.0
+    assert card.results[0].criteria[0].passed is False
+
+
+def test_duplicate_expects_do_not_multiply_weight():
+    # A test that lists the same criterion id 3× plus a distinct failing one must
+    # weight each criterion ONCE, not once-per-occurrence.
+    from ai_calibrator.eval import run_eval as _re
+    p = Project(name="t", goal="g")
+    p.spec = BehaviorSpec(
+        goal="g",
+        eval_criteria=[
+            EvalCriterion(id="lo", description="d", weight=Weight.LOW),
+            EvalCriterion(id="hi", description="d", weight=Weight.HIGH),
+        ],
+    )
+    # "lo" repeated 3×; grading: lo passes (marker present logic below), hi fails.
+    p.tests = [CaseModel(id="t1", input="q", expects=["lo", "lo", "lo", "hi"])]
+
+    class SplitJudge:
+        name = "judge@test"
+        def complete(self, prompt, *, system=None, schema=None):
+            ids = re.findall(r"^- (\S+):", prompt, re.M)
+            return {"results": [
+                {"criterion_id": i, "passed": (i == "lo"), "score": 1.0 if i == "lo" else 0.0}
+                for i in ids
+            ]}
+
+    card = _re(p, GoodSubject(), SplitJudge(), run_id="r")
+    tr = card.results[0]
+    # exactly two criteria recorded (lo once, hi once), not four
+    assert [c.criterion_id for c in tr.criteria] == ["lo", "hi"]

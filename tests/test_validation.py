@@ -267,3 +267,20 @@ def test_project_name_length_cap():
     Project(name="a" * 120, goal="g")           # at the cap: fine
     with _pytest.raises(ValidationError):
         Project(name="a" * 121, goal="g")       # over: clear error, not a later OSError
+
+
+def test_as_bool_strict_coercion():
+    from ai_calibrator.coerce import as_bool
+    assert as_bool(True) is True
+    assert as_bool(False) is False
+    # the dangerous case: string "false" must NOT be truthy
+    assert as_bool("false") is False
+    assert as_bool("no") is False
+    assert as_bool("") is False
+    assert as_bool(None) is False
+    assert as_bool(0) is False
+    assert as_bool("true") is True
+    assert as_bool("  TRUE  ") is True
+    assert as_bool("pass") is True
+    assert as_bool(1) is True
+    assert as_bool(2) is False   # only exactly 1

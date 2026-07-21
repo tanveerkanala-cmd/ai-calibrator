@@ -66,3 +66,24 @@ def as_list(value: object) -> list:
     those crashes (``None``) or silently misbehaves (string → chars, dict →
     keys). Wrap every engine-output list access in this to get a real list."""
     return value if isinstance(value, list) else []
+
+
+_TRUE_TOKENS = {"true", "yes", "pass", "passed", "1"}
+
+
+def as_bool(value: object) -> bool:
+    """Coerce an engine-supplied verdict to a strict boolean, defaulting False.
+
+    ``bool()`` is the wrong tool for model output: a non-compliant judge that
+    emits the STRING ``"false"`` (or ``"no"``) would grade as ``bool("false") ==
+    True`` — flipping a FAILING criterion to PASS and inflating the score in the
+    worst direction. Only a real ``True`` or a recognized truthy token counts;
+    everything unrecognized fails safe (``False``). Mirrors ``as_str``/``as_list``
+    for the one field that decides pass/fail."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in _TRUE_TOKENS
+    if isinstance(value, int):  # bool already handled above
+        return value == 1
+    return False

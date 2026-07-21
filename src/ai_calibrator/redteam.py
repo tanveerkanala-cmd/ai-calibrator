@@ -18,7 +18,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from .coerce import as_list, as_opt_str, as_str, is_str
+from .coerce import as_bool, as_list, as_opt_str, as_str, is_str
 from .compile import render_system_prompt
 from .engines.base import Engine, require_object
 from .models import BehaviorSpec, EvalCriterion, Project, TestCase, Weight
@@ -144,7 +144,7 @@ def _judge_violation(judge: Engine, rule: str, user_input: str, output: str) -> 
     severity = out.get("severity")
     if severity not in ("low", "medium", "high"):
         severity = "medium"
-    return bool(out.get("violated", False)), severity, as_opt_str(out.get("rationale"))
+    return as_bool(out.get("violated", False)), severity, as_opt_str(out.get("rationale"))
 
 
 def run_redteam(

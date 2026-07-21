@@ -13,7 +13,7 @@ import math
 from pathlib import Path
 
 from .checks import run_check
-from .coerce import as_list, as_opt_str, as_str, is_str
+from .coerce import as_bool, as_list, as_opt_str, as_str, is_str
 from .compile import render_system_prompt
 from .engines.base import Engine, require_object
 from .models import CriterionResult, Project, Scorecard, TestResult
@@ -94,7 +94,7 @@ def _judge(
         results.append(
             CriterionResult(
                 criterion_id=cid,
-                passed=bool(r.get("passed", False)),
+                passed=as_bool(r.get("passed", False)),
                 score=_as_float(r.get("score", 0.0)),
                 rationale=as_opt_str(r.get("rationale")),
             )
@@ -191,7 +191,15 @@ def run_eval(
         else:
             eff_system = rag.augment_system(system, project_dir, test.input)  # RAG when indexed
             output = as_str(subject.complete(test.input, system=eff_system))
-        expected = [cid for cid in (test.expects or list(crit_by_id)) if cid in crit_by_id]
+        # De-dup while preserving order: a duplicated id in `expects` (hand-edited
+        # YAML, or an engine that repeats one) would otherwise append the same
+        # CriterionResult multiple times, multiplying that criterion's weight in
+        # the weighted score. Each criterion counts once.
+        _seen: set[str] = set()
+        expected = [
+            cid for cid in (test.expects or list(crit_by_id))
+            if cid in crit_by_id and not (cid in _seen or _seen.add(cid))
+        ]
         graded: dict[str, CriterionResult] = {}
 
         # §9 layer 1 — criteria with a deterministic check are graded exactly by
