@@ -360,15 +360,55 @@ def write_build_bundle(spec: BehaviorSpec, tests: list[TestCase], project_dir: s
     return files
 
 
+# Test ids that are PINNED regressions, not regenerable synthesis output: fb_*
+# are absorbed live-feedback cases (flywheel), rt_* are promoted red-team
+# catches. A recompile regenerates the `t*` synthesis tests but must carry these
+# forward, or the product's "a flagged case can never silently regress" promise
+# is a lie. See compile_project.
+_PINNED_TEST_PREFIXES = ("fb_", "rt_")
+
+
+def _merge_prior_spec(prior: BehaviorSpec, spec: BehaviorSpec) -> None:
+    """Carry forward spec content the fresh synthesis can't reproduce (mutates
+    ``spec``): accumulated ``edge_cases``, and ``eval_criteria`` — critically any
+    with a deterministic ``check`` (from ``calibrate add-check``) and any
+    prior-only criterion (red-team ``rt_*``, custom). Fresh criteria win by id,
+    but never at the cost of a preserved check."""
+    have_ec = {(ec.situation, ec.ruling) for ec in spec.edge_cases}
+    spec.edge_cases = list(spec.edge_cases) + [
+        ec for ec in prior.edge_cases if (ec.situation, ec.ruling) not in have_ec
+    ]
+    merged: dict[str, EvalCriterion] = {c.id: c for c in spec.eval_criteria}
+    for c in prior.eval_criteria:
+        existing = merged.get(c.id)
+        if existing is None or (c.check is not None and existing.check is None):
+            merged[c.id] = c
+    spec.eval_criteria = list(merged.values())
+
+
+def _pin_prior_tests(prior_tests: list[TestCase], tests: list[TestCase]) -> list[TestCase]:
+    """Re-pin ``fb_*`` (flywheel) / ``rt_*`` (red-team) regression tests that the
+    fresh synthesis doesn't regenerate, appended to the fresh ``t*`` tests."""
+    fresh_ids = {t.id for t in tests}
+    pinned = [
+        t for t in prior_tests
+        if t.id.startswith(_PINNED_TEST_PREFIXES) and t.id not in fresh_ids
+    ]
+    return tests + pinned
+
+
 def compile_project(project: Project, engine: Engine, *, project_dir: str | Path) -> CompileResult:
     """Synthesize the spec + tests, write the build bundle, update the project.
 
-    Never loses rules already captured: standards / never-rules / examples on an
-    existing spec (e.g. authored via `calibrate teach`) are carried into the
-    recompiled spec. With no interview answers to synthesize from, the existing
-    spec is preserved as-is rather than overwritten by a spec synthesized from an
-    empty interview (which would silently discard taught standards)."""
+    Never loses what was already captured. Recompiling carries the prior spec's
+    standards / never-rules / examples / edge-cases / eval-criteria (including
+    deterministic ``add-check`` checks and red-team criteria) into the new spec,
+    and re-pins ``fb_*`` (flywheel) and ``rt_*`` (red-team) regression tests —
+    the synthesis only regenerates the ``t*`` probe tests. With no interview
+    answers to synthesize from, the existing spec is preserved as-is rather than
+    overwritten by a spec synthesized from an empty interview."""
     prior = project.spec
+    prior_tests = list(project.tests)
     if any(it.answer for it in project.interview):
         spec = synthesize_spec(project, engine)
         if prior is not None:
@@ -379,7 +419,11 @@ def compile_project(project: Project, engine: Engine, *, project_dir: str | Path
             spec.examples = list(spec.examples) + [ex for ex in prior.examples if ex.input not in have]
     else:
         spec = prior or BehaviorSpec(goal=project.goal, task_type=project.task_type)
-    tests = generate_tests(spec, engine)
+    # Merge criteria/edge-cases BEFORE generating tests, so fresh tests see the
+    # preserved (e.g. red-team) criteria as valid `expects` targets.
+    if prior is not None and spec is not prior:
+        _merge_prior_spec(prior, spec)
+    tests = _pin_prior_tests(prior_tests, generate_tests(spec, engine))
     project.spec = spec
     project.tests = tests
 
