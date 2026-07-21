@@ -130,6 +130,7 @@ def create_ai_app(project_dir: str | Path, *, engine: Engine | None = None, guar
     try:
         from fastapi import FastAPI, HTTPException, Request, Response
         from fastapi.responses import StreamingResponse
+        from starlette.concurrency import run_in_threadpool
     except ImportError as exc:  # pragma: no cover - depends on optional extra
         raise RuntimeError("Serving needs the `api` extra:  pip install -e '.[api]'") from exc
 
@@ -212,8 +213,16 @@ def create_ai_app(project_dir: str | Path, *, engine: Engine | None = None, guar
             raise HTTPException(400, "request body must be JSON")
         if not isinstance(body, dict):
             raise HTTPException(400, "request body must be a JSON object")
+        # Tool/function calling isn't supported by this endpoint — reject it
+        # explicitly rather than silently dropping it (an integrator relying on
+        # tools would otherwise get a plain completion and never know).
+        if body.get("tools") or body.get("functions"):
+            raise HTTPException(400, "tool/function calling is not supported by this endpoint")
         try:
-            content, guard_state = _complete(body.get("messages"))
+            # The engine call is blocking; run it in a threadpool so one in-flight
+            # completion (often 30-60s) doesn't freeze every other request on the
+            # event loop — the endpoint must stay concurrent.
+            content, guard_state = await run_in_threadpool(_complete, body.get("messages"))
         except ValueError as exc:
             raise HTTPException(400, str(exc))
         except Exception as exc:  # engine failure → OpenAI-style 502, not a traceback
@@ -302,7 +311,9 @@ def create_ai_app(project_dir: str | Path, *, engine: Engine | None = None, guar
                 raise HTTPException(400, "pass a completion_id, or `input` (or `turns`) and `output`")
 
         correction, reason = body.get("correction"), body.get("reason")
-        append_feedback(directory, {
+        # append_feedback takes the blocking project lock — off the event loop so
+        # a concurrent `calibrate absorb` holding the lock can't freeze the server.
+        await run_in_threadpool(append_feedback, directory, {
             "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "turns": turns, "output": output, "verdict": verdict,
             "correction": correction if is_str(correction) else None,

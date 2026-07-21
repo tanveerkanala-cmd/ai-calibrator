@@ -215,3 +215,20 @@ def test_examples_requires_spec_then_imports(tmp_path):
     assert r.exit_code == 0 and "Imported 2" in r.output and "48 more" in r.output
     from ai_calibrator.store import load_project
     assert len(load_project(tmp_path).spec.examples) == 2
+
+
+def test_init_reserved_name_is_friendly_not_traceback(tmp_path, monkeypatch):
+    """Names the model validator rejects (reserved device names, trailing dot,
+    control chars) must produce a friendly message + exit 1, not a raw pydantic
+    traceback."""
+    from typer.testing import CliRunner
+
+    from ai_calibrator.cli import app
+
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+    for bad in ("CON", "myproj.", "a\tb"):
+        result = runner.invoke(app, ["init", bad, "--goal", "g"])
+        assert result.exit_code == 1, (bad, result.output)
+        assert "Traceback" not in result.output
+        assert "Invalid project name" in result.output

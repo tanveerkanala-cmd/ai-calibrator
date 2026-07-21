@@ -319,3 +319,17 @@ def test_csrf_guard_stays_on_when_host_is_widened(tmp_path):
                        headers={"Origin": "http://192.168.1.50:8600"}).status_code == 200
     assert client.post("/v1/chat/completions", json=payload,
                        headers={"Origin": "https://evil.example"}).status_code == 403
+
+
+def test_tools_param_rejected_with_400(tmp_path):
+    """Tool/function calling isn't supported; a top-level `tools` must be a clear
+    400, not a silently-dropped 200 (the documented contract)."""
+    _seed(tmp_path)
+    c = _client(tmp_path, RecordingEngine(["ok"]))
+    r = c.post("/v1/chat/completions", json={
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [{"type": "function", "function": {"name": "f"}}]})
+    assert r.status_code == 400 and "tool" in r.json()["detail"].lower()
+    # a plain request (no tools) still works
+    assert c.post("/v1/chat/completions",
+                  json={"messages": [{"role": "user", "content": "hi"}]}).status_code == 200

@@ -9,6 +9,7 @@ Run with `calibrate serve`. Needs the `api` extra:  pip install -e '.[api]'
 
 from __future__ import annotations
 
+import math
 import os
 import tempfile
 from contextlib import contextmanager
@@ -18,6 +19,9 @@ import yaml
 
 try:
     from fastapi import Depends, FastAPI, HTTPException, UploadFile
+    from fastapi.encoders import jsonable_encoder
+    from fastapi.exceptions import RequestValidationError
+    from fastapi.responses import JSONResponse
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel, Field, ValidationError
 except ImportError as exc:  # pragma: no cover - depends on optional extra
@@ -167,6 +171,23 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
     # Always enforced — never fully disabled. Shared with `calibrate run`
     # (runtime.py); see webguard.py for the threat model.
     install_guard(app, allowed_hosts)
+
+    @app.exception_handler(RequestValidationError)
+    async def _on_validation_error(request, exc: RequestValidationError):
+        # A body with NaN/Infinity is REJECTED by our `allow_inf_nan=False`
+        # fields (intended: a clean 422). But the default handler echoes the raw
+        # input in the error detail, and serializing NaN then raises inside
+        # Starlette (json with allow_nan=False) → an unhandled 500. Sanitize
+        # non-finite floats so the rejection surfaces as the 422 it should be.
+        def _san(o):
+            if isinstance(o, float) and not math.isfinite(o):
+                return str(o)  # "nan" / "inf" / "-inf" — JSON-safe
+            if isinstance(o, dict):
+                return {k: _san(v) for k, v in o.items()}
+            if isinstance(o, (list, tuple)):
+                return [_san(v) for v in o]
+            return o
+        return JSONResponse(status_code=422, content={"detail": _san(jsonable_encoder(exc.errors()))})
 
     def _safe(name: str) -> str:
         s = "".join(c for c in name if c.isalnum() or c in "-_ ").strip()

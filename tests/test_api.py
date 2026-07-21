@@ -733,3 +733,22 @@ def test_api_bulk_add_examples(tmp_path):
     assert r.status_code == 200
     body = r.json()
     assert body["added"] == 2 and body["skipped"] == 1 and body["unique_inputs"] == 2
+
+
+def test_nan_body_is_422_not_500(tmp_path):
+    """A NaN/Infinity float in the body is rejected by allow_inf_nan=False; the
+    handler must return a clean 422, not an unhandled 500 (the default handler
+    500s trying to serialize the NaN it echoes back)."""
+    c = _client(tmp_path)
+    c.post("/api/projects", json={"name": "p", "goal": "g"})
+    hdr = {"content-type": "application/json"}
+    for url, raw in [
+        ("/api/projects/p/eval", '{"threshold": NaN}'),
+        ("/api/projects/p/eval", '{"threshold": Infinity}'),
+        ("/api/projects/p/ci", '{"tolerance": NaN}'),
+        ("/api/projects/p/drift", '{"tolerance": -Infinity}'),
+    ]:
+        r = c.post(url, content=raw, headers=hdr)
+        assert r.status_code == 422, (url, raw, r.status_code)
+    # a finite out-of-range value is still a clean 422
+    assert c.post("/api/projects/p/eval", json={"threshold": 5}).status_code == 422
