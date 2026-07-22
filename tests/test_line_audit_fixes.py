@@ -1,4 +1,5 @@
-"""Regression tests for the round-19 line-by-line audit findings."""
+"""Hardening regressions: name/path validation, locking, gitignore writes,
+engine error handling, and label loading."""
 
 import pytest
 
@@ -184,7 +185,7 @@ def test_openai_sdk_errors_are_friendly(monkeypatch):
 
 
 # Regression: O_EXCL gitignore write failure must not leave a 0-byte file that
-# blocks the next retry (found by auditing the round-19 fix itself).
+# blocks the next retry.
 def test_gitignore_write_failure_leaves_no_stub(tmp_path, monkeypatch):
     import os as _os
 

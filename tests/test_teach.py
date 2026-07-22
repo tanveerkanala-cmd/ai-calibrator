@@ -91,7 +91,7 @@ def test_propose_tolerates_non_string_subject_output():
 
 def test_apply_learned_coerces_non_string_judged_fields():
     """Judged is an unvalidated dataclass; non-string input/output must be coerced,
-    never raise a Pydantic ValidationError building the Example. (stress finding)"""
+    never raise a Pydantic ValidationError building the Example."""
     p = Project(name="p", goal="g")
     judged = [Judged(input=123, output=456, approved=True),
               Judged(input=None, output=["x"], approved=False, reason=7)]
@@ -104,7 +104,7 @@ def test_apply_learned_coerces_non_string_judged_fields():
 
 
 def test_apply_learned_dedups_within_batch_and_across_lists():
-    """Audit: the same sentence must never land in both standards and do_not,
+    """The same sentence must never land in both standards and do_not,
     and within-batch duplicates collapse to one."""
     from ai_calibrator.models import BehaviorSpec
     from ai_calibrator.teach import apply_learned

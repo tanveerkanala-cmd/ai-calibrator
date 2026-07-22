@@ -126,7 +126,7 @@ def test_save_scorecard_and_run_ids(tmp_path):
 
 def test_run_eval_tolerates_non_string_subject_output():
     """A misbehaving subject that returns a non-string must not crash run_eval —
-    it's coerced to empty and caught by the empty-output guard. (stress finding)"""
+    it's coerced to empty and caught by the empty-output guard."""
     class WeirdSubject:
         name = "weird@test"
 
@@ -307,8 +307,8 @@ def test_weighted_score_backward_compat_unweighted_scorecard():
 
 
 def test_judge_consensus_even_split_is_not_a_majority():
-    """Mutation audit: 'yes * 2 > passes' vs '>=' — a 1-of-2 tie must FAIL (strict
-    majority), or a flaky judge could certify on a coin flip."""
+    """'yes * 2 > passes' vs '>=' — a 1-of-2 tie must FAIL (strict majority),
+    or a flaky judge could certify on a coin flip."""
     card = run_eval(_project(), GoodSubject(), FlakyJudge(), run_id="r", judge_passes=2)
     cr = card.results[0].criteria[0]
     assert cr.passed is False            # pass/fail tie → not a majority → fail
@@ -316,7 +316,7 @@ def test_judge_consensus_even_split_is_not_a_majority():
 
 
 def test_refine_loop_never_duplicates_standards():
-    """Audit: a refiner proposing the same standard every round (or twice in one
+    """A refiner proposing the same standard every round (or twice in one
     batch, or one that already exists as a never-rule) must not bloat the spec."""
     class RepeatingRefiner:
         name = "r@test"

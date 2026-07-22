@@ -200,8 +200,8 @@ def test_certification_stales_when_tests_or_checks_change(tmp_path):
 
 
 def test_criteria_reordering_does_not_stale_certification(tmp_path):
-    """Audit finding: criteria were hashed in list order (tests are sorted) —
-    reordering YAML entries spuriously staled the certification."""
+    """Criteria were once hashed in list order (tests are sorted) — reordering
+    YAML entries spuriously staled the certification."""
     from ai_calibrator.ci import certification_status, config_hash
 
     p = _project()
@@ -219,8 +219,8 @@ def test_criteria_reordering_does_not_stale_certification(tmp_path):
 
 
 def test_config_hash_ignores_list_reordering(tmp_path):
-    """Audit round 18: reordering standards/do_not/edge_cases (or criteria) in the
-    YAML must NOT stale a certification — only real content changes do."""
+    """Reordering standards/do_not/edge_cases (or criteria) in the YAML must NOT
+    stale a certification — only real content changes do."""
     from ai_calibrator.ci import config_hash
     from ai_calibrator.models import EdgeCase
 

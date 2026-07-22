@@ -54,7 +54,8 @@ def test_engines_validation(tmp_path):
 
 
 def test_engines_all_plus_role_is_rejected(tmp_path):
-    """Audit: --all combined with a role/model pair silently ignored role/model."""
+    """--all combined with a role/model pair must be rejected, not silently
+    ignore the role/model."""
     d = _init(tmp_path)
     r = runner.invoke(app, ["engines", str(d), "subject", "gpt-4o@openai", "--all", "gemma4:e4b@ollama"])
     assert r.exit_code == 1 and "not both" in r.output

@@ -270,7 +270,7 @@ def generate_tests(spec: BehaviorSpec, engine: Engine) -> list[TestCase]:
 # --- Deterministic renders (compiled from the spec) -------------------------
 
 def tests_from_examples(spec: BehaviorSpec, existing: list[TestCase] = ()) -> list[TestCase]:
-    """Turn the spec's examples into regression tests (§9 golden anchors).
+    """Turn the spec's examples into regression tests (golden anchors).
 
     Each example's input becomes a test graded against all criteria — so the exact
     cases the expert cared about are pinned into the suite. Inputs already covered

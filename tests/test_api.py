@@ -673,7 +673,7 @@ def test_try_and_feedback_endpoints(tmp_path):
 
 
 def test_overlong_project_name_is_400_not_500(tmp_path):
-    """Audit finding: a >255-char name passed _safe() and blew up in mkdir (OSError→500)."""
+    """A >255-char name passed _safe() and blew up in mkdir (OSError→500)."""
     c = _client(tmp_path)
     r = c.post("/api/projects", json={"name": "a" * 1000, "goal": "g"})
     assert r.status_code == 400 and "too long" in r.json()["detail"]

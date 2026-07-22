@@ -1,8 +1,8 @@
 """CLI robustness — friendly errors instead of raw tracebacks, port validation.
 
-Regression tests for the stress-found CLI crashes: unhandled YAMLError /
-ValidationError in _load across every project command, and unvalidated --port
-crashing uvicorn with an OverflowError after printing a green "success" line.
+Regression tests: unhandled YAMLError / ValidationError in _load across every
+project command, and unvalidated --port crashing uvicorn with an OverflowError
+after printing a green "success" line.
 """
 
 from __future__ import annotations
@@ -113,8 +113,9 @@ def test_init_accepts_plain_name_and_explicit_path(tmp_path):
 
 
 def test_init_writes_gitignore_and_honest_engines_line(tmp_path):
-    """init must protect a future `git init` (audit: no .gitignore template) and must
-    not claim one engine covers 'all roles' when judge/subject differ (audit)."""
+    """init must write a .gitignore so a future `git init` can't commit secrets or
+    eval runs, and must not claim one engine covers 'all roles' when judge/subject
+    differ."""
     r = runner.invoke(app, ["init", "proj", "--goal", "g", "--path", str(tmp_path / "proj")])
     assert r.exit_code == 0
     gi = (tmp_path / "proj" / ".gitignore").read_text(encoding="utf-8")
@@ -129,7 +130,7 @@ def test_init_rejects_overlong_name():
 
 
 def test_help_survives_ascii_and_cp1252_terminals():
-    """Audit: `calibrate --help` crashed with UnicodeEncodeError under limited
+    """Regression: `calibrate --help` crashed with UnicodeEncodeError under limited
     encodings (Rich rendering the → glyph). Glyphs must degrade, never crash."""
     import os
     import subprocess
@@ -147,7 +148,7 @@ def test_help_survives_ascii_and_cp1252_terminals():
 
 
 def test_snapshot_on_corrupt_scorecard_is_friendly(tmp_path):
-    """Audit #5: snapshot loaded the scorecard with no error handling."""
+    """A corrupt scorecard must produce a friendly error, not a raw traceback."""
     d = tmp_path / "p"
     d.mkdir()
     (d / "project.yaml").write_text("name: p\ngoal: g\n")
@@ -247,8 +248,8 @@ def test_version_flag_prints_version_and_exits():
 
 
 def test_help_has_no_internal_milestone_jargon():
-    """User-facing help must not leak build-plan milestones (M1/M3+) or
-    architecture section refs (§9) — they mean nothing to a user."""
+    """User-facing help must not leak internal milestone markers (M1/M3+) or
+    section-sign references — they mean nothing to a user."""
     import re
 
     result = runner.invoke(app, ["--help"])

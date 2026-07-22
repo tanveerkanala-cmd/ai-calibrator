@@ -200,8 +200,8 @@ def test_rag_config_shape():
 
 
 def test_tests_from_examples_dedups_against_follow_ups():
-    """Audit finding: an absorbed multi-turn exchange (fb test input=turn 1,
-    example input=last turn) was double-pinned by examples-to-tests."""
+    """An absorbed multi-turn exchange (fb test input=turn 1, example input=last
+    turn) was double-pinned by examples-to-tests."""
     from ai_calibrator.compile import tests_from_examples
     from ai_calibrator.models import Example
     from ai_calibrator.models import TestCase as Case

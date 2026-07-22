@@ -86,7 +86,7 @@ def test_run_drift_runs_eval_persists_and_flags_regression(tmp_path):
     assert load_scorecard(tmp_path, base.run_id).run_id == base.run_id
 
 
-# --- input validation (stress findings) -------------------------------------
+# --- input validation --------------------------------------------------------
 
 @pytest.mark.parametrize("bad", [-0.5, float("nan"), float("inf"), "0.5", None, True])
 def test_compare_rejects_bad_tolerance(bad):

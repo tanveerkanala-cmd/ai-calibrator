@@ -78,9 +78,8 @@ def test_non_dict_message_is_clear_error(monkeypatch):
 
 
 def test_http_errors_are_friendly_not_raw(monkeypatch):
-    """Audit finding: 4xx/5xx surfaced as raw httpx.HTTPStatusError (and the old
-    version of this test ENSHRINED that). Every status must be a RuntimeError
-    with an actionable message."""
+    """Regression: 4xx/5xx once surfaced as raw httpx.HTTPStatusError. Every
+    status must be a RuntimeError with an actionable message."""
     for status, expect in [(404, "ollama pull"), (401, "authentication"),
                            (429, "HTTP 429"), (500, "internal error"), (529, "HTTP 529")]:
         _patch(monkeypatch, FakeResp(ok=False, status=status))

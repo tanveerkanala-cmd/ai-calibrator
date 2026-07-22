@@ -49,7 +49,7 @@ def test_atomic_write_text_never_truncates_on_failure(tmp_path, monkeypatch):
 
 
 def test_save_scorecard_is_atomic(tmp_path, monkeypatch):
-    """The scorecard (eval's source of truth) must never be left truncated. (stress finding)"""
+    """The scorecard (eval's source of truth) must never be left truncated."""
     import os
 
     from ai_calibrator.eval import save_scorecard
@@ -70,7 +70,7 @@ def test_save_scorecard_is_atomic(tmp_path, monkeypatch):
 
 def test_unknown_fields_survive_round_trip(tmp_path):
     """Fields from a newer version (or a typo) must survive load→save, not vanish.
-    (audit finding: pydantic's default extra='ignore' silently destroyed them)"""
+    (pydantic's default extra='ignore' silently destroyed them)"""
     import yaml as _yaml
 
     from ai_calibrator.store import load_project, save_project

@@ -1,4 +1,5 @@
-"""Regression tests for the final security-audit findings."""
+"""Security regressions: symlink and oversize ingest guards, private file
+modes, and Unicode normalization in checks."""
 
 import os
 import stat

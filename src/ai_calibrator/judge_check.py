@@ -7,9 +7,10 @@ judgment and measure agreement, overall and per criterion. Low agreement on a
 criterion means that criterion is too subjective (reword it, or lean on
 deterministic checks) — and tells you how far to trust the scorecard.
 
-This is the §9 mitigation ("calibrate the judge against a small human-labeled
-set before trusting it"), made concrete. Deterministic — it reads the judge's
-already-saved verdicts and compares them to your labels; no engine.
+This is the standard mitigation ("calibrate the judge against a small
+human-labeled set before trusting it"), made concrete. Deterministic — it
+reads the judge's already-saved verdicts and compares them to your labels;
+no engine.
 """
 
 from __future__ import annotations

@@ -3,9 +3,9 @@
 Both servers bind localhost by default, but localhost binding alone does not
 stop two browser-borne attacks:
 
-- **DNS rebinding** — a hostile page resolves its own domain to 127.0.0.1 and
+- **DNS rebinding** — a malicious page resolves its own domain to 127.0.0.1 and
   becomes same-origin with the local server. Blocked by the Host allowlist.
-- **CSRF** — a hostile page fires a no-preflight "simple request" (e.g. a
+- **CSRF** — a malicious page fires a no-preflight "simple request" (e.g. a
   ``text/plain`` POST) at the server; the browser sends it cross-origin even
   though the page can't read the reply. Blocked by the Origin check on
   mutating requests.

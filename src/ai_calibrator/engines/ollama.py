@@ -68,7 +68,7 @@ class OllamaEngine(Engine):
         def _call() -> str:
             # Every failure mode a real server can produce must surface as a
             # FRIENDLY RuntimeError (the CLI/API show it verbatim) — never a raw
-            # httpx/json traceback. (audit: provider-adapter failure modes)
+            # httpx/json traceback.
             try:
                 resp = httpx.post(
                     f"{self.host}/api/chat", json=payload, timeout=self.timeout

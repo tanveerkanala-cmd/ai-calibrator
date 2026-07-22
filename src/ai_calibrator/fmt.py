@@ -1,6 +1,6 @@
 """Honest percentage formatting — a displayed number must never contradict the truth.
 
-Plain ``{:.0%}`` lies at the boundaries (audit: display-honesty):
+Plain ``{:.0%}`` lies at the boundaries:
 - 249/250 (0.996) renders "100%" right next to a failing test;
 - 1/250 (0.004) renders "0%" although something passed;
 - a drift delta of -0.4% renders "Δ +0%" while the gate fails on it.

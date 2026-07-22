@@ -1,4 +1,5 @@
-"""Regression tests for the 2nd line-by-line audit fixes."""
+"""Hardening regressions: merge-index stability, template quoting, tolerant
+loaders, file permissions, and RAG-aware grading."""
 
 from ai_calibrator.models import BehaviorSpec, TaskType
 
@@ -99,7 +100,7 @@ def test_run_check_rejects_negative_length_limits():
     assert run_check(Check(kind="min_chars", value="10"), "hi")[0] is False
 
 
-# self-review: open_private_append must tighten a PRE-EXISTING loose file too
+# open_private_append must tighten a PRE-EXISTING loose file too
 def test_open_private_append_tightens_existing_file(tmp_path):
     import os
     import stat as statmod
@@ -114,7 +115,7 @@ def test_open_private_append_tightens_existing_file(tmp_path):
     assert statmod.S_IMODE(p.stat().st_mode) == 0o600   # now owner-only
 
 
-# self-review: the fd-leak guard must NOT let a failing os.close mask the original
+# the fd-leak guard must NOT let a failing os.close mask the original
 # error or skip temp cleanup
 def test_fd_guard_preserves_original_error_and_cleans_up(tmp_path, monkeypatch):
     import pytest

@@ -5,7 +5,7 @@ from ai_calibrator.fmt import pct, pct_delta
 
 def test_pct_poles_are_exact_only():
     assert pct(1.0) == "100%" and pct(0.0) == "0%"
-    assert pct(249 / 250) == ">99%"     # the audit case: 1 failing test must not show 100%
+    assert pct(249 / 250) == ">99%"     # 1 failing test must not show 100%
     assert pct(0.999) == ">99%"
     assert pct(1 / 250) == "<1%"        # and 1 passing test must not show 0%
     assert pct(0.5) == "50%" and pct(0.83) == "83%"
@@ -13,7 +13,7 @@ def test_pct_poles_are_exact_only():
 
 def test_pct_delta_never_masks_a_real_change():
     assert pct_delta(0.0) == "±0%"
-    assert pct_delta(-0.004) == "-0.4%"      # the audit case: -0.4% must not show ±0%
+    assert pct_delta(-0.004) == "-0.4%"      # -0.4% must not show ±0%
     assert pct_delta(0.02) == "+2.0%"
     assert pct_delta(-0.0004) == "-<0.1%"    # tiny but real
     assert pct_delta(0.0004) == "+<0.1%"

@@ -79,7 +79,7 @@ def test_labels_reject_traversal_run_id(tmp_path):
 
 def test_load_labels_filters_half_formed_entries(tmp_path):
     """A hand-edited labels file can't feed entries missing test_id/criterion_id
-    downstream — load applies the same filter as save. (audit finding)"""
+    downstream — load applies the same filter as save."""
     import json as _json
 
     from ai_calibrator.judge_check import load_labels

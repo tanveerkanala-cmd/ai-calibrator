@@ -1,4 +1,4 @@
-"""Deterministic eval checks — §9 layer 1: exact, cheap, no LLM.
+"""Deterministic eval checks — the first grading layer: exact, cheap, no LLM.
 
 A criterion with a ``check`` is graded by code, not the judge: free and perfectly
 reliable for objectively-verifiable behavior (a required or forbidden term, a

@@ -1,4 +1,5 @@
-"""Regression tests for the environment/portability audit fixes."""
+"""Environment/portability regressions: locales, path-unsafe and reserved
+names, timeouts, and corrupt-file handling."""
 
 import os
 import subprocess

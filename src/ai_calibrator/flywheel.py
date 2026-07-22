@@ -84,9 +84,9 @@ def _turns_of(record: dict) -> list[str]:
 
 
 def _fb_id_allocator(tests: list[TestCase]):
-    """Yield fb_N ids not yet taken. The taken-set is built ONCE — the previous
-    per-record rescan was O(records × tests) and measurably cliffed at scale
-    (audit: ~2.7s for 1000 records × 5000 tests; now O(records + tests))."""
+    """Yield fb_N ids not yet taken. The taken-set is built ONCE — a per-record
+    rescan is O(records × tests) and measurably slow at scale (~2.7s for 1000
+    records × 5000 tests); this stays O(records + tests)."""
     taken = {t.id for t in tests}
     n = 1
     while True:

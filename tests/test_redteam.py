@@ -81,7 +81,7 @@ def test_redteam_detects_and_promotes_violations(tmp_path):
 
 
 def test_redteam_tolerates_non_string_subject_output(tmp_path):
-    """A subject returning a non-string must not crash run_redteam. (stress finding)"""
+    """A subject returning a non-string must not crash run_redteam."""
     class WeirdSubject:
         name = "subject@test"
 

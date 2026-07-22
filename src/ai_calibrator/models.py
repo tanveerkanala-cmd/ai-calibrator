@@ -43,7 +43,7 @@ class PreservingModel(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _strip_yaml_hostile_separators(cls, data: object) -> object:
+    def _strip_yaml_exotic_separators(cls, data: object) -> object:
         # Only the exotic U+0085/U+2028/U+2029 separators, normalized to "\n" so
         # every stored string survives the YAML round-trip unchanged.
         return _normalize_yaml_text(data) if isinstance(data, dict) else data
@@ -115,7 +115,7 @@ class Example(PreservingModel):
 
 
 class Check(PreservingModel):
-    """A deterministic (code-graded) check for a criterion — exact, no LLM (§9)."""
+    """A deterministic (code-graded) check for a criterion — exact, no LLM."""
     kind: Literal["contains", "not_contains", "regex", "max_chars", "min_chars", "non_empty"]
     value: str = ""
 
@@ -229,7 +229,7 @@ class Scorecard(PreservingModel):
 # --- Engine bindings (role -> "model@provider") ----------------------------
 
 # Cloud (Claude) is the default for quality. Reasoning roles use Opus; the
-# high-volume judge uses cheap/fast Haiku (see ARCHITECTURE §5.1). Point any
+# high-volume judge uses cheap/fast Haiku (see docs/ARCHITECTURE.md). Point any
 # role at "<model>@ollama" to run locally with no key. The repo ships no keys —
 # the user supplies their own ANTHROPIC_API_KEY.
 _REASONING = "claude-opus-4-8@anthropic"

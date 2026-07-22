@@ -181,7 +181,7 @@ def config_hash(project: Project, project_dir: str | Path | None = None) -> str:
     # spuriously stale a certification. Criteria and tests are already sorted
     # below; render the prompt from a COPY whose prompt-affecting list fields are
     # sorted too, so reordering standards / never-rules / edge-cases is inert to
-    # the hash — matching how criteria/tests are treated. (audit: round 18)
+    # the hash — matching how criteria/tests are treated.
     spec = project.spec.model_copy(deep=True)
     spec.standards = sorted(spec.standards)
     spec.do_not = sorted(spec.do_not)

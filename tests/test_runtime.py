@@ -225,9 +225,9 @@ def test_flywheel_end_to_end_chat_feedback_absorb(tmp_path):
 
 
 def test_tool_calling_rejected_not_silently_dropped(tmp_path):
-    """HIGH audit finding: tool/function messages were silently dropped from
-    context. They must be rejected loudly — a lost tool result corrupts the
-    conversation invisibly."""
+    """Tool/function messages were once silently dropped from context. They
+    must be rejected loudly — a lost tool result corrupts the conversation
+    invisibly."""
     _seed(tmp_path)
     c = _client(tmp_path, RecordingEngine())
     r = c.post("/v1/chat/completions", json={"messages": [
@@ -272,8 +272,8 @@ def test_content_parts_form_is_accepted(tmp_path):
 
 
 def test_completion_ids_unique_past_ring_buffer(tmp_path):
-    """Audit #10: ids used len(recent), which plateaus at the 512 cap and would
-    collide within a second — routing feedback to the wrong conversation."""
+    """Ids derived from len(recent) plateau at the 512 cap and would collide
+    within a second — routing feedback to the wrong conversation."""
     from ai_calibrator.runtime import RECENT_COMPLETIONS
 
     _seed(tmp_path)
@@ -286,7 +286,7 @@ def test_completion_ids_unique_past_ring_buffer(tmp_path):
 
 
 def test_cross_origin_post_is_blocked(tmp_path):
-    """The serving endpoint spends the owner's engine key — a hostile page must
+    """The serving endpoint spends the owner's engine key — a malicious page must
     not be able to drive it via a no-preflight cross-origin POST (CSRF)."""
     _seed(tmp_path)
     c = _client(tmp_path, RecordingEngine(["ok"]))

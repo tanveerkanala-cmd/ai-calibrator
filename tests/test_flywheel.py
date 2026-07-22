@@ -102,9 +102,9 @@ def test_feedback_round_trip_unicode(tmp_path):
 
 
 def test_concurrent_appends_never_lost_during_absorb(tmp_path):
-    """CRITICAL audit finding: a record appended during absorb's read→truncate
-    window was silently destroyed. append_feedback now serializes on the project
-    lock (which absorb callers hold) — conservation must be exact."""
+    """A record appended during absorb's read→truncate window was silently
+    destroyed. append_feedback now serializes on the project lock (which absorb
+    callers hold) — conservation must be exact."""
     import threading
 
     from ai_calibrator.store import project_lock

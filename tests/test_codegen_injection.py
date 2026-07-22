@@ -1,6 +1,6 @@
 """Generated files (train.py/run.py/Modelfile) must never carry injected code.
 
-Audit round 18: base_model / subject-model tokens were string-replaced into
+Regression: base_model / subject-model tokens were once string-replaced into
 templates unescaped, so a crafted value could break out of a Python string
 literal and execute during training. safe_token now gates them."""
 

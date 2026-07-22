@@ -1823,7 +1823,7 @@ def examples(
 def main() -> None:
     # A limited terminal encoding (ascii / cp1252 console) must degrade glyphs
     # (✓ ⚠ →) to '?', never crash — Rich's --help rendering raised a raw
-    # UnicodeEncodeError otherwise. (audit: locale robustness)
+    # UnicodeEncodeError otherwise.
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.reconfigure(errors="replace")

@@ -54,7 +54,7 @@ def refine_spec(project: Project, scorecard: Scorecard, engine: Engine) -> list[
     # Dedup within the batch AND against the spec (both lists): a refiner that
     # proposes the same standard every round otherwise bloats the spec without
     # bound, and a "standard" that already exists as a never-rule would put the
-    # same sentence on both sides of the contract. (audit: refine loops)
+    # same sentence on both sides of the contract.
     existing = set(project.spec.standards) | set(project.spec.do_not) if project.spec else set()
     fresh: list[str] = []
     for s in as_list(out.get("new_standards")):

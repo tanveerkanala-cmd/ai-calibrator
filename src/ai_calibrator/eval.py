@@ -202,8 +202,8 @@ def run_eval(
         ]
         graded: dict[str, CriterionResult] = {}
 
-        # §9 layer 1 — criteria with a deterministic check are graded exactly by
-        # code (no judge), and run even on empty output.
+        # First grading layer — criteria with a deterministic check are graded
+        # exactly by code (no judge), and run even on empty output.
         for cid in expected:
             chk = crit_by_id[cid].check
             if chk is not None:

@@ -1,4 +1,4 @@
-"""Concurrency & durability — regression tests for the stress-found races.
+"""Concurrency & durability — regression tests for races under contention.
 
 These reproduce the original defects (shared temp file → corruption; non-atomic
 check-then-create → duplicate/500; load-modify-save without locking → lost

@@ -136,7 +136,7 @@ def export_bundle(project: Project, *, project_dir: str | Path, name: str | None
     # The system prompt is provider-agnostic; the Modelfile applies it to a LOCAL
     # base. If the subject is an Ollama model, use it; otherwise default local base.
     # `base` (from the subject binding) is baked into the generated Modelfile,
-    # run.py, and README — validate it can't inject into those. (audit)
+    # run.py, and README — validate it can't inject into those.
     base = safe_token(model if provider == "ollama" else DEFAULT_LOCAL_BASE, "subject model")
     system = render_system_prompt(spec)
 

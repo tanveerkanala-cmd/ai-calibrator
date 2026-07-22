@@ -1,6 +1,6 @@
 """Behavioral coverage — "test coverage, but for AI behavior".
 
-The spec (§4) declares what the AI must do (standards, never-rules, edge cases)
+The spec declares what the AI must do (standards, never-rules, edge cases)
 and how that is measured (eval_criteria). The test suite exercises criteria via
 ``TestCase.expects``. This module answers the questions a careful calibrator
 actually has:

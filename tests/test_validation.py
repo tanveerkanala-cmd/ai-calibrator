@@ -1,8 +1,8 @@
-"""Input/output validation — regression tests for the stress-found crashes.
+"""Input/output validation — regression tests for crash paths on bad input.
 
-Covers the defensive guards added after stress testing: chunk size, refine-loop
-controls (max_rounds / threshold incl. NaN), and the "engine returned a non-JSON
-object" path that previously surfaced as a cryptic AttributeError.
+Covers the defensive guards: chunk size, refine-loop controls (max_rounds /
+threshold incl. NaN), and the "engine returned a non-JSON object" path that
+previously surfaced as a cryptic AttributeError.
 """
 
 from __future__ import annotations
@@ -97,7 +97,7 @@ def test_call_json_accepts_object():
 
 def test_spec_from_dict_tolerates_null_and_wrongtyped_list_fields():
     """An engine emitting a list field as null / string / dict must not crash —
-    `out.get(k, [])` returns None for explicit null. (audit: 8 findings, this class)"""
+    `out.get(k, [])` returns None for explicit null."""
     from ai_calibrator.compile import spec_from_dict
     from ai_calibrator.models import TaskType
 
@@ -147,7 +147,7 @@ def test_stages_tolerate_null_list_fields():
 def test_synthesize_spec_tolerates_non_string_fields():
     """Engine emits truthy NON-string values where strings are expected — the
     compiler must coerce/drop them, never raise a Pydantic ValidationError.
-    (Regression: the re-stress found persona.voice=123 crashing compile.)"""
+    (Regression: persona.voice=123 crashed compile.)"""
     from ai_calibrator.compile import synthesize_spec
     from ai_calibrator.models import InterviewItem
 

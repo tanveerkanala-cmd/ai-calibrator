@@ -1,4 +1,5 @@
-"""Regression tests for the 3rd line-by-line audit fixes."""
+"""Edge-case regressions: prompt rendering, golden snapshots, refine dedup,
+agreement math, and port/tolerance validation."""
 
 import pytest
 
