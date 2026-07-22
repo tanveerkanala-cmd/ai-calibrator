@@ -1,8 +1,7 @@
 """`calibrate` — the command-line front end over the Calibration Core.
 
 The CLI is a thin shell: every command maps to a pipeline stage on the Core, so
-the same logic later powers the local API and desktop UI. Stages not yet built
-print what they'll do and which milestone delivers them.
+the same logic also powers the local API and the web UI.
 """
 
 from __future__ import annotations
@@ -16,6 +15,7 @@ import typer
 import yaml
 from pydantic import ValidationError
 
+from . import __version__
 from .models import EngineBinding, Project, TaskType
 from .fmt import pct, pct_delta
 from .store import atomic_write_text, load_project, project_lock, save_project, write_project_gitignore
@@ -24,6 +24,26 @@ app = typer.Typer(
     add_completion=False,
     help="Turn your knowledge and standards into a tested, reliable AI.",
 )
+
+
+def _version_callback(value: bool) -> None:
+    if value:
+        typer.echo(f"calibrate {__version__}")
+        raise typer.Exit()
+
+
+@app.callback()
+def _root(
+    version: bool = typer.Option(
+        False,
+        "--version",
+        "-V",
+        callback=_version_callback,
+        is_eager=True,  # print and exit before any subcommand is resolved
+        help="Show the installed version and exit.",
+    ),
+) -> None:
+    """Turn your knowledge and standards into a tested, reliable AI."""
 
 
 def _validate_port(port: int) -> None:
@@ -113,7 +133,7 @@ def init(
     typer.echo(f"  goal: {goal}")
     e = project.engines
     typer.echo(f"  engines: {e.interviewer} (reasoning) · {e.judge} (judge) · {e.subject} (subject)")
-    typer.echo("\nNext:  add materials, then `calibrate ingest` (M1).")
+    typer.echo("\nNext:  add materials, then `calibrate ingest`.")
 
 
 @app.command(name="import")
@@ -126,7 +146,7 @@ def import_(
         None, "--engine", help="Engine for extraction + the created project (model@provider). Default: the standard binding."
     ),
 ) -> None:
-    """Reverse-calibrate: extract a tested behavior spec from an EXISTING system prompt. (M3+)"""
+    """Reverse-calibrate: extract a tested behavior spec from an EXISTING system prompt."""
     from .engines import get_engine
     from .reverse import reverse_project
 
@@ -310,7 +330,7 @@ def ingest(
         False, "--no-index", help="Skip building the retrieval (vector) index."
     ),
 ) -> None:
-    """Parse materials, extract the gap list, and build the retrieval index. (M1)"""
+    """Parse materials, extract the gap list, and build the retrieval index."""
     from .engines import get_engine
     from .ingest import ingest_project
 
@@ -365,7 +385,7 @@ def ingest(
     typer.secho(f"\n{result.gaps} gap(s) to resolve in the interview:", bold=True)
     for g in project.gaps:
         typer.echo(f"  · {g.dimension}")
-    typer.echo("\nNext:  calibrate interview  (M2)")
+    typer.echo("\nNext:  calibrate interview")
 
 
 @app.command()
@@ -379,7 +399,7 @@ def interview(
         False, "--regenerate", help="Re-generate the questions from the current gaps.",
     ),
 ) -> None:
-    """Ask adaptive, gap-driven questions (propose-and-ratify) and store answers. (M2)"""
+    """Ask adaptive, gap-driven questions (propose-and-ratify) and store answers."""
     from .engines import get_engine
     from .interview import generate_questions
 
@@ -406,7 +426,7 @@ def interview(
 
     pending = [it for it in questions if not it.answer]
     if not pending:
-        typer.secho("All questions answered. Next:  calibrate compile  (M3)",
+        typer.secho("All questions answered. Next:  calibrate compile",
                     fg=typer.colors.GREEN)
         raise typer.Exit(code=0)
 
@@ -449,12 +469,12 @@ def interview(
         total = len(project.interview)
 
     typer.secho(f"✓ {answered}/{total} answered.", fg=typer.colors.GREEN)
-    typer.echo("Next:  calibrate compile  (M3)")
+    typer.echo("Next:  calibrate compile")
 
 
 @app.command()
 def compile(path: Path = typer.Argument(Path("."), help="Project directory.")) -> None:
-    """Synthesize the behavior spec + system prompt + RAG + rubric + tests. (M3)"""
+    """Synthesize the behavior spec + system prompt + RAG + rubric + tests."""
     from .compile import compile_project
     from .engines import get_engine
 
@@ -490,7 +510,7 @@ def compile(path: Path = typer.Argument(Path("."), help="Project directory.")) -
     typer.echo(f"  bundle → {result.build_dir}/")
     for f in result.files:
         typer.echo(f"    {f}")
-    typer.echo("\nNext:  calibrate eval  (M4)")
+    typer.echo("\nNext:  calibrate eval")
 
 
 @app.command(name="eval")
@@ -505,7 +525,7 @@ def eval_(
         1, "--judge-passes", help="Grade each criterion N times and majority-vote (self-consistency)."
     ),
 ) -> None:
-    """Run tests, grade against the rubric, score, and (optionally) refine. (M4)"""
+    """Run tests, grade against the rubric, score, and (optionally) refine."""
     from .engine_log import wrap_engine
     from .engines import get_engine
     from .eval import low_confidence_results, next_run_id, run_eval, save_scorecard
@@ -593,7 +613,7 @@ def eval_(
 
     typer.echo(f"\nScorecards saved under {Path(path)}/evals/.")
     if ok:
-        typer.secho("Threshold met. Next:  calibrate export  (M5)", fg=typer.colors.GREEN)
+        typer.secho("Threshold met. Next:  calibrate export", fg=typer.colors.GREEN)
     elif not refine:
         typer.echo("Below threshold — try:  calibrate eval --refine")
 
@@ -926,7 +946,7 @@ def redteam(
         False, "--add-tests", help="Promote confirmed violations into the test suite as regressions.",
     ),
 ) -> None:
-    """Adversarially probe the configured AI to break its own rules. (M4+)"""
+    """Adversarially probe the configured AI to break its own rules."""
     from .compile import write_build_bundle
     from .engines import get_engine
     from .redteam import promote_to_tests, run_redteam
@@ -985,7 +1005,7 @@ def rightsize(
     ),
     threshold: float = typer.Option(0.8, "--threshold", help="Pass-rate bar (0-1)."),
 ) -> None:
-    """Find the cheapest model that still meets your pass bar — runs your tests across models. (M4+)"""
+    """Find the cheapest model that still meets your pass bar — runs your tests across models."""
     from .engines import get_engine
     from .rightsize import DEFAULT_LADDER
     from .rightsize import rightsize as run_rightsize
@@ -1080,7 +1100,7 @@ def drift(
         0.0, "--tolerance", help="Allowed pass-rate drop before flagging drift (0-1)."
     ),
 ) -> None:
-    """Re-run the suite and flag behavior drift vs a baseline. Exits 2 on regression (CI-friendly). (M4+)"""
+    """Re-run the suite and flag behavior drift vs a baseline. Exits 2 on regression (CI-friendly)."""
     from .drift import run_drift
     from .engines import get_engine
     from .eval import latest_run_id
@@ -1219,7 +1239,7 @@ def teach(
     path: Path = typer.Argument(Path("."), help="Project directory."),
     n: int = typer.Option(5, "--n", help="How many sample outputs to judge."),
 ) -> None:
-    """Calibrate by example: approve/reject sample outputs; the tool infers your standards. (M3+)"""
+    """Calibrate by example: approve/reject sample outputs; the tool infers your standards."""
     from .compile import write_build_bundle
     from .engines import get_engine
     from .teach import Judged, apply_learned, infer_standards, propose_candidates
@@ -1419,7 +1439,7 @@ def train_engine_cmd(
     candidate: Optional[str] = typer.Option(None, "--candidate", help="Candidate engine spec to prove (model@provider)."),
     threshold: float = typer.Option(0.9, "--threshold", help="Min agreement to trust the local engine (0-1)."),
 ) -> None:
-    """Localize a cloud role onto your own model from logged decisions — the autonomy loop. (v1)"""
+    """Localize a cloud role onto your own model from logged decisions — the autonomy loop. (Advanced tier)"""
     from .train_engine import TRAINABLE_ROLES, export_engine_bundle, prove_engine, read_log
 
     role = role.strip().lower()
@@ -1493,7 +1513,7 @@ def export(
         None, "--name", help="Bundle / model name (default: from the project name)."
     ),
 ) -> None:
-    """Package the calibrated config into a runnable bundle (Ollama Modelfile + more). (M5)"""
+    """Package the calibrated config into a runnable bundle (Ollama Modelfile + more)."""
     from .export import export_bundle
 
     project = _load(path)
@@ -1520,7 +1540,7 @@ def export(
 
 @app.command(name="examples-to-tests")
 def examples_to_tests(path: Path = typer.Argument(Path("."), help="Project directory.")) -> None:
-    """Turn the spec's good/bad examples into regression tests (§9 golden anchors). (no engine)"""
+    """Turn the spec's good/bad examples into regression tests — golden anchors. (no engine)"""
     from .compile import tests_from_examples, write_build_bundle
 
     with project_lock(path):
@@ -1568,7 +1588,7 @@ def serve(
         None, "--projects", help="Projects root dir (default: ~/.ai-calibrator/projects)."
     ),
 ) -> None:
-    """Run the local API + web UI; open the printed URL in your browser. (M6)"""
+    """Run the local API + web UI; open the printed URL in your browser."""
     _validate_port(port)  # 1..65535 (port 0 would print a wrong URL for a random bind)
     try:
         import uvicorn
@@ -1606,7 +1626,7 @@ def finetune(
     baseline: Optional[str] = typer.Option(None, "--baseline", help="Baseline run id (with --gate)."),
     candidate: Optional[str] = typer.Option(None, "--candidate", help="Candidate run id (with --gate)."),
 ) -> None:
-    """Advanced tier: build a fine-tuning dataset + recipe, or run the prove-it gate. (v1)"""
+    """Advanced tier: build a fine-tuning dataset + recipe, or run the prove-it gate."""
 
     project = _load(path)
 

@@ -7,6 +7,7 @@ versions follow [SemVer](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- `calibrate --version` / `-V`.
 - `all` package extra (`pip install 'ai-calibrator[all]'`) — every engine, the
   web UI, and document ingestion in one install.
 - Host/Origin guard on the `calibrate run` OpenAI-compatible endpoint (shared
@@ -17,6 +18,8 @@ versions follow [SemVer](https://semver.org/).
 - Renamed the import package `calibrator` → `ai_calibrator` (the `calibrate`
   command is unchanged) to avoid a top-level import clash with existing PyPI
   packages.
+- CLI help no longer leaks internal build-plan milestones (`(M1)`, `(M3+)`) or
+  architecture section references (`§9`) into user-facing text.
 
 ### Fixed
 - **Recompile no longer discards pinned regressions.** `calibrate compile` now

@@ -232,3 +232,26 @@ def test_init_reserved_name_is_friendly_not_traceback(tmp_path, monkeypatch):
         assert result.exit_code == 1, (bad, result.output)
         assert "Traceback" not in result.output
         assert "Invalid project name" in result.output
+
+
+def test_version_flag_prints_version_and_exits():
+    """`--version` is the first thing a user or bug reporter runs; it must work
+    without a project, print the installed version, and exit 0."""
+    from ai_calibrator import __version__
+
+    for flag in ("--version", "-V"):
+        result = runner.invoke(app, [flag])
+        assert result.exit_code == 0, flag
+        assert __version__ in result.output, flag
+        assert _has_no_traceback(result.output)
+
+
+def test_help_has_no_internal_milestone_jargon():
+    """User-facing help must not leak build-plan milestones (M1/M3+) or
+    architecture section refs (§9) — they mean nothing to a user."""
+    import re
+
+    result = runner.invoke(app, ["--help"])
+    assert result.exit_code == 0
+    assert not re.search(r"\(M\d+\+?\)", result.output)
+    assert "§" not in result.output

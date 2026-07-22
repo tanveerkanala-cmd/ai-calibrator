@@ -25,6 +25,10 @@ ruff check .    # must be clean (pyflakes, bugbear, syntax)
 pytest -q       # must be all green — and runs in a few seconds
 ```
 
+These two are what CI enforces. `mypy` ships in the `dev` extra as an *advisory*
+tool — the tree is not yet mypy-clean, so a full run reports pre-existing errors
+you did not cause. Don't treat it as a gate; do keep new code annotated.
+
 Ground rules the codebase already follows — please keep them true:
 
 - **Tests with teeth.** Every behavior change ships with a test that fails
