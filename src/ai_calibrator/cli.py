@@ -1772,7 +1772,10 @@ def serve(
         typer.secho("The API needs the `api` extra:  pip install -e '.[api]'", fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
-    root = projects or default_projects_root()
+    # Resolve to an absolute path so the startup banner is unambiguous from any
+    # working directory (a bare relative "projects" reads as a mystery); the app
+    # resolves it the same way for /api/health.
+    root = (projects or default_projects_root()).resolve()
     is_local = host in ("127.0.0.1", "localhost", "::1")
     if not is_local:
         typer.secho(
