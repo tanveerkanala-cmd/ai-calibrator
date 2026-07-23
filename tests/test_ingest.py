@@ -39,6 +39,22 @@ def test_extract_gaps_parses_engine_output():
     assert engine.calls[0]["system"] is not None
 
 
+def test_extract_gaps_drops_json_shard_gibberish():
+    # A small local model sometimes leaks raw JSON / prompt scaffolding as a
+    # "gap" — those must never reach the user's gap list or get persisted.
+    engine = FakeEngine({
+        "facts": ["We ship internationally.", '```jsonall-important-fields: [fact, gap]'],
+        "gaps": [
+            {"dimension": "tone", "why_it_matters": "brand voice"},
+            {"dimension": '```jsonall-important-fields: [fact, gap] --- {', "why_it_matters": "x"},
+            {"dimension": 'gap_content": "detailed definition"},', "why_it_matters": "y"},
+        ],
+    })
+    facts, gaps = extract_gaps("g", "assistant", [("f.md", "t")], engine)
+    assert [g.dimension for g in gaps] == ["tone"]          # only the clean gap survives
+    assert facts == ["We ship internationally."]            # shard fact dropped too
+
+
 def test_ingest_project_populates_materials_and_gaps(tmp_path):
     materials = tmp_path / "materials"
     materials.mkdir()

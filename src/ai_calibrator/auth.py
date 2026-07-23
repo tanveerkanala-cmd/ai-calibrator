@@ -24,8 +24,22 @@ class AuthStatus:
     detail: str
 
 
+def _looks_like_placeholder(key: str) -> bool:
+    """True if a set key is obviously not a real credential — an ellipsis/angle
+    placeholder copied from the docs, or implausibly short — so `auth` doesn't
+    green-check it and defer the real failure to the first engine call."""
+    k = key.strip()
+    return ("..." in k or "<" in k or ">" in k or k.endswith("-")
+            or len(k.split("-")[-1]) < 8)
+
+
 def anthropic_status() -> AuthStatus:
-    if os.getenv("ANTHROPIC_API_KEY"):
+    key = os.getenv("ANTHROPIC_API_KEY")
+    if key:
+        if _looks_like_placeholder(key):
+            return AuthStatus("claude", False,
+                              "ANTHROPIC_API_KEY is set but doesn't look like a real key "
+                              "(placeholder?) — the first call will fail until you set a real one")
         return AuthStatus("claude", True, "ANTHROPIC_API_KEY is set")
     if os.getenv("ANTHROPIC_AUTH_TOKEN"):
         return AuthStatus("claude", True, "ANTHROPIC_AUTH_TOKEN is set (OAuth/login token)")
@@ -43,7 +57,12 @@ def anthropic_status() -> AuthStatus:
 
 
 def openai_status() -> AuthStatus:
-    if os.getenv("OPENAI_API_KEY"):
+    key = os.getenv("OPENAI_API_KEY")
+    if key:
+        if _looks_like_placeholder(key):
+            return AuthStatus("openai", False,
+                              "OPENAI_API_KEY is set but doesn't look like a real key "
+                              "(placeholder?) — the first call will fail until you set a real one")
         return AuthStatus("openai", True, "OPENAI_API_KEY is set")
     return AuthStatus("openai", False, "set OPENAI_API_KEY (platform.openai.com) — key-based, no ChatGPT login")
 

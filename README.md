@@ -51,17 +51,22 @@ Contributing: [`CONTRIBUTING.md`](CONTRIBUTING.md)
 
 ```bash
 # from a clone of this repo:
-pip install '.[cloud]'                   # or '.[all]' for every engine + the web UI (note: [all] pulls a multi-GB ML stack via [rag])
-export ANTHROPIC_API_KEY=sk-ant-...      # your own key; nothing is stored in the repo
+python3 -m venv .venv && source .venv/bin/activate   # required on stock macOS / modern Debian (PEP 668)
+pip install -e '.[cloud]'                # or '.[all]' for every engine + the web UI (note: [all] pulls a multi-GB ML stack via [rag])
+export ANTHROPIC_API_KEY=<your-key>      # your own key; nothing is stored in the repo
 calibrate --help
 calibrate init my-support-ai --goal "Answer customer product questions in our voice."
 calibrate status my-support-ai
 ```
 
 The engine defaults to **Claude** (cloud, bring-your-own key). To use **OpenAI**,
-set `OPENAI_API_KEY` and bind roles to `<model>@openai`; to run **locally** with
-no key, install [Ollama](https://ollama.com) (`ollama pull qwen2.5:14b`) and use
-`…@ollama`.
+set `OPENAI_API_KEY` and bind roles to `<model>@openai`. To run **locally** with
+no key, install [Ollama](https://ollama.com), pull a model (e.g.
+`ollama pull qwen2.5:7b`), and point every role at it:
+
+```bash
+calibrate engines my-support-ai --all qwen2.5:7b@ollama
+```
 
 **📖 Full walkthrough:** [`docs/USAGE.md`](docs/USAGE.md) — engine setup for
 Claude / OpenAI / local, the step-by-step workflow, and current build status.

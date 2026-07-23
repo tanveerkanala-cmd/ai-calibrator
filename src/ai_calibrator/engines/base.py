@@ -24,6 +24,52 @@ class Role(str, Enum):
     JUDGE = "judge"
 
 
+# --- Typed engine failures --------------------------------------------------
+# All subclass RuntimeError so every existing `except RuntimeError` and message
+# display keeps working; the specific types let the HTTP API map an upstream
+# failure to the right status class (a provider timeout is 504, not a client 400).
+
+class EngineError(RuntimeError):
+    """An engine/provider failure (upstream), as opposed to bad user input."""
+
+
+class EngineTimeout(EngineError):
+    """The engine/provider did not respond in time."""
+
+
+class EngineAuthError(EngineError):
+    """Missing or invalid credentials for the engine."""
+
+
+class EngineOutputError(EngineError):
+    """The engine returned output that could not be parsed as the required JSON.
+
+    ``raw`` carries the model's actual (truncated) text so a caller can save it
+    for debugging instead of dumping it into a user-facing message.
+    """
+
+    def __init__(self, message: str, raw: str = "") -> None:
+        super().__init__(message)
+        self.raw = raw
+
+
+def missing_credentials_message(provider: str, name: str) -> str:
+    """The shared, actionable text for a missing/invalid cloud key — lists every
+    way forward (a key, a login, or a free local model) so a first-time user is
+    never stranded on raw SDK jargon."""
+    if provider == "anthropic":
+        key, login = "ANTHROPIC_API_KEY=sk-ant-...", "calibrate login claude"
+    else:
+        key, login = "OPENAI_API_KEY=sk-...", "see `calibrate login openai`"
+    return (
+        f"No usable {provider} credentials for {name}. Fix one of:\n"
+        f"  • export {key}          (your own key)\n"
+        f"  • {login}\n"
+        "  • bind a free local model:  calibrate engines <project> --all <model>@ollama\n"
+        "Run `calibrate auth` to see what's currently configured."
+    )
+
+
 class Engine(ABC):
     """A text-in / text-(or-JSON)-out model behind a uniform interface."""
 
@@ -137,8 +183,11 @@ def call_json(call) -> dict:
     try:
         return _parse_object(text)
     except ValueError as exc:
-        raise RuntimeError(
-            f"engine returned invalid JSON after one retry: {str(text)[:200]!r}"
+        raise EngineOutputError(
+            "the model returned unreadable output (not valid JSON) after a retry — "
+            "common with small local models. Retry, or bind a stronger model for "
+            "this role with `calibrate engines <project> <role> <model>`.",
+            raw=str(text),
         ) from exc
 
 

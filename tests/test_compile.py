@@ -107,6 +107,24 @@ def test_generate_tests_drops_unknown_expects():
     assert tests[1].expects == []        # all-invalid → empty → falls back to all criteria in eval
 
 
+def test_generate_tests_assigns_own_ids_and_drops_scaffolding():
+    spec = BehaviorSpec(goal="g", eval_criteria=[
+        EvalCriterion(id="c1", description="x", weight=Weight.HIGH),
+    ])
+    engine = SeqEngine([{
+        "tests": [
+            {"id": "8", "input": "a real user question?", "expects": ["c1"]},   # model id ignored
+            {"id": "t2", "input": "AI OUTPUT:\nUser: hi\nAssistant: ...", "expects": ["c1"]},  # scaffolding → dropped
+            {"id": "weird", "input": "another real question?", "expects": ["c1"]},
+        ]
+    }])
+    tests = generate_tests(spec, engine)
+    # ids are always t1, t2, … (never a model-chosen "8"/"weird"), and the leaked
+    # prompt-scaffolding input is dropped
+    assert [t.id for t in tests] == ["t1", "t2"]
+    assert [t.input for t in tests] == ["a real user question?", "another real question?"]
+
+
 def test_generate_tests_maps_follow_ups():
     spec = BehaviorSpec(goal="g", eval_criteria=[EvalCriterion(id="c1", description="x", weight=Weight.HIGH)])
     engine = SeqEngine([{"tests": [

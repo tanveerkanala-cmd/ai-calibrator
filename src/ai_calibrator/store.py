@@ -29,7 +29,7 @@ PROJECT_FILE = "project.yaml"
 LOCK_FILE = ".lock"
 
 
-def project_lock(path: str | Path) -> FileLock:
+def project_lock(path: str | Path, *, blocking: bool = True, on_wait=None) -> FileLock:
     """Return an exclusive lock for a project directory's read-modify-write.
 
     Hold it across the whole ``load → mutate → save`` region so concurrent
@@ -43,10 +43,15 @@ def project_lock(path: str | Path) -> FileLock:
 
     The lock is per-directory, so operations on *different* projects still run
     fully in parallel. Not re-entrant — never nest it for the same project.
+
+    ``blocking=False`` raises :class:`~.locking.LockBusy` immediately if another
+    holder has it (the API returns 423 rather than hanging a request). ``on_wait``
+    (blocking only) fires once if the lock is contended, so the CLI can print
+    "locked — waiting…" instead of a silent hang.
     """
     directory = Path(path)
     directory.mkdir(parents=True, exist_ok=True)
-    return FileLock(directory / LOCK_FILE)
+    return FileLock(directory / LOCK_FILE, blocking=blocking, on_wait=on_wait)
 
 
 def _close_quietly(fd: int) -> None:

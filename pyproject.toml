@@ -58,6 +58,12 @@ calibrate = "ai_calibrator.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/ai_calibrator"]
 
+[tool.pytest.ini_options]
+# -ra reports skip reasons in the summary, so an optional-extra module that
+# skips its whole file (e.g. rag without lancedb) is visible instead of hiding
+# inside a bare "N skipped" line.
+addopts = "-ra"
+
 [tool.ruff.lint]
 # Bug-focused static-analysis gate: pyflakes (F), bugbear (B), syntax (E9).
 # B008 and B904 are intentional framework idioms here — Typer/FastAPI require

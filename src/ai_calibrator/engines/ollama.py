@@ -13,7 +13,7 @@ from typing import Any
 
 import httpx
 
-from .base import Engine, call_json
+from .base import Engine, EngineError, EngineTimeout, call_json
 
 DEFAULT_TIMEOUT = 120.0
 
@@ -75,14 +75,17 @@ class OllamaEngine(Engine):
                 )
                 resp.raise_for_status()
             except httpx.ConnectError as exc:
-                raise RuntimeError(
+                raise EngineError(
                     f"Could not reach Ollama at {self.host}. Is it running?\n"
                     f"  Try:  ollama serve   (and)  ollama pull {self.model}"
                 ) from exc
             except httpx.TimeoutException as exc:
-                raise RuntimeError(
+                raise EngineTimeout(
                     f"Ollama at {self.host} did not respond within {self.timeout:g}s "
-                    f"(model {self.model!r} may still be loading, or the machine is overloaded)."
+                    f"(model {self.model!r} may still be loading, or the machine is overloaded).\n"
+                    f"  Try raising the limit:  CALIBRATOR_OLLAMA_TIMEOUT={max(300, int(self.timeout) * 2)} "
+                    "calibrate <command> …\n"
+                    f"  (big extractions on a large or busy local model can exceed the {DEFAULT_TIMEOUT:g}s default.)"
                 ) from exc
             except httpx.HTTPStatusError as exc:
                 status = exc.response.status_code
@@ -94,23 +97,23 @@ class OllamaEngine(Engine):
                 elif status >= 500:
                     hint = "\n  The Ollama server hit an internal error — check its logs."
                 body = exc.response.text[:200]
-                raise RuntimeError(
+                raise EngineError(
                     f"Ollama returned HTTP {status} for model {self.model!r}."
                     f"{hint}" + (f"\n  Server said: {body}" if body else "")
                 ) from exc
             except httpx.HTTPError as exc:  # anything else transport-level
-                raise RuntimeError(f"Ollama request to {self.host} failed: {exc}") from exc
+                raise EngineError(f"Ollama request to {self.host} failed: {exc}") from exc
             try:
                 data = resp.json()
             except ValueError as exc:
-                raise RuntimeError(
+                raise EngineError(
                     f"Ollama returned invalid JSON (truncated or corrupted response): "
                     f"{resp.text[:200]!r}"
                 ) from exc
             try:
                 return data["message"]["content"]
             except (KeyError, TypeError) as exc:
-                raise RuntimeError(
+                raise EngineError(
                     f"Unexpected Ollama response (missing message.content): {str(data)[:200]}"
                 ) from exc
 

@@ -3,9 +3,37 @@
 import pytest
 
 from ai_calibrator.examples_io import (
-    dedup_examples, examples_status, load_examples_file, merge_examples,
+    dedup_examples, examples_status, load_examples_file, load_examples_report, merge_examples,
 )
 from ai_calibrator.models import BehaviorSpec, Example
+
+
+def test_csv_bom_header_not_imported_as_data(tmp_path):
+    # A UTF-8 BOM must not stick to the first header cell (else the header row
+    # is imported as a training example and pollutes the fine-tune set).
+    f = tmp_path / "qa.csv"
+    f.write_bytes("﻿question,answer\nHow do I return?,Within 30 days.\n".encode("utf-8"))
+    report = load_examples_report(f)
+    assert [e.input for e in report.examples] == ["How do I return?"]  # header NOT a row
+    assert all(e.input != "question" for e in report.examples)
+
+
+def test_jsonl_one_bad_line_is_skipped_with_report(tmp_path):
+    f = tmp_path / "d.jsonl"
+    f.write_text('{"input":"a","output":"A"}\n{"input":"b" BROKEN\n{"input":"c","output":"C"}\n')
+    report = load_examples_report(f)
+    assert [e.input for e in report.examples] == ["a", "c"]  # bad middle line skipped, not aborted
+    assert len(report.skipped) == 1 and "d.jsonl:2" in report.skipped[0]
+
+
+def test_import_report_itemizes_dropped_and_output_less_rows(tmp_path):
+    f = tmp_path / "d.jsonl"
+    # row 2 has a numeric input (no usable input → dropped); row 3 has input, no output
+    f.write_text('{"input":"a","output":"A"}\n{"input":123,"output":"X"}\n{"input":"c"}\n')
+    report = load_examples_report(f)
+    assert [e.input for e in report.examples] == ["a", "c"]
+    assert report.without_output == 1                       # 'c' kept, but no output
+    assert len(report.skipped) == 1 and "d.jsonl:2" in report.skipped[0]
 
 
 def test_csv_with_flexible_headers(tmp_path):

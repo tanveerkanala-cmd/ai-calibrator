@@ -11,6 +11,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -40,56 +41,108 @@ def _row_to_example(row: dict) -> Example | None:
     return Example(input=inp, good_output=as_opt_str(out), bad_output=as_opt_str(_pick(row, _BAD_KEYS)))
 
 
-def load_examples_file(path: str | Path) -> list[Example]:
-    """Parse input→output example pairs from a .csv / .jsonl / .json / .yaml file.
+@dataclass
+class ImportReport:
+    """The outcome of a bulk import: usable examples plus an itemized account of
+    everything skipped or hollowed out, so counts reconcile against the file."""
+    examples: list[Example] = field(default_factory=list)
+    skipped: list[str] = field(default_factory=list)   # human-readable, with file line numbers
+    without_output: int = 0                             # kept, but no usable output column/key
+
+
+def load_examples_report(path: str | Path) -> ImportReport:
+    """Parse a .csv / .jsonl / .json / .yaml file into an :class:`ImportReport`.
 
     Column/key names are matched flexibly (input|question|prompt…, good_output|
     output|answer…). A CSV with no recognizable header falls back to
-    first-column=input, second-column=output. Raises ValueError on an unreadable
-    or unrecognized file (friendly message)."""
+    first-column=input, second-column=output. Reads with ``utf-8-sig`` so a
+    byte-order mark (common in Excel/CRM exports) doesn't poison the first
+    header/field. Malformed rows are skipped WITH a reason and file line number
+    rather than aborting the whole import. Raises ValueError only when the file
+    is missing/unreadable/unsupported, or yields no usable examples at all."""
     p = Path(path)
     if not p.exists():
         raise ValueError(f"No such file: {p}")
     try:
-        text = p.read_text(encoding="utf-8")
+        # utf-8-sig strips a leading BOM; without it the BOM sticks to the first
+        # header cell ("﻿question") so header detection fails and the header
+        # row is imported as data (and lands in the fine-tune set).
+        text = p.read_text(encoding="utf-8-sig")
     except (OSError, UnicodeDecodeError) as exc:
         raise ValueError(f"Could not read {p}: {exc}") from exc
     suffix = p.suffix.lower()
 
-    rows: list[dict]
+    report = ImportReport()
+    # (row_dict_or_None, file_line_number) pairs — a None row is already malformed.
+    indexed: list[tuple[object, int]]
     if suffix == ".csv":
-        rows = _parse_csv(text)
+        indexed = _parse_csv(text)
     elif suffix == ".jsonl":
-        rows = [json.loads(ln) for ln in text.splitlines() if ln.strip()]
+        indexed = []
+        for lineno, ln in enumerate(text.splitlines(), start=1):
+            if not ln.strip():
+                continue
+            try:
+                indexed.append((json.loads(ln), lineno))
+            except json.JSONDecodeError as exc:
+                # ONE bad line must not abort a real-world export — skip + report.
+                report.skipped.append(f"{p.name}:{lineno} — invalid JSON ({exc.msg})")
     elif suffix == ".json":
         data = json.loads(text or "[]")
         rows = data if isinstance(data, list) else [data]
+        indexed = [(r, i) for i, r in enumerate(rows, start=1)]
     elif suffix in (".yaml", ".yml"):
         data = yaml.safe_load(text) or []
         rows = data if isinstance(data, list) else [data]
+        indexed = [(r, i) for i, r in enumerate(rows, start=1)]
     else:
         raise ValueError(f"Unsupported example file type {suffix!r}. Use .csv, .jsonl, .json, or .yaml.")
 
-    examples = [ex for row in rows if isinstance(row, dict) and (ex := _row_to_example(row))]
-    if not examples:
+    for row, lineno in indexed:
+        if not isinstance(row, dict):
+            report.skipped.append(f"{p.name}:{lineno} — not a record (got {type(row).__name__})")
+            continue
+        ex = _row_to_example(row)
+        if ex is None:
+            report.skipped.append(
+                f"{p.name}:{lineno} — no usable input "
+                f"(need a column/key named one of {', '.join(_INPUT_KEYS)})"
+            )
+            continue
+        if not is_str(ex.good_output):
+            report.without_output += 1
+        report.examples.append(ex)
+
+    if not report.examples:
         raise ValueError(
             f"No usable examples in {p.name} — each row needs an input "
             f"(a column/key named one of {', '.join(_INPUT_KEYS)}) and ideally an output."
         )
-    return examples
+    return report
 
 
-def _parse_csv(text: str) -> list[dict]:
+def load_examples_file(path: str | Path) -> list[Example]:
+    """Back-compat convenience: just the examples from :func:`load_examples_report`."""
+    return load_examples_report(path).examples
+
+
+def _parse_csv(text: str) -> list[tuple[dict, int]]:
     reader = csv.reader(io.StringIO(text))
-    all_rows = [r for r in reader if any(c.strip() for c in r)]
+    # Track the source line of each row (skipping blank lines) so a skip report
+    # can point at the file. csv.reader collapses embedded newlines within a
+    # quoted field, so this is the row's starting line — close enough to locate it.
+    all_rows: list[tuple[list[str], int]] = []
+    for lineno, r in enumerate(reader, start=1):
+        if any(c.strip() for c in r):
+            all_rows.append((r, lineno))
     if not all_rows:
         return []
-    header = [c.strip().lower() for c in all_rows[0]]
+    header = [c.strip().lower() for c in all_rows[0][0]]
     has_header = any(h in _INPUT_KEYS for h in header)
     if has_header:
-        return [dict(zip(header, r, strict=False)) for r in all_rows[1:]]
+        return [(dict(zip(header, r, strict=False)), ln) for r, ln in all_rows[1:]]
     # headerless: first col is input, second (if present) is output
-    return [{"input": r[0], "good_output": r[1] if len(r) > 1 else None} for r in all_rows]
+    return [({"input": r[0], "good_output": r[1] if len(r) > 1 else None}, ln) for r, ln in all_rows]
 
 
 def merge_examples(spec: BehaviorSpec, new: list[Example], *, dedup: bool = True) -> tuple[int, int]:

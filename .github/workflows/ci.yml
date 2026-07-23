@@ -33,6 +33,29 @@ jobs:
       - name: Test
         run: pytest -q
 
+  full-extras:
+    # The `dev` extra excludes rag/openai/docx, and tests for those modules
+    # importorskip when their libraries are absent — so on `dev` alone the entire
+    # RAG layer (and a few openai/docx tests) NEVER RUN. This job installs every
+    # extra so retrieval, the OpenAI adapter, and document parsing are exercised
+    # on each push, and asserts a minimum collected-test count so a silently
+    # uncollected module can't hide behind a green badge.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install (all engines + web UI + docs + dev)
+        run: pip install -e '.[all,dev]'
+      - name: Test (exercises rag / openai / docx paths that `dev` alone skips)
+        run: pytest -q
+      - name: Guard against silently-uncollected modules
+        run: |
+          COUNT=$(pytest --collect-only -q 2>/dev/null | grep -c "::")
+          echo "collected $COUNT tests with all extras"
+          test "$COUNT" -ge 444
+
   locale:
     # Guards the encoding class: files are written UTF-8, so every read must be
     # too. Running the whole suite under a non-UTF-8 locale catches any regression

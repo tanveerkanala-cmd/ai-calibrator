@@ -110,7 +110,7 @@ def test_other_transport_errors_are_friendly(monkeypatch):
 
 def test_schema_with_unparseable_output_retries_then_raises(monkeypatch):
     _patch(monkeypatch, FakeResp({"message": {"content": "not json at all"}}))
-    with pytest.raises(RuntimeError, match="invalid JSON"):
+    with pytest.raises(RuntimeError, match="unreadable output"):
         OllamaEngine("gemma").complete("hi", schema={"type": "object"})
 
 

@@ -11,34 +11,44 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .base import Engine, call_json
+from .base import (
+    Engine,
+    EngineAuthError,
+    EngineError,
+    EngineTimeout,
+    call_json,
+    missing_credentials_message,
+)
 
 
-def _friendly_openai_error(name: str, model: str, exc: Exception) -> RuntimeError | None:
-    """Map a raw openai-SDK exception to an actionable RuntimeError, or None if
-    it is not an OpenAI API error (then the caller re-raises the original).
+def _friendly_openai_error(name: str, model: str, exc: Exception) -> EngineError | None:
+    """Map a raw openai-SDK exception to an actionable EngineError, or None if
+    it is not an OpenAI SDK error (then the caller re-raises the original).
 
     Confirmed live: a wrong key / typo'd model otherwise surfaced a raw
     openai.NotFoundError / AuthenticationError traceback — same class of gap the
     Ollama adapter closed."""
     import openai
     if isinstance(exc, openai.AuthenticationError):
-        return RuntimeError(f"OpenAI rejected the API key (401) for {name}. "
-                            "Check OPENAI_API_KEY (https://platform.openai.com/api-keys).")
+        return EngineAuthError(missing_credentials_message("openai", name))
     if isinstance(exc, openai.PermissionDeniedError):
-        return RuntimeError(f"OpenAI denied access (403) to {model!r} for {name}.")
+        return EngineError(f"OpenAI denied access (403) to {model!r} for {name}.")
     if isinstance(exc, openai.NotFoundError):
-        return RuntimeError(f"OpenAI has no model {model!r} (404), or your key lacks access to it.")
+        return EngineError(f"OpenAI has no model {model!r} (404), or your key lacks access to it.")
     if isinstance(exc, openai.RateLimitError):
-        return RuntimeError(f"OpenAI rate limit or quota hit (429) for {name} — "
-                            "slow down or check your plan/billing.")
+        return EngineError(f"OpenAI rate limit or quota hit (429) for {name} — "
+                           "slow down or check your plan/billing.")
     if isinstance(exc, openai.APITimeoutError):
-        return RuntimeError(f"OpenAI request timed out for {name} — the API may be slow; retry.")
+        return EngineTimeout(f"OpenAI request timed out for {name} — the API may be slow; retry.")
     if isinstance(exc, openai.APIConnectionError):
-        return RuntimeError(f"Could not reach OpenAI for {name} (network/endpoint issue): {exc}")
+        return EngineError(f"Could not reach OpenAI for {name} (network/endpoint issue): {exc}")
     if isinstance(exc, openai.APIError):
         status = getattr(exc, "status_code", "?")
-        return RuntimeError(f"OpenAI API error ({status}) for {name}: {getattr(exc, 'message', exc)}")
+        return EngineError(f"OpenAI API error ({status}) for {name}: {getattr(exc, 'message', exc)}")
+    # The base SDK error (NOT an APIError) is what a missing / empty key raises
+    # before any HTTP call — treat it as missing credentials, not a raw traceback.
+    if isinstance(exc, openai.OpenAIError):
+        return EngineAuthError(missing_credentials_message("openai", name))
     return None
 
 
@@ -62,10 +72,7 @@ class OpenAIEngine(Engine):
         try:
             self._client = OpenAI(**kwargs)
         except Exception as exc:
-            raise RuntimeError(
-                "No OpenAI credentials found. Set OPENAI_API_KEY "
-                "(https://platform.openai.com/api-keys) — see `calibrate login openai`."
-            ) from exc
+            raise EngineAuthError(missing_credentials_message("openai", self.name)) from exc
 
     def _chat(self, messages: list[dict], response_format: dict | None = None) -> str:
         kwargs: dict[str, Any] = {"model": self.model, "messages": messages}
@@ -85,14 +92,14 @@ class OpenAIEngine(Engine):
         except (IndexError, AttributeError, TypeError, KeyError) as exc:
             # TypeError/KeyError too: choices may be None or a non-list on a
             # malformed (or OpenAI-compatible) response, not just empty/missing.
-            raise RuntimeError(
+            raise EngineError(
                 f"OpenAI returned no usable choices for {self.name} (empty or malformed response)."
             ) from exc
         if message is None:  # a valid response can still carry a null message
-            raise RuntimeError(f"OpenAI returned an empty message for {self.name} (malformed response).")
+            raise EngineError(f"OpenAI returned an empty message for {self.name} (malformed response).")
         refusal = getattr(message, "refusal", None)
         if refusal:
-            raise RuntimeError(f"OpenAI declined the request ({self.name}): {refusal}")
+            raise EngineError(f"OpenAI declined the request ({self.name}): {refusal}")
         return message.content or ""
 
     def complete(

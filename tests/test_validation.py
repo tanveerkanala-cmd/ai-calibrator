@@ -189,17 +189,20 @@ def test_generate_questions_tolerates_non_string_fields():
     class Bad:
         name = "bad@test"
 
-        def complete(self, prompt, *, system=None, schema=None):
-            return {"questions": [
-                {"question": 123, "dimension": "d"},
-                {"question": "real?", "dimension": 5, "draft_answer": 9, "rationale": None},
-            ]}
+        def __init__(self):
+            self.replies = [
+                {"question": 123},                                  # non-string → gap dropped
+                {"question": "real?", "draft_answer": 9, "rationale": None},
+            ]
 
-    proj = Project(name="p", goal="g", gaps=[Gap(dimension="d")])
+        def complete(self, prompt, *, system=None, schema=None):
+            return self.replies.pop(0)
+
+    proj = Project(name="p", goal="g", gaps=[Gap(dimension="a"), Gap(dimension="b")])
     items = generate_questions(proj, Bad())  # must NOT raise
     assert [it.question for it in items] == ["real?"]   # non-string question dropped
-    assert items[0].dimension == ""                     # non-string dimension -> ""
-    assert items[0].draft_answer is None
+    assert items[0].dimension == "b"                    # dimension comes from the gap
+    assert items[0].draft_answer is None                # non-string draft -> None
 
 
 def test_extract_gaps_tolerates_non_string_fields():

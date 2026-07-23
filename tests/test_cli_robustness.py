@@ -247,6 +247,36 @@ def test_version_flag_prints_version_and_exits():
         assert _has_no_traceback(result.output)
 
 
+def test_init_rejects_empty_goal(tmp_path):
+    r = runner.invoke(app, ["init", "p", "--goal", "  ", "--path", str(tmp_path / "p")])
+    assert r.exit_code == 1 and "goal" in r.output.lower() and _has_no_traceback(r.output)
+
+
+def test_init_onto_existing_file_is_friendly(tmp_path):
+    (tmp_path / "taken").write_text("i am a file")
+    r = runner.invoke(app, ["init", "x", "--goal", "g", "--path", str(tmp_path / "taken")])
+    assert r.exit_code == 1 and "already exists" in r.output and _has_no_traceback(r.output)
+
+
+def test_command_on_missing_project_leaves_no_junk_dir(tmp_path):
+    # eval on a typo'd/nonexistent project must NOT create a directory or .lock
+    target = tmp_path / "typo"
+    r = runner.invoke(app, ["eval", str(target)])
+    assert r.exit_code == 1 and "No calibrator project" in r.output
+    assert not target.exists()  # nothing littered
+
+
+def test_ci_json_emits_json_on_cannot_gate(tmp_path):
+    import json as _json
+    d = tmp_path / "p"
+    d.mkdir()
+    (d / "project.yaml").write_text("name: p\ngoal: g\n")  # no spec/tests
+    r = runner.invoke(app, ["ci", str(d), "--json"])
+    assert r.exit_code == 1
+    payload = _json.loads(r.output.strip())  # must be valid JSON on the cannot-gate path
+    assert payload["ok"] is False and payload["gate"] == "error"
+
+
 def test_help_has_no_internal_milestone_jargon():
     """User-facing help must not leak internal milestone markers (M1/M3+) or
     section-sign references — they mean nothing to a user."""

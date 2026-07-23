@@ -5,9 +5,8 @@ local), and run the workflow. For the *why* behind the design, see
 [`ARCHITECTURE.md`](ARCHITECTURE.md); for the build roadmap, see
 [`BUILD-PLAN.md`](BUILD-PLAN.md).
 
-> **Build status (v0 — early).** Every command in this guide runs today; the
-> ✅ markers are kept from the build-out phase. Expect rough edges — this is a
-> young tool.
+> **Status (v0 — early).** Every command in this guide works today. Expect rough
+> edges — this is a young tool.
 
 ---
 
@@ -31,11 +30,15 @@ Two depths:
 ```bash
 git clone https://github.com/tanveerkanala-cmd/ai-calibrator.git
 cd ai-calibrator
+python3 -m venv .venv && source .venv/bin/activate   # required on stock macOS / modern Debian (PEP 668)
 pip install -e '.[cloud]'        # the [cloud] extra adds the Anthropic + OpenAI SDKs
 calibrate --help
 ```
 
-Requires Python 3.10+. (If you'll only ever run local models, plain
+Requires Python 3.10+. The virtualenv isn't optional on a system Python that
+enforces [PEP 668](https://peps.python.org/pep-0668/) (Homebrew Python, recent
+Debian/Ubuntu) — a bare `pip install` there fails with
+`externally-managed-environment`. (If you'll only ever run local models, plain
 `pip install -e .` is enough.)
 
 The optional extras, mix as needed:
@@ -46,7 +49,8 @@ The optional extras, mix as needed:
 | `api` | the web UI + `calibrate serve` / `run` servers |
 | `docs` | PDF / DOCX ingestion (`.pdf`, `.docx` materials) |
 | `rag` | local retrieval index — **pulls a multi-GB ML stack** (sentence-transformers → PyTorch) |
-| `all` | `cloud` + `api` + `docs` + `rag` (so also multi-GB, via `rag`) |
+| `train` | the fine-tuning stack (PyTorch + transformers/trl/peft) — install with `-e '.[train]'`; **excluded from `all`** |
+| `all` | `cloud` + `api` + `docs` + `rag` (so also multi-GB, via `rag`; **not** `train`) |
 
 `pip install -e '.[cloud,api,docs]'` is the common no-GPU combination.
 
@@ -85,7 +89,7 @@ bindings on a project.
 Install [Ollama](https://ollama.com), pull a model, and bind roles to
 `<model>@ollama`:
 ```bash
-ollama pull qwen2.5:14b
+ollama pull qwen2.5:7b
 ollama serve
 ```
 No API key, no per-use cost, fully private. Comfortable on a 12 GB+ GPU.
@@ -104,7 +108,7 @@ default 120s request timeout — raise it with `CALIBRATOR_OLLAMA_TIMEOUT=300`
 
 Each command maps to one pipeline stage. Run them in order on your project.
 
-### `calibrate init` ✅
+### `calibrate init`
 ```bash
 calibrate init my-support-ai \
   --goal "Answer customer product questions in our brand voice, never making medical claims." \
@@ -112,7 +116,7 @@ calibrate init my-support-ai \
 ```
 Creates a project folder with `project.yaml` and an empty `materials/` directory.
 
-### `calibrate import` ✅ — already have a system prompt? Start here.
+### `calibrate import` — already have a system prompt? Start here.
 If you already wrote a system prompt and just want it **tested**, skip the
 interview entirely:
 ```bash
@@ -126,17 +130,17 @@ The result is a normal project — run `calibrate eval`, `coverage`, `redteam`,
 `report`, or `drift` on it immediately. (`--engine model@provider` picks the
 engine for extraction and the created project; default is the standard binding.)
 
-### `calibrate status` ✅
+### `calibrate status`
 ```bash
 calibrate status my-support-ai
 ```
 Shows the goal and a checklist of how far the project has progressed.
 
-### `calibrate engines [ROLE MODEL] [--all MODEL]` ✅ (no engine)
+### `calibrate engines [ROLE MODEL] [--all MODEL]` (no engine)
 ```bash
 calibrate engines my-support-ai                              # show every role's binding
 calibrate engines my-support-ai subject gpt-4o-mini@openai   # rebind one role
-calibrate engines my-support-ai --all gemma4:e4b@ollama      # point every role at one model
+calibrate engines my-support-ai --all qwen2.5:7b@ollama      # point every role at one model
 ```
 Shows — or sets — which engine powers each role. `model@provider` uses
 `anthropic` / `openai` / `ollama` (bare `model` defaults to local Ollama). The
@@ -144,7 +148,7 @@ binding is validated (known provider, non-empty model) without contacting the
 provider, so it never needs a key just to configure. (Also `PUT
 /api/projects/<name>/engines`.)
 
-### `calibrate ingest [--source DIR] [--no-index]` ✅
+### `calibrate ingest [--source DIR] [--no-index]`
 Drop your materials — product docs, past replies, policies, FAQs — into
 `materials/`, then ingest. The tool parses and indexes them, and works out the
 **gaps**: the things your materials *don't* settle (tone? refusal policy? edge
@@ -159,20 +163,20 @@ AI you actually serve, not a prompt-only version. Without the extra (or with
 `rag.config.yaml` in the export bundle describes the same index for your own
 deployment.
 
-### `calibrate interview [--accept-drafts] [--regenerate]` ✅
+### `calibrate interview [--accept-drafts] [--regenerate]`
 Fills the gaps. It generates one targeted question per gap with a **drafted
 answer** and a short *why*, then walks you through them — press Enter to accept
 the draft or type a correction (propose-and-ratify). `--accept-drafts` takes the
 drafts non-interactively. This is where the judgment that lives only in your head
 gets captured.
 
-### `calibrate compile` ✅
+### `calibrate compile`
 Turns your answers + materials into the **behavior spec** (the source of truth),
 then compiles the artifact bundle into `<project>/build/`: `spec.yaml`,
 `system_prompt.txt`, `rag.config.yaml`, `rubric.yaml`, and `tests.jsonl`. Needs a
 configured engine (see §3).
 
-### `calibrate eval [--refine] [--rounds N] [--threshold 0.8] [--judge-passes N]` ✅
+### `calibrate eval [--refine] [--rounds N] [--threshold 0.8] [--judge-passes N]`
 Runs each test on the configured AI (the `subject` engine), grades each output
 against the rubric with an LLM judge (plus a deterministic empty-output guard),
 and saves a scorecard under `<project>/evals/`. `--refine` loops: it diagnoses
@@ -193,7 +197,7 @@ first, tagged `[high]` / `[medium]` / `[low]`, and each verdict records the
 weight it was graded under, so old scorecards stay honest even after you reweight
 the spec.
 
-### `calibrate export [--name NAME]` ✅
+### `calibrate export [--name NAME]`
 Packages the calibrated config into `<project>/export/`: the system prompt,
 spec/rubric/tests, an Ollama **`Modelfile`** (`ollama create … -f Modelfile`
 then `ollama run`), a zero-dependency `run.py`, and a README. Fully
@@ -205,7 +209,7 @@ system prompt, so it runs on any model.
 ## 4a. Beyond the core loop — confidence, coverage & tuning
 
 These build on a compiled project to make calibration *smarter, more trustworthy,
-and lower-friction*. All are live (✅).
+and lower-friction*. All are live.
 
 ### `calibrate teach [--n 5]`
 Calibrate **by example** instead of (or alongside) the interview. The tool shows
@@ -316,7 +320,7 @@ instead of being locked into `calibrate eval`. Anti-lock-in.
 
 ---
 
-## 4a-bis. Serve the calibrated AI itself — `calibrate run` ✅
+## 4a-bis. Serve the calibrated AI itself — `calibrate run`
 
 The export bundle is a file; this is the **live** thing. `calibrate run` serves
 your calibrated AI as an **OpenAI-compatible endpoint** — point any chat UI, SDK,
@@ -398,6 +402,20 @@ default `~/.ai-calibrator/projects`), and `--host HOST` (default `127.0.0.1`,
 i.e. reachable only from your machine — binding anything else prints a warning,
 since the API has no authentication).
 
+**API reference.** Every screen action is a REST endpoint; the full, interactive
+reference is served live at **`/docs`** (Swagger UI) with the raw schema at
+**`/openapi.json`** — e.g. `http://127.0.0.1:8765/docs`. Projects are addressed
+by name (`/api/projects/<name>/…`); create with `POST /api/projects`, remove with
+`DELETE /api/projects/<name>`. An upstream engine failure returns `502`/`504`
+(a bad request `400`); a project busy with another operation returns `423`.
+
+**Same-origin guard.** The server accepts requests only from an allowed `Host`
+and, for mutating requests, a same-origin (or no) `Origin` — a browser page on a
+*different* origin gets `403`, and an unrecognized `Host` gets `400`. This blocks
+DNS-rebinding and CSRF from a malicious local web page. If you build a browser
+front-end on another port, call the API from a same-origin proxy (or bind the
+server to that origin), not cross-origin.
+
 Open that URL to create a project, upload materials, and run
 ingest → interview → compile → eval → export from the browser — the same Guided
 loop, with a UI and a scorecard view. The **Teach, Coverage, Report, Red-team,
@@ -430,47 +448,67 @@ engines:
 
 Each value is a `model@provider` string. Providers: `anthropic`, `openai`,
 `ollama`. Mix freely — e.g. `claude-opus-4-8@anthropic` for the compiler and
-`qwen2.5:14b@ollama` for the judge.
+`qwen2.5:7b@ollama` for the judge.
 
 ---
 
-## 6. Advanced mode — fine-tuning ✅ (opt-in, technical users)
+## 6. Advanced mode — fine-tuning (opt-in, technical users)
+
+> **Prerequisite:** Advanced mode builds on a *compiled* project — examples
+> attach to the behavior spec. Complete the Guided loop first
+> (`init → ingest → interview → compile`, §4) before importing examples or
+> fine-tuning. (`calibrate examples --import` on a project with no spec fails
+> with a message pointing you back here.)
 
 **First, the data.** A fine-tune is only as good as its examples, and most owners
-already have some (past replies, an FAQ, a spreadsheet). Collect + curate them:
+already have some (past replies, an FAQ, a spreadsheet). Collect + curate them
+(the first argument is the project directory):
 ```bash
-calibrate examples                          # review: how many you have, how far from a solid fine-tune
-calibrate examples --import support-qa.csv  # bulk-import input/output pairs (.csv/.jsonl/.json/.yaml)
-calibrate examples --dedup                  # drop duplicate inputs
+calibrate examples my-support-ai                          # review: how many you have, how far from a solid fine-tune
+calibrate examples my-support-ai --import support-qa.csv  # bulk-import input/output pairs (.csv/.jsonl/.json/.yaml)
+calibrate examples my-support-ai --dedup                  # drop duplicate inputs
 ```
 Column/key names are matched flexibly (`input`/`question`/`prompt`…,
-`good_output`/`output`/`answer`…). Examples also grow from `calibrate teach` and
-captured eval corrections. Rule of thumb: ~50+ before a fine-tune tends to beat
-the prompt+RAG baseline.
+`good_output`/`output`/`answer`…); a UTF-8 BOM and messy rows are handled, and
+malformed rows are skipped with a per-line report rather than aborting the import.
+Examples also grow from `calibrate teach` and captured eval corrections. Rule of
+thumb: ~50+ before a fine-tune tends to beat the prompt+RAG baseline.
 
 For technical users, when evals show configuration alone isn't enough:
 ```bash
-calibrate finetune                 # → <project>/finetune/ : dataset.jsonl, recipe.yaml, train.py, README
-calibrate finetune --base mistralai/Mistral-7B-Instruct-v0.3   # pick the open base model
+calibrate finetune my-support-ai                 # → <project>/finetune/ : dataset.jsonl, recipe.yaml, train.py, merge.py, README
+calibrate finetune my-support-ai --base mistralai/Mistral-7B-Instruct-v0.3   # pick the open base model
 ```
 It assembles a chat-format dataset from your spec's examples (human-authored /
 corrected — never the model's own output), recommends a LoRA recipe for the base
 model (`--base`, a Hugging Face model id; default `Qwen/Qwen2.5-7B-Instruct`),
-and emits a **device-aware** training script (CUDA / Apple-Silicon MPS / CPU).
+and emits a **device-aware** training script (CUDA / Apple-Silicon MPS / CPU)
+plus a `merge.py` that folds the trained adapter back into the base for serving.
 
 **One-command run** — build the bundle, install the training stack (with your
 OK), and train, in a single step:
 ```bash
-calibrate train                    # detects your hardware, offers to install torch/transformers/…, then trains
-calibrate train --base Qwen/Qwen2.5-3B-Instruct    # a smaller base fits a 10–12 GB GPU or an M-series Mac
-calibrate train --qlora            # load the base in 4-bit (CUDA + bitsandbytes) so a 7B fits a consumer card
+calibrate train my-support-ai                    # detects your hardware, offers to install torch/transformers/…, then trains
+calibrate train my-support-ai --base Qwen/Qwen2.5-3B-Instruct    # a smaller base fits a 10–12 GB GPU or an M-series Mac
+calibrate train my-support-ai --epochs 1 --max-steps 20          # bound the work (a fast smoke run)
+calibrate train my-support-ai --qlora            # load the base in 4-bit (CUDA + bitsandbytes) so a 7B fits a consumer card
 ```
-(Or install once — `pip install 'ai-calibrator[train]'` — and run `python
-train.py` yourself.) Then run the **prove-it gate** — keep the fine-tune *only*
-if it beats your configured baseline on the same evals:
+`--epochs` / `--max-steps` are baked into the generated `train.py`, so they
+actually change training (editing `recipe.yaml` alone does too). The command
+prints an estimated step count before it starts. (Or install once —
+`pip install -e '.[train]'` — and run `python train.py` yourself.)
+
+**Serve it, then gate it.** The adapter is a LoRA delta — `python merge.py`
+writes a merged model to `finetune/merged/`, which you serve either via
+`ollama create` or an OpenAI-compatible endpoint (`transformers serve`), then
+bind as the project's `subject` (the bundle README spells out both). Run the
+**prove-it gate** — keep the fine-tune *only* if it beats your configured
+baseline on the same evals (both scorecards must be full runs graded by the same
+judge; the gate warns otherwise):
 ```bash
-calibrate finetune --gate --baseline <run-id> --candidate <run-id>
+calibrate finetune my-support-ai --gate --baseline <run-id> --candidate <run-id>
 ```
+Exit codes: `0` accept, `2` a clean reject, `1` an error (e.g. an unreadable run id).
 Fitting the hardware: a fp16 LoRA of a 7B wants ~16 GB VRAM; below that use
 `--qlora` (CUDA) or a smaller `--base`. On Apple Silicon a 0.5–3B base trains on
 the MPS GPU comfortably; the 7B needs ~24 GB+ unified memory.
@@ -479,7 +517,7 @@ Non-technical users never see any of this. Details in
 
 ---
 
-## 6b. Engine-Trainer — run the tool on your own models (autonomy) ✅
+## 6b. Engine-Trainer — run the tool on your own models (autonomy)
 
 The tool can calibrate *itself*. Turn on local logging and every decision your
 cloud engines make for a role is recorded — that log is a labeled dataset to
@@ -518,7 +556,7 @@ local, private, autonomous tool, on your terms.
 
 ---
 
-## 6c. Multi-stakeholder calibration — merge & reconcile (org use) ✅
+## 6c. Multi-stakeholder calibration — merge & reconcile (org use)
 
 In an org, one AI answers to several voices — legal, sales, support, brand — whose
 standards contradict. Let each stakeholder calibrate their **own** project, then

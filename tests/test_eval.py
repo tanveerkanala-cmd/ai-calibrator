@@ -75,6 +75,25 @@ def test_run_eval_all_pass():
     assert card.results[0].passed
 
 
+def test_run_eval_records_provenance():
+    card = run_eval(_project(), GoodSubject(), PassJudge(), run_id="run-0001")
+    # provenance so the prove-it gate can verify which models produced a run
+    assert card.subject == GoodSubject().name and card.judge == PassJudge().name
+    assert card.created_at is not None and card.tool_version is not None
+    assert card.partial is False
+
+
+def test_run_eval_max_tests_marks_partial_and_progress():
+    proj = _project()
+    proj.tests = proj.tests * 3  # a few tests
+    seen = []
+    card = run_eval(proj, GoodSubject(), PassJudge(), run_id="r",
+                    max_tests=1, on_progress=lambda d, t, tid: seen.append((d, t)))
+    assert len(card.results) == 1
+    assert card.partial is True          # a capped run is not a full pass
+    assert seen == [(1, 1)]
+
+
 def test_pass_rate_excludes_ungradeable_tests():
     from ai_calibrator.models import CriterionResult, Scorecard, TestResult
     card = Scorecard(run_id="r", results=[

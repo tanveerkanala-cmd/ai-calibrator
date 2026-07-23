@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
+from typing import Callable, Optional
 
 from .checks import run_check
 from .coerce import as_bool, as_list, as_opt_str, as_str, is_str
@@ -96,7 +97,9 @@ def _judge(
                 criterion_id=cid,
                 passed=as_bool(r.get("passed", False)),
                 score=_as_float(r.get("score", 0.0)),
-                rationale=as_opt_str(r.get("rationale")),
+                # Never leave a failing verdict with a null rationale — the failure
+                # list must read consistently, so substitute a clear placeholder.
+                rationale=as_opt_str(r.get("rationale")) or "judge gave no rationale",
             )
         )
     return results
@@ -117,7 +120,7 @@ def _judge_consensus(judge: Engine, test_input: str, output: str,
         results.append(CriterionResult(
             criterion_id=cid, passed=passed,
             score=round(sum(r[idx].score for r in runs) / passes, 3),
-            rationale=rationale, confidence=round(agreement, 3),
+            rationale=rationale or "judge gave no rationale", confidence=round(agreement, 3),
         ))
     return results
 
@@ -152,6 +155,21 @@ def _conversation_output(subject: Engine, system: str | None, user_turns: list[s
     return "\n".join(lines)
 
 
+# Called before each test runs: (done, total, test_id). Lets the CLI show live
+# progress so a multi-minute run isn't indistinguishable from a hang.
+ProgressFn = Callable[[int, int, str], None]
+
+
+class EvalInterrupted(KeyboardInterrupt):
+    """Raised when an eval is Ctrl-C'd mid-run. ``partial`` holds the scorecard
+    for the tests that finished, so the caller can save progress rather than
+    discard every graded result."""
+
+    def __init__(self, partial: "Scorecard") -> None:
+        super().__init__()
+        self.partial = partial
+
+
 def run_eval(
     project: Project,
     subject: Engine,
@@ -160,6 +178,8 @@ def run_eval(
     run_id: str = "run-0001",
     judge_passes: int = 1,
     project_dir: str | Path | None = None,
+    max_tests: int | None = None,
+    on_progress: Optional[ProgressFn] = None,
 ) -> Scorecard:
     """Run each test on the subject and grade the output against its criteria.
 
@@ -170,7 +190,13 @@ def run_eval(
     ``project_dir`` enables **RAG retrieval**: when the project has a knowledge
     index, each test's subject prompt is augmented with chunks retrieved for that
     input — identical to what `calibrate run` serves — so the scorecard reflects
-    the AI you actually deploy. Omit it (default) to grade the prompt-only AI."""
+    the AI you actually deploy. Omit it (default) to grade the prompt-only AI.
+
+    ``max_tests`` runs only the first N tests (a smoke check on a slow model).
+    ``on_progress(done, total, test_id)`` fires before each test so a caller can
+    show live progress. A ``KeyboardInterrupt`` mid-run propagates with the
+    results gathered so far attached as ``.partial_results`` so the caller can
+    still save what completed."""
     if not isinstance(judge_passes, int) or judge_passes < 1:
         raise ValueError(f"judge_passes must be an integer >= 1 (got {judge_passes!r})")
     spec = project.spec
@@ -180,61 +206,87 @@ def run_eval(
     system = render_system_prompt(spec)
     crit_by_id = {c.id: c for c in spec.eval_criteria}
 
+    tests = project.tests if max_tests is None else project.tests[:max_tests]
+    total = len(tests)
     results: list[TestResult] = []
-    for test in project.tests:
-        # Coerce defensively: a misbehaving subject can return a non-string
-        # (despite the str contract); as_str makes that an empty output (caught
-        # by the guard below) instead of an AttributeError on .strip().
-        turns = [test.input] + [f for f in test.follow_ups if is_str(f)]
-        if len(turns) > 1:  # multi-turn conversation test
-            output = _conversation_output(subject, system, turns, project_dir)
-        else:
-            eff_system = rag.augment_system(system, project_dir, test.input)  # RAG when indexed
-            output = as_str(subject.complete(test.input, system=eff_system))
-        # De-dup while preserving order: a duplicated id in `expects` (hand-edited
-        # YAML, or an engine that repeats one) would otherwise append the same
-        # CriterionResult multiple times, multiplying that criterion's weight in
-        # the weighted score. Each criterion counts once.
-        _seen: set[str] = set()
-        expected = [
-            cid for cid in (test.expects or list(crit_by_id))
-            if cid in crit_by_id and not (cid in _seen or _seen.add(cid))
-        ]
-        graded: dict[str, CriterionResult] = {}
 
-        # First grading layer — criteria with a deterministic check are graded
-        # exactly by code (no judge), and run even on empty output.
-        for cid in expected:
-            chk = crit_by_id[cid].check
-            if chk is not None:
-                passed, why = run_check(chk, output)
-                graded[cid] = CriterionResult(criterion_id=cid, passed=passed,
-                                              score=1.0 if passed else 0.0, rationale=why)
+    def _card(partial: bool) -> Scorecard:
+        from datetime import datetime, timezone
 
-        # Remaining criteria go to the LLM judge (empty output fails them outright).
-        judged = [(cid, crit_by_id[cid].description) for cid in expected if crit_by_id[cid].check is None]
-        if judged and not output.strip():
-            for cid, _ in judged:
-                graded[cid] = CriterionResult(criterion_id=cid, passed=False, score=0.0, rationale="empty output")
-        elif judged and judge_passes > 1:
-            for cr in _judge_consensus(judge, test.input, output, judged, judge_passes):
-                graded[cr.criterion_id] = cr
-        elif judged:
-            for cr in _judge(judge, test.input, output, judged):
-                graded[cr.criterion_id] = cr
+        from . import __version__
+        return Scorecard(
+            run_id=run_id, results=results, subject=subject.name, judge=judge.name,
+            created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            tool_version=__version__,
+            partial=partial or (max_tests is not None and max_tests < len(project.tests)),
+        )
 
-        # Reassemble in requested order — test.expects is an ordered list, so the
-        # results must follow it; the checked/judged split is an internal detail.
-        # Stamp each verdict with the weight it was graded under, so the scorecard
-        # stays honest even if the spec's weights change later.
-        crs: list[CriterionResult] = []
-        for cid in expected:
-            if cid in graded:
-                graded[cid].weight = crit_by_id[cid].weight
-                crs.append(graded[cid])
-        results.append(TestResult(test_id=test.id, output=output, criteria=crs))
+    try:
+        for _i, test in enumerate(tests, start=1):
+            if on_progress is not None:
+                try:
+                    on_progress(_i, total, test.id)
+                except KeyboardInterrupt:
+                    raise
+                except Exception:  # a progress printer must never break the eval
+                    pass
+            # Coerce defensively: a misbehaving subject can return a non-string
+            # (despite the str contract); as_str makes that an empty output (caught
+            # by the guard below) instead of an AttributeError on .strip().
+            turns = [test.input] + [f for f in test.follow_ups if is_str(f)]
+            if len(turns) > 1:  # multi-turn conversation test
+                output = _conversation_output(subject, system, turns, project_dir)
+            else:
+                eff_system = rag.augment_system(system, project_dir, test.input)  # RAG when indexed
+                output = as_str(subject.complete(test.input, system=eff_system))
+            # De-dup while preserving order: a duplicated id in `expects` (hand-edited
+            # YAML, or an engine that repeats one) would otherwise append the same
+            # CriterionResult multiple times, multiplying that criterion's weight in
+            # the weighted score. Each criterion counts once.
+            _seen: set[str] = set()
+            expected = [
+                cid for cid in (test.expects or list(crit_by_id))
+                if cid in crit_by_id and not (cid in _seen or _seen.add(cid))
+            ]
+            graded: dict[str, CriterionResult] = {}
 
-    return Scorecard(run_id=run_id, results=results)
+            # First grading layer — criteria with a deterministic check are graded
+            # exactly by code (no judge), and run even on empty output.
+            for cid in expected:
+                chk = crit_by_id[cid].check
+                if chk is not None:
+                    passed, why = run_check(chk, output)
+                    graded[cid] = CriterionResult(criterion_id=cid, passed=passed,
+                                                  score=1.0 if passed else 0.0, rationale=why)
+
+            # Remaining criteria go to the LLM judge (empty output fails them outright).
+            judged = [(cid, crit_by_id[cid].description) for cid in expected if crit_by_id[cid].check is None]
+            if judged and not output.strip():
+                for cid, _ in judged:
+                    graded[cid] = CriterionResult(criterion_id=cid, passed=False, score=0.0, rationale="empty output")
+            elif judged and judge_passes > 1:
+                for cr in _judge_consensus(judge, test.input, output, judged, judge_passes):
+                    graded[cr.criterion_id] = cr
+            elif judged:
+                for cr in _judge(judge, test.input, output, judged):
+                    graded[cr.criterion_id] = cr
+
+            # Reassemble in requested order — test.expects is an ordered list, so the
+            # results must follow it; the checked/judged split is an internal detail.
+            # Stamp each verdict with the weight it was graded under, so the scorecard
+            # stays honest even if the spec's weights change later.
+            crs: list[CriterionResult] = []
+            for cid in expected:
+                if cid in graded:
+                    graded[cid].weight = crit_by_id[cid].weight
+                    crs.append(graded[cid])
+            results.append(TestResult(test_id=test.id, output=output, criteria=crs))
+    except KeyboardInterrupt:
+        # Ctrl-C mid-run: surface what completed so the caller can still
+        # save a partial scorecard instead of losing every graded test.
+        raise EvalInterrupted(_card(partial=True))
+
+    return _card(partial=False)
 
 
 def low_confidence_results(card: Scorecard, *, threshold: float = 0.67) -> list[tuple[str, CriterionResult]]:

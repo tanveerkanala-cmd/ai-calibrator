@@ -64,9 +64,58 @@ def _scorecard_or_exit(path: Path, rid: str):
         raise typer.Exit(code=1)
 
 
+def _lock_wait_notice() -> None:
+    """Printed once when a project lock is contended, so a wait isn't a silent hang."""
+    typer.secho("  · project is busy with another calibrate operation — waiting for the lock…",
+                fg=typer.colors.YELLOW)
+
+
+def _resolve_project(path: Path, projects: Optional[Path]) -> Path:
+    """Resolve the project location. With ``--projects <root>`` the argument is a
+    project NAME under that root (the same store `calibrate serve` / the web UI
+    use), so a project created there is reachable by name, not just full path."""
+    if projects is not None:
+        return Path(projects) / path
+    return path
+
+
+def _require_project(path: Path) -> None:
+    """Exit friendly if there's no project here — WITHOUT creating anything.
+
+    ``project_lock`` mkdirs the directory and drops a ``.lock`` file, so calling
+    it for a typo'd/nonexistent project name litters a junk directory. Call this
+    before the lock so a missing project is reported without side effects."""
+    if not (Path(path) / "project.yaml").exists():
+        typer.secho(
+            f"No calibrator project at {Path(path)} (missing project.yaml). "
+            "Run `calibrate init` first.",
+            fg=typer.colors.RED,
+        )
+        raise typer.Exit(code=1)
+
+
+def _warn_unknown_keys(project: Project) -> None:
+    """Surface a typo'd top-level key (kept, but inert) — e.g. a misspelled
+    `engines:` silently leaves every role on the cloud default, which quietly
+    breaks the privacy of local-only mode. Warn so the typo doesn't hide."""
+    extra = getattr(project, "__pydantic_extra__", None) or {}
+    if not extra:
+        return
+    import difflib
+    known = list(Project.model_fields)
+    for key in extra:
+        near = difflib.get_close_matches(str(key), known, n=1, cutoff=0.7)
+        hint = f" — did you mean '{near[0]}'?" if near else ""
+        typer.secho(f"⚠ Unknown key {key!r} in project.yaml{hint} It is ignored; "
+                    "any real setting it was meant to be is using its default.",
+                    fg=typer.colors.YELLOW)
+
+
 def _load(path: Path) -> Project:
     try:
-        return load_project(path)
+        project = load_project(path)
+        _warn_unknown_keys(project)
+        return project
     except FileNotFoundError as exc:
         typer.secho(str(exc), fg=typer.colors.RED)
         raise typer.Exit(code=1)
@@ -102,6 +151,12 @@ def init(
     if len(name.strip()) > 120:
         typer.secho("Project name too long (max 120 characters).", fg=typer.colors.RED)
         raise typer.Exit(code=1)
+    if not goal or not goal.strip():
+        # The goal seeds gap analysis, the interview, and the spec — an empty one
+        # gives the whole pipeline nothing to work with.
+        typer.secho("--goal must not be empty: one sentence on what this AI should do.",
+                    fg=typer.colors.RED)
+        raise typer.Exit(code=1)
     if path is None:
         p = Path(name)
         if p.is_absolute() or len(p.parts) != 1 or p.parts[0] in ("..", "."):
@@ -123,7 +178,13 @@ def init(
         msg = exc.errors()[0].get("msg", "invalid project name") if exc.errors() else "invalid project name"
         typer.secho(f"Invalid project name: {msg}", fg=typer.colors.RED)
         raise typer.Exit(code=1)
-    with project_lock(target):  # atomic against a concurrent `init` of the same path
+    if target.exists() and not target.is_dir():
+        # A plain file sits where the project dir would go — project_lock's mkdir
+        # would raise a raw FileExistsError. Fail friendly instead.
+        typer.secho(f"A file named {target} already exists here — pick another project "
+                    "name, or use --path for a different location.", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    with project_lock(target, on_wait=_lock_wait_notice):  # atomic against a concurrent `init` of the same path
         if (target / "project.yaml").exists():
             typer.secho(f"A project already exists at {target}/", fg=typer.colors.RED)
             raise typer.Exit(code=1)
@@ -170,7 +231,7 @@ def import_(
         typer.secho(str(exc), fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
-    with project_lock(path):
+    with project_lock(path, on_wait=_lock_wait_notice):
         if (path / "project.yaml").exists():
             typer.secho(f"A project already exists at {path}/.", fg=typer.colors.RED)
             raise typer.Exit(code=1)
@@ -194,9 +255,13 @@ def import_(
 
 @app.command()
 def status(
-    path: Path = typer.Argument(Path("."), help="Project directory."),
+    path: Path = typer.Argument(Path("."), help="Project directory (or name, with --projects)."),
+    projects: Optional[Path] = typer.Option(
+        None, "--projects", help="Treat the argument as a project NAME under this root (serve/UI store)."
+    ),
 ) -> None:
     """Show a project's progress through the pipeline."""
+    path = _resolve_project(path, projects)
     project = _load(path)
     typer.secho(f"{project.name}", bold=True)
     typer.echo(f"  goal: {project.goal}")
@@ -246,7 +311,8 @@ def engines(
                     fg=typer.colors.RED)
         raise typer.Exit(code=1)
     if all_roles is not None or (role is not None and model is not None):
-        with project_lock(path):
+        _require_project(path)  # no junk .lock dir for a typo'd name
+        with project_lock(path, on_wait=_lock_wait_notice):
             project = _load(path)
             if all_roles is not None:
                 spec = _check_spec(all_roles)
@@ -336,7 +402,8 @@ def ingest(
 
     # Hold the project lock across load→mutate→save so a concurrent calibrate
     # process can't lose this run's results.
-    with project_lock(path):
+    _require_project(path)  # no junk .lock dir for a typo'd name
+    with project_lock(path, on_wait=_lock_wait_notice):
         project = _load(path)
         src = source or (Path(path) / "materials")
         if src.exists() and not src.is_dir():  # --source pointed at a file, not a dir
@@ -377,10 +444,22 @@ def ingest(
                     fg=typer.colors.YELLOW)
         for rel, reason in result.skipped:
             typer.echo(f"    · {rel} — {reason}")
-    if result.indexed is None:
-        typer.echo("  retrieval index: skipped (install the `rag` extra to enable)")
-    else:
+    if result.indexed is not None:
         typer.echo(f"  retrieval index: {result.indexed} chunk(s) embedded")
+    elif no_index:
+        typer.echo("  retrieval index: skipped (--no-index)")
+    else:
+        from . import rag
+        if not rag.index_available():
+            typer.secho(
+                "  ⚠ retrieval index NOT built — the `rag` extra isn't installed, so your\n"
+                "    exported AI will answer from the system prompt ONLY and will NOT be able\n"
+                "    to use these documents. To fix:  pip install 'ai-calibrator[rag]'  then re-run\n"
+                "    `calibrate ingest`.",
+                fg=typer.colors.YELLOW,
+            )
+        else:
+            typer.echo("  retrieval index: not built (no indexable chunks)")
 
     typer.secho(f"\n{result.gaps} gap(s) to resolve in the interview:", bold=True)
     for g in project.gaps:
@@ -403,7 +482,8 @@ def interview(
     from .engines import get_engine
     from .interview import generate_questions
 
-    with project_lock(path):
+    _require_project(path)  # no junk .lock dir for a typo'd name
+    with project_lock(path, on_wait=_lock_wait_notice):
         project = _load(path)
         if not project.gaps:
             typer.secho("No gaps yet — run `calibrate ingest` first.", fg=typer.colors.YELLOW)
@@ -415,13 +495,35 @@ def interview(
             except (RuntimeError, ValueError, NotImplementedError) as exc:
                 typer.secho(str(exc), fg=typer.colors.RED)
                 raise typer.Exit(code=1)
-            typer.echo(f"Generating questions with {engine.name} …")
+            typer.echo(f"Drafting one question per gap with {engine.name} "
+                       f"({len(project.gaps)} gap(s)) …")
+
+            # Persist after each gap so an engine timeout mid-interview keeps the
+            # questions already drafted instead of discarding the whole run.
+            def _progress(items, done, total):
+                project.interview = list(items)
+                save_project(project, path)
+                typer.echo(f"  · drafted {done}/{total} gap(s) …")
+
             try:
-                project.interview = generate_questions(project, engine)
+                project.interview = generate_questions(project, engine, on_progress=_progress)
             except Exception as exc:
-                typer.secho(f"Question generation failed: {exc}", fg=typer.colors.RED)
+                typer.secho(f"Question generation stopped after {len(project.interview)} "
+                            f"of {len(project.gaps)} gap(s): {exc}", fg=typer.colors.RED)
+                typer.echo("  Progress was saved — re-run `calibrate interview --regenerate` to finish.")
                 raise typer.Exit(code=1)
             save_project(project, path)
+
+            from .interview import uncovered_gaps
+            missing = uncovered_gaps(project, project.interview)
+            if missing:
+                typer.secho(
+                    f"⚠ Drafted {len(project.interview)} question(s) covering "
+                    f"{len(project.gaps) - len(missing)} of {len(project.gaps)} gap(s). "
+                    f"Uncovered: {', '.join(missing)}.\n"
+                    "  Re-run `calibrate interview --regenerate` to retry the missed gaps.",
+                    fg=typer.colors.YELLOW,
+                )
         questions = list(project.interview)  # snapshot; lock released before prompting
 
     pending = [it for it in questions if not it.answer]
@@ -456,7 +558,8 @@ def interview(
 
     # Apply under the lock against a FRESH load, so a concurrent edit isn't
     # clobbered by our stale in-memory copy (store.py load→mutate→save contract).
-    with project_lock(path):
+    _require_project(path)  # no junk .lock dir for a typo'd name
+    with project_lock(path, on_wait=_lock_wait_notice):
         project = _load(path)
         # Apply to EVERY item whose id matches — a dict-by-id would drop all but
         # the last of any duplicate-id items (possible via a hand-edited
@@ -478,7 +581,8 @@ def compile(path: Path = typer.Argument(Path("."), help="Project directory.")) -
     from .compile import compile_project
     from .engines import get_engine
 
-    with project_lock(path):
+    _require_project(path)  # no junk .lock dir for a typo'd name
+    with project_lock(path, on_wait=_lock_wait_notice):
         project = _load(path)
         if not any(it.answer for it in project.interview):
             typer.secho(
@@ -494,8 +598,24 @@ def compile(path: Path = typer.Argument(Path("."), help="Project directory.")) -
             raise typer.Exit(code=1)
 
         typer.echo(f"Compiling the spec + artifacts with {engine.name} …")
+        from .engines.base import EngineOutputError
         try:
             result = compile_project(project, engine, project_dir=path)
+        except EngineOutputError as exc:
+            # The compiler model produced unreadable output. If synthesis had
+            # already succeeded (it's the test-gen call that failed), the spec is
+            # captured on the project — save it so a retry resumes from tests.
+            raw = getattr(exc, "raw", "")
+            if raw:
+                err_path = atomic_write_text(Path(path) / "build" / "compile-error.txt", raw)
+            if project.spec is not None:
+                save_project(project, path)
+            typer.secho(f"Compile failed: {exc}", fg=typer.colors.RED)
+            if raw:
+                typer.echo(f"  The model's raw output was saved to {err_path} for inspection.")
+            if project.spec is not None:
+                typer.echo("  The synthesized spec was saved — re-run `calibrate compile` to retry test generation.")
+            raise typer.Exit(code=1)
         except Exception as exc:
             typer.secho(f"Compile failed: {exc}", fg=typer.colors.RED)
             raise typer.Exit(code=1)
@@ -524,11 +644,14 @@ def eval_(
     judge_passes: int = typer.Option(
         1, "--judge-passes", help="Grade each criterion N times and majority-vote (self-consistency)."
     ),
+    max_tests: Optional[int] = typer.Option(
+        None, "--max-tests", help="Grade only the first N tests (a smoke check on a slow model)."
+    ),
 ) -> None:
     """Run tests, grade against the rubric, score, and (optionally) refine."""
     from .engine_log import wrap_engine
     from .engines import get_engine
-    from .eval import low_confidence_results, next_run_id, run_eval, save_scorecard
+    from .eval import EvalInterrupted, low_confidence_results, next_run_id, run_eval, save_scorecard
 
     if not (1 <= rounds <= 100):  # bounds match the API (EvalBody), always validated
         typer.secho("--rounds must be between 1 and 100.", fg=typer.colors.RED)
@@ -539,8 +662,16 @@ def eval_(
     if not (1 <= judge_passes <= 9):
         typer.secho("--judge-passes must be between 1 and 9.", fg=typer.colors.RED)
         raise typer.Exit(code=1)
+    if max_tests is not None and max_tests < 1:
+        typer.secho("--max-tests must be >= 1.", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    if max_tests is not None and refine:
+        typer.secho("--max-tests can't be combined with --refine (the loop needs the full suite).",
+                    fg=typer.colors.RED)
+        raise typer.Exit(code=1)
 
-    with project_lock(path):
+    _require_project(path)  # no junk .lock dir for a typo'd name
+    with project_lock(path, on_wait=_lock_wait_notice):
         project = _load(path)
         if project.spec is None or not project.tests:
             typer.secho("Nothing to evaluate — run `calibrate compile` first.", fg=typer.colors.YELLOW)
@@ -556,10 +687,24 @@ def eval_(
             typer.secho(str(exc), fg=typer.colors.RED)
             raise typer.Exit(code=1)
 
+        n_tests = min(len(project.tests), max_tests) if max_tests else len(project.tests)
         typer.echo(
-            f"Evaluating {len(project.tests)} test(s): subject={subject.name}, judge={judge.name}"
-            + (f", refiner={refiner.name}" if refiner else "") + " …"
+            f"Evaluating {n_tests} test(s): subject={subject.name}, judge={judge.name}"
+            + (f", refiner={refiner.name}" if refiner else "")
+            + (f"  (--max-tests {max_tests})" if max_tests else "") + " …"
         )
+        # If the project has documents but no usable retrieval index, we're grading
+        # a prompt-only bot — say so, so a high pass rate isn't read as "it can use
+        # my docs" when it can't (the exported bot would answer blind).
+        from . import rag
+        if project.materials and not (rag.index_available()
+                                      and (Path(path) / "knowledge.lancedb").exists()):
+            typer.secho("  retrieval: OFF — grading a prompt-only bot (the `rag` extra / index "
+                        "is absent; your documents are NOT in play).", fg=typer.colors.YELLOW)
+
+        def _progress(done, total, test_id):
+            typer.echo(f"  · [{done}/{total}] {test_id} — subject + judge …")
+
         try:
             if refine:
                 from .compile import write_build_bundle
@@ -571,10 +716,22 @@ def eval_(
                 save_project(project, path)  # refined standards persist
                 write_build_bundle(project.spec, project.tests, path)  # refresh build/ to match
             else:
-                card = run_eval(project, subject, judge, run_id=next_run_id(path), judge_passes=judge_passes,
-                                project_dir=path)
+                try:
+                    card = run_eval(project, subject, judge, run_id=next_run_id(path),
+                                    judge_passes=judge_passes, project_dir=path,
+                                    max_tests=max_tests, on_progress=_progress)
+                except EvalInterrupted as interrupted:
+                    # Ctrl-C: save what completed so the run isn't wasted.
+                    save_scorecard(path, interrupted.partial)
+                    done = len(interrupted.partial.results)
+                    typer.secho(f"\n⚠ Interrupted — saved a PARTIAL scorecard "
+                                f"[{interrupted.partial.run_id}] with {done} graded test(s).",
+                                fg=typer.colors.YELLOW)
+                    raise typer.Exit(code=130)
                 save_scorecard(path, card)
                 cards = [card]
+        except (EvalInterrupted, typer.Exit):
+            raise  # a clean interrupt/exit must not be reframed as "Eval failed"
         except Exception as exc:
             typer.secho(f"Eval failed: {exc}", fg=typer.colors.RED)
             raise typer.Exit(code=1)
@@ -582,7 +739,7 @@ def eval_(
     for i, card in enumerate(cards, 1):
         graded = [r for r in card.results if r.criteria]
         passed = sum(1 for r in graded if r.passed)
-        typer.echo(f"  round {i} [{card.run_id}]: {pct(card.pass_rate)} ({passed}/{len(graded)} graded)")
+        typer.echo(f"  round {i} [{card.run_id}]: {pct(card.pass_rate)} ({passed}/{len(graded)} passed)")
 
     final = cards[-1]
     ok = final.pass_rate >= threshold
@@ -597,10 +754,12 @@ def eval_(
         return max(((c.weight or Weight.MEDIUM).numeric for c in r.criteria if not c.passed), default=0)
 
     for r in sorted([r for r in final.results if not r.passed], key=_worst, reverse=True)[:10]:
+        # Uniform format: each failed criterion as `id [weight]: reason`.
         why = "; ".join(
-            f"[{(c.weight or Weight.MEDIUM).value}] " + (c.rationale or c.criterion_id)
+            f"{c.criterion_id} [{(c.weight or Weight.MEDIUM).value}]: "
+            f"{c.rationale or 'no rationale'}"
             for c in r.criteria if not c.passed
-        ) or "no criteria"
+        ) or "no criteria graded"
         typer.echo(f"  · {r.test_id}: {why}")
 
     if judge_passes > 1:
@@ -647,10 +806,15 @@ def ci(
         typer.secho("--judge-passes must be between 1 and 9.", fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
-    with project_lock(path):
+    _require_project(path)  # no junk .lock dir for a typo'd name
+    with project_lock(path, on_wait=_lock_wait_notice):
         project = _load(path)
         if project.spec is None or not project.tests:
-            typer.secho("Nothing to gate — run `calibrate compile` (or `import`) first.", fg=typer.colors.YELLOW)
+            reason = "nothing to gate — run `calibrate compile` (or `import`) first"
+            if as_json:  # --json must emit JSON on EVERY exit path, not a bare string
+                typer.echo(_json.dumps({"ok": False, "gate": "error", "reason": reason}))
+            else:
+                typer.secho(f"Nothing to gate — {reason}.", fg=typer.colors.YELLOW)
             raise typer.Exit(code=1)
         # Factories: engines are acquired only if lint passes — a lint-broken spec
         # shouldn't demand credentials, and an engine problem shouldn't mask lint.
@@ -682,11 +846,14 @@ def ci(
 
 @app.command()
 def run(
-    path: Path = typer.Argument(Path("."), help="Project directory."),
+    path: Path = typer.Argument(Path("."), help="Project directory (or name, with --projects)."),
     host: str = typer.Option("127.0.0.1", "--host", help="Bind host (localhost by default)."),
     port: int = typer.Option(8600, "--port", help="Port."),
     guard: bool = typer.Option(False, "--guard", help="Re-check every live answer against the spec's deterministic checks."),
     force: bool = typer.Option(False, "--force", help="Serve even if the last `ci` gate FAILED."),
+    projects: Optional[Path] = typer.Option(
+        None, "--projects", help="Treat the argument as a project NAME under this root (serve/UI store)."
+    ),
 ) -> None:
     """Serve the calibrated AI itself — an OpenAI-compatible endpoint that won't boot on a red gate.
 
@@ -695,6 +862,7 @@ def run(
     from .ci import certification_status
 
     _validate_port(port)
+    path = _resolve_project(path, projects)
     project = _load(path)
     if project.spec is None:
         typer.secho("Nothing to serve — run `calibrate compile` (or `import`) first.", fg=typer.colors.YELLOW)
@@ -751,7 +919,8 @@ def absorb(path: Path = typer.Argument(Path("."), help="Project directory.")) ->
     from .compile import write_build_bundle
     from .flywheel import absorb_feedback
 
-    with project_lock(path):
+    _require_project(path)  # no junk .lock dir for a typo'd name
+    with project_lock(path, on_wait=_lock_wait_notice):
         project = _load(path)
         result = absorb_feedback(project, path)
         if result.ups + result.downs + result.skipped == 0:
@@ -787,7 +956,8 @@ def add_check(
     from .compile import write_build_bundle
     from .models import Check
 
-    with project_lock(path):
+    _require_project(path)  # no junk .lock dir for a typo'd name
+    with project_lock(path, on_wait=_lock_wait_notice):
         project = _load(path)
         if project.spec is None:
             typer.secho("Nothing to check — run `calibrate compile` (or `import`) first.", fg=typer.colors.YELLOW)
@@ -955,7 +1125,8 @@ def redteam(
         typer.secho("--max-probes must be between 1 and 50.", fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
-    with project_lock(path):
+    _require_project(path)  # no junk .lock dir for a typo'd name
+    with project_lock(path, on_wait=_lock_wait_notice):
         project = _load(path)
         if project.spec is None:
             typer.secho("Nothing to red-team — run `calibrate compile` first.", fg=typer.colors.YELLOW)
@@ -1109,7 +1280,8 @@ def drift(
         typer.secho("--tolerance must be a number between 0 and 1.", fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
-    with project_lock(path):
+    _require_project(path)  # no junk .lock dir for a typo'd name
+    with project_lock(path, on_wait=_lock_wait_notice):
         project = _load(path)
         if project.spec is None or not project.tests:
             typer.secho("Nothing to check — run `calibrate compile` first.", fg=typer.colors.YELLOW)
@@ -1285,7 +1457,8 @@ def teach(
         typer.secho(f"Inference failed: {exc}", fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
-    with project_lock(path):  # short critical section: reload → apply → save
+    _require_project(path)  # no junk .lock dir for a typo'd name
+    with project_lock(path, on_wait=_lock_wait_notice):  # short critical section: reload → apply → save
         project = _load(path)
         result = apply_learned(project, judged, learned)
         save_project(project, path)
@@ -1416,7 +1589,8 @@ def log_cmd(
     ),
 ) -> None:
     """Toggle local logging of engine decisions — the data the Engine-Trainer learns from."""
-    with project_lock(path):
+    _require_project(path)  # no junk .lock dir for a typo'd name
+    with project_lock(path, on_wait=_lock_wait_notice):
         project = _load(path)
         if enable is not None:
             project.log_interactions = enable
@@ -1543,7 +1717,8 @@ def examples_to_tests(path: Path = typer.Argument(Path("."), help="Project direc
     """Turn the spec's good/bad examples into regression tests — golden anchors. (no engine)"""
     from .compile import tests_from_examples, write_build_bundle
 
-    with project_lock(path):
+    _require_project(path)  # no junk .lock dir for a typo'd name
+    with project_lock(path, on_wait=_lock_wait_notice):
         project = _load(path)
         if project.spec is None:
             typer.secho("Nothing to convert — run `calibrate compile` (or `import`) first.", fg=typer.colors.YELLOW)
@@ -1638,12 +1813,31 @@ def finetune(
 
         base_card, cand_card = _scorecard_or_exit(path, baseline), _scorecard_or_exit(path, candidate)
         win = beats_baseline(base_card, cand_card)
-        typer.echo(f"baseline [{baseline}]: {pct(base_card.pass_rate)}    candidate [{candidate}]: {pct(cand_card.pass_rate)}")
+        typer.echo(f"baseline [{baseline}]: {pct(base_card.pass_rate)}    "
+                   f"candidate [{candidate}]: {pct(cand_card.pass_rate)}")
+
+        def _prov(card):
+            bits = [f"subject={card.subject}"] if card.subject else []
+            if card.judge:
+                bits.append(f"judge={card.judge}")
+            return "  (" + ", ".join(bits) + ")" if bits else ""
+        typer.echo(f"  baseline {_prov(base_card).strip()}")
+        typer.echo(f"  candidate {_prov(cand_card).strip()}")
+        # A comparison is only meaningful if the SAME judge graded both runs.
+        if base_card.judge and cand_card.judge and base_card.judge != cand_card.judge:
+            typer.secho(f"⚠ Different judges graded these runs ({base_card.judge} vs "
+                        f"{cand_card.judge}) — the comparison isn't apples-to-apples.",
+                        fg=typer.colors.YELLOW)
+        if base_card.partial or cand_card.partial:
+            typer.secho("⚠ One of these scorecards is PARTIAL (an interrupted or --max-tests "
+                        "run) — re-run a full eval before trusting the gate.", fg=typer.colors.YELLOW)
         if win:
             typer.secho("✓ ACCEPT — the fine-tune beats the configured baseline. Keep it.", fg=typer.colors.GREEN)
         else:
             typer.secho("✗ REJECT — it doesn't beat the baseline. Stay on configuration.", fg=typer.colors.YELLOW)
-        raise typer.Exit(code=0 if win else 1)
+        # 0 = accept, 2 = a clean REJECT (distinct from 1 = an error such as a
+        # missing/unreadable scorecard, which exits 1 via _scorecard_or_exit).
+        raise typer.Exit(code=0 if win else 2)
 
     if project.spec is None:
         typer.secho("Nothing to fine-tune — run `calibrate compile` first.", fg=typer.colors.YELLOW)
@@ -1680,6 +1874,8 @@ def finetune(
 def train(
     path: Path = typer.Argument(Path("."), help="Project directory."),
     base: Optional[str] = typer.Option(None, "--base", help="Open base model (e.g. Qwen/Qwen2.5-3B-Instruct)."),
+    epochs: Optional[int] = typer.Option(None, "--epochs", help="Training epochs (default: 5 for <50 examples, else 3)."),
+    max_steps: Optional[int] = typer.Option(None, "--max-steps", help="Cap total training steps (a fast smoke run)."),
     qlora: bool = typer.Option(False, "--qlora", help="Load the base in 4-bit (CUDA + bitsandbytes only) — fits a smaller GPU."),
     yes: bool = typer.Option(False, "--yes", "-y", help="Install missing training dependencies without prompting."),
 ) -> None:
@@ -1700,9 +1896,17 @@ def train(
         raise typer.Exit(code=1)
 
     # 1. build / refresh the bundle (dataset + recipe + train.py)
+    if epochs is not None and epochs < 1:
+        typer.secho("--epochs must be >= 1.", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    if max_steps is not None and max_steps < 1:
+        typer.secho("--max-steps must be >= 1.", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
     from .finetune import export_finetune
     try:
-        result = export_finetune(project, project_dir=path, base_model=base)
+        result = export_finetune(project, project_dir=path, base_model=base,
+                                 epochs=epochs, max_steps=max_steps)
     except ValueError as exc:
         typer.secho(str(exc), fg=typer.colors.RED)
         raise typer.Exit(code=1)
@@ -1714,6 +1918,15 @@ def train(
                     "prompt+RAG baseline — the gate may well REJECT this. Training anyway.",
                     fg=typer.colors.YELLOW)
     typer.echo(f"Bundle: {result.bundle_dir}/  ({result.examples} example(s), {result.method} on {result.base_model})")
+    # Estimate the work up front so a long run isn't a surprise. batch=1,
+    # grad-accum=8 → one optimizer step per 8 examples per epoch.
+    import yaml as _yaml
+    recipe = _yaml.safe_load((Path(result.bundle_dir) / "recipe.yaml").read_text(encoding="utf-8"))
+    if recipe.get("max_steps", -1) and recipe["max_steps"] > 0:
+        typer.echo(f"Plan: up to {recipe['max_steps']} step(s) (--max-steps cap).")
+    else:
+        est = max(1, (result.examples + 7) // 8) * int(recipe.get("epochs", 3))
+        typer.echo(f"Plan: ~{est} optimizer step(s) over {recipe.get('epochs')} epoch(s).")
 
     # 2. ensure the training stack (offered, not forced)
     need = [m for m in ("torch", "transformers", "trl", "peft", "datasets", "accelerate")
@@ -1773,28 +1986,44 @@ def examples(
     Most owners already HAVE examples (past replies, an FAQ, a spreadsheet). Import
     them in one shot: `calibrate examples --import my-qa.csv`. Column/key names are
     matched flexibly (input/question/prompt…, good_output/output/answer…)."""
-    from .examples_io import dedup_examples, examples_status, load_examples_file, merge_examples
+    from .examples_io import dedup_examples, examples_status, load_examples_report, merge_examples
 
     if _load(path).spec is None:
-        typer.secho("No spec yet — run `calibrate compile` first (examples attach to the behavior spec).",
-                    fg=typer.colors.YELLOW)
+        # Examples attach to the behavior spec, so the Guided loop must run first.
+        typer.secho(
+            "No spec yet — examples attach to the behavior spec, so build it first:\n"
+            "  calibrate ingest  →  calibrate interview  →  calibrate compile\n"
+            "then re-run this import.",
+            fg=typer.colors.YELLOW,
+        )
         raise typer.Exit(code=1)
 
     if import_file is not None:
         try:
-            new = load_examples_file(import_file)
+            report = load_examples_report(import_file)
         except ValueError as exc:
             typer.secho(str(exc), fg=typer.colors.RED)
             raise typer.Exit(code=1)
-        with project_lock(path):                 # load→mutate→save under the lock (fresh reload)
+        _require_project(path)  # no junk .lock dir for a typo'd name
+        with project_lock(path, on_wait=_lock_wait_notice):                 # load→mutate→save under the lock (fresh reload)
             project = _load(path)
-            added, skipped = merge_examples(project.spec, new)
+            added, skipped = merge_examples(project.spec, report.examples)
             save_project(project, path)
         msg = f"✓ Imported {added} example(s) from {import_file.name}"
         typer.secho(msg + (f" ({skipped} duplicate(s) skipped)." if skipped else "."), fg=typer.colors.GREEN)
+        if report.without_output:
+            typer.secho(f"  · {report.without_output} imported without an output "
+                        "(input only — add answers before fine-tuning).", fg=typer.colors.CYAN)
+        if report.skipped:
+            typer.secho(f"  ⚠ skipped {len(report.skipped)} malformed row(s):", fg=typer.colors.YELLOW)
+            for s in report.skipped[:10]:
+                typer.echo(f"    · {s}")
+            if len(report.skipped) > 10:
+                typer.echo(f"    · … and {len(report.skipped) - 10} more")
 
     if dedup:
-        with project_lock(path):
+        _require_project(path)  # no junk .lock dir for a typo'd name
+        with project_lock(path, on_wait=_lock_wait_notice):
             project = _load(path)
             removed = dedup_examples(project.spec)
             save_project(project, path)

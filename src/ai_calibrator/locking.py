@@ -27,7 +27,11 @@ import errno
 import os
 import time
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Callable, Literal, Optional
+
+
+class LockBusy(RuntimeError):
+    """A non-blocking acquire found the lock already held by another holder."""
 
 try:  # POSIX
     import fcntl
@@ -55,9 +59,17 @@ class FileLock:
     Blocks until the lock is acquired.
     """
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(
+        self, path: str | Path, *, blocking: bool = True,
+        on_wait: Optional[Callable[[], None]] = None,
+    ) -> None:
         self.path = Path(path)
         self._fd: Optional[int] = None
+        # blocking=False → raise LockBusy immediately if another holder has it.
+        # on_wait (blocking only) fires once, before we settle in to wait, so a
+        # caller can tell the user "locked — waiting…" instead of hanging silently.
+        self._blocking = blocking
+        self._on_wait = on_wait
 
     def acquire(self) -> "FileLock":
         # Not re-entrant (see class docstring). A second acquire on the same
@@ -72,7 +84,27 @@ class FileLock:
         self._fd = os.open(str(self.path), os.O_RDWR | os.O_CREAT, 0o600)
         try:
             if _BACKEND == "fcntl":
-                fcntl.flock(self._fd, fcntl.LOCK_EX)
+                if self._blocking:
+                    # Try once without blocking; if contended, notify then wait —
+                    # so a caller can surface "locked, waiting…" instead of a
+                    # silent multi-minute hang.
+                    try:
+                        fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except OSError as exc:
+                        if exc.errno not in (errno.EACCES, errno.EAGAIN):
+                            raise
+                        if self._on_wait is not None:
+                            self._on_wait()
+                        fcntl.flock(self._fd, fcntl.LOCK_EX)
+                else:
+                    try:
+                        fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except OSError as exc:
+                        if exc.errno in (errno.EACCES, errno.EAGAIN):
+                            os.close(self._fd)
+                            self._fd = None
+                            raise LockBusy(f"{self.path.parent.name} is locked by another process") from exc
+                        raise
             elif _BACKEND == "msvcrt":  # pragma: no cover - Windows only
                 # Lock one byte at offset 0. msvcrt.LK_LOCK is NOT truly
                 # blocking: it retries internally for ~10 s and then raises

@@ -78,7 +78,8 @@ def main() -> None:
 
     config = SFTConfig(
         output_dir=OUT,
-        num_train_epochs=5,
+        num_train_epochs=__EPOCHS__,
+        max_steps=__MAX_STEPS__,   # -1 = unbounded (epochs decide); >0 caps total steps
         learning_rate=2e-4,
         per_device_train_batch_size=1,
         gradient_accumulation_steps=8,
@@ -97,6 +98,39 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 '''
+
+
+_MERGE_PY = '''#!/usr/bin/env python3
+"""Merge the trained LoRA adapter into the base weights → ./__MERGE_OUT__/.
+
+    pip install "transformers>=4.46" peft torch
+    python merge.py
+
+Then serve the merged model (see README.md) and point the project's `subject`
+engine at it to run the prove-it gate."""
+import torch
+from peft import PeftModel
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+BASE = "__BASE__"
+ADAPTER = "__OUT__"
+MERGE_OUT = "__MERGE_OUT__"
+
+
+def main() -> None:
+    tokenizer = AutoTokenizer.from_pretrained(BASE)
+    base = AutoModelForCausalLM.from_pretrained(BASE, dtype=torch.float32)
+    merged = PeftModel.from_pretrained(base, ADAPTER).merge_and_unload()
+    merged.save_pretrained(MERGE_OUT)
+    tokenizer.save_pretrained(MERGE_OUT)
+    print(f"merged model saved to {MERGE_OUT}/")
+
+
+if __name__ == "__main__":
+    main()
+'''
+
+MERGE_OUT = "merged"
 
 
 @dataclass
@@ -132,14 +166,21 @@ def assemble_dataset(project: Project) -> list[dict]:
     return rows
 
 
-def recommend_recipe(n_examples: int, *, base_model: str | None = None) -> dict:
+def recommend_recipe(
+    n_examples: int, *, base_model: str | None = None,
+    epochs: int | None = None, max_steps: int | None = None,
+) -> dict:
     # base_model comes from `--base` (or a hand-edited binding) and gets baked
     # into the generated, later-executed train.py — validate it can't inject.
     base = safe_token(base_model or DEFAULT_BASE, "base model")
     return {
         "method": "lora",
         "base_model": base,
-        "epochs": 3 if n_examples >= 50 else 5,  # tiny sets → more passes
+        # epochs (and the optional step cap) are BAKED into the generated
+        # train.py, so editing them here actually changes training — an override
+        # from `--epochs` / `--max-steps` wins over the size-based default.
+        "epochs": epochs if epochs is not None else (3 if n_examples >= 50 else 5),
+        "max_steps": max_steps if max_steps is not None else -1,  # -1 = epochs decide
         "learning_rate": 2e-4,
         "lora_r": 16,
         "lora_alpha": 32,
@@ -179,10 +220,22 @@ smaller base: `calibrate finetune --base Qwen/Qwen2.5-3B-Instruct` (or `-1.5B-`)
 On Apple Silicon it trains on the MPS GPU (fp32; no bitsandbytes) — a 0.5–3B base
 fits comfortably; the 7B needs ~24GB+ unified memory.
 
-## 2. Prove it beats the baseline
-1. Serve the fine-tuned model (merge + `ollama create`, or an endpoint).
-2. Point the project's `subject` engine at it and run `calibrate eval`.
-3. Compare to your pre-fine-tune baseline scorecard:
+## 2. Serve the fine-tune (pick one)
+The adapter in `./{recipe["output_dir"]}/` is a LoRA delta — merge it into the
+base first:
+```bash
+python merge.py            # writes the merged model to ./{MERGE_OUT}/
+```
+Then either:
+- **Ollama:** convert to GGUF and `ollama create my-ft -f Modelfile` (with
+  `FROM ./{MERGE_OUT}`), then bind `calibrate engines <project> subject my-ft@ollama`.
+- **OpenAI-compatible endpoint:** `transformers serve ./{MERGE_OUT}` (or vLLM),
+  then `export OPENAI_BASE_URL=http://localhost:8000/v1` and bind
+  `calibrate engines <project> subject ./{MERGE_OUT}@openai`.
+
+## 3. Prove it beats the baseline
+1. With the fine-tune served + bound as `subject`, run `calibrate eval`.
+2. Compare to your pre-fine-tune baseline scorecard:
    ```bash
    calibrate finetune --gate --baseline <baseline-run> --candidate <new-run>
    ```
@@ -194,9 +247,12 @@ fits comfortably; the 7B needs ~24GB+ unified memory.
 """
 
 
-def export_finetune(project: Project, *, project_dir, base_model: str | None = None) -> FinetuneResult:
+def export_finetune(
+    project: Project, *, project_dir, base_model: str | None = None,
+    epochs: int | None = None, max_steps: int | None = None,
+) -> FinetuneResult:
     rows = assemble_dataset(project)
-    recipe = recommend_recipe(len(rows), base_model=base_model)
+    recipe = recommend_recipe(len(rows), base_model=base_model, epochs=epochs, max_steps=max_steps)
 
     out = Path(project_dir) / "finetune"
     out.mkdir(parents=True, exist_ok=True)
@@ -206,9 +262,20 @@ def export_finetune(project: Project, *, project_dir, base_model: str | None = N
         atomic_write_text(out / fn, content)
         files.append(f"finetune/{fn}")
 
+    train_py = (_TRAIN_PY
+                .replace("__BASE__", recipe["base_model"])
+                .replace("__OUT__", recipe["output_dir"])
+                .replace("__EPOCHS__", str(int(recipe["epochs"])))
+                .replace("__MAX_STEPS__", str(int(recipe["max_steps"]))))
+    merge_py = (_MERGE_PY
+                .replace("__BASE__", recipe["base_model"])
+                .replace("__OUT__", recipe["output_dir"])
+                .replace("__MERGE_OUT__", MERGE_OUT))
+
     _write("dataset.jsonl", "".join(json.dumps(r) + "\n" for r in rows))
     _write("recipe.yaml", yaml.safe_dump(recipe, sort_keys=False, allow_unicode=True))
-    _write("train.py", _TRAIN_PY.replace("__BASE__", recipe["base_model"]).replace("__OUT__", recipe["output_dir"]))
+    _write("train.py", train_py)
+    _write("merge.py", merge_py)
     _write("README.md", _readme(recipe, len(rows)))
 
     return FinetuneResult(

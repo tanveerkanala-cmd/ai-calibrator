@@ -32,6 +32,21 @@ def _client(tmp_path, engine_payload=None):
 def test_health(tmp_path):
     r = _client(tmp_path).get("/api/health")
     assert r.status_code == 200 and r.json()["ok"] is True
+    from pathlib import Path
+    assert Path(r.json()["projects_root"]).is_absolute()  # resolved, not a bare relative path
+
+
+def test_delete_project_and_material(tmp_path):
+    c = _client(tmp_path)
+    c.post("/api/projects", json={"name": "p", "goal": "g"})
+    # upload a material, then delete it
+    c.post("/api/projects/p/materials", files={"file": ("faq.txt", b"hello", "text/plain")})
+    assert c.request("DELETE", "/api/projects/p/materials/faq.txt").status_code == 200
+    assert c.request("DELETE", "/api/projects/p/materials/faq.txt").status_code == 404  # gone
+    # delete the project
+    assert c.request("DELETE", "/api/projects/p").status_code == 200
+    assert c.get("/api/projects/p").status_code == 404
+    assert c.request("DELETE", "/api/projects/nope").status_code == 404
 
 
 def test_create_list_get(tmp_path):
@@ -115,14 +130,17 @@ def test_export_requires_spec_then_succeeds(tmp_path):
     assert (tmp_path / "p" / "export" / "Modelfile").exists()
 
 
-def test_create_canonicalizes_name(tmp_path):
+def test_create_rejects_noncanonical_name(tmp_path):
     c = _client(tmp_path)
-    r = c.post("/api/projects", json={"name": "a/b cd", "goal": "g"})
-    assert r.status_code == 200
-    name = r.json()["name"]
-    assert "/" not in name  # sanitized
-    # the returned name is the canonical routing key
-    assert c.get(f"/api/projects/{name}").status_code == 200
+    # A name with a path separator is REJECTED (not silently rewritten into a
+    # different resource the client never asked for).
+    r = c.post("/api/projects", json={"name": "../evil", "goal": "g"})
+    assert r.status_code == 400 and "invalid project name" in r.json()["detail"]
+    assert c.get("/api/projects/evil").status_code == 404  # nothing was created
+    # a clean name works and the returned name is the canonical routing key
+    r2 = c.post("/api/projects", json={"name": "shop bot", "goal": "g"})
+    assert r2.status_code == 200 and r2.json()["name"] == "shop bot"
+    assert c.get("/api/projects/shop bot").status_code == 200
 
 
 def test_cross_origin_post_is_blocked(tmp_path):

@@ -252,19 +252,35 @@ def generate_tests(spec: BehaviorSpec, engine: Engine) -> list[TestCase]:
     out = require_object(engine.complete(prompt, system=_TESTS_SYSTEM, schema=TESTS_SCHEMA), "compiler")
     valid_ids = {c.id for c in spec.eval_criteria}
     tests: list[TestCase] = []
-    for i, t in enumerate(as_list(out.get("tests")), start=1):
+    for t in as_list(out.get("tests")):
         if not isinstance(t, dict) or not is_str(t.get("input")):
+            continue
+        # Skip a test input that's actually leaked prompt scaffolding rather than
+        # a natural user turn (small local models sometimes echo the grading
+        # format). Such tests are meaningless and inflate coverage.
+        if _looks_like_scaffolding(t["input"]):
             continue
         # Drop criterion ids the model invented that aren't in the spec; an
         # empty list then falls back to "grade against all criteria" in run_eval
         # rather than producing an ungradeable test.
         expects = [e for e in as_list(t.get("expects")) if e in valid_ids]
+        # Assign the id ourselves (t1, t2, …) — never trust a model-chosen id,
+        # which can collide or break the scheme (e.g. a bare "8").
         tests.append(
-            TestCase(id=str(t.get("id") or f"t{i}"), input=t["input"], expects=expects,
+            TestCase(id=f"t{len(tests) + 1}", input=t["input"], expects=expects,
                      notes=as_opt_str(t.get("notes")),
                      follow_ups=[f for f in as_list(t.get("follow_ups")) if is_str(f)])
         )
     return tests
+
+
+# Chat/grading-format markers that a genuine user-turn test input never contains
+# — their presence means the model echoed scaffolding instead of writing a probe.
+_SCAFFOLDING_MARKERS = ("AI OUTPUT:", "CRITERIA:", "Assistant:", "User:", "```", "INPUT:\n")
+
+
+def _looks_like_scaffolding(text: str) -> bool:
+    return any(m in text for m in _SCAFFOLDING_MARKERS)
 
 
 # --- Deterministic renders (compiled from the spec) -------------------------
@@ -423,8 +439,12 @@ def compile_project(project: Project, engine: Engine, *, project_dir: str | Path
     # preserved (e.g. red-team) criteria as valid `expects` targets.
     if prior is not None and spec is not prior:
         _merge_prior_spec(prior, spec)
-    tests = _pin_prior_tests(prior_tests, generate_tests(spec, engine))
+    # Persist the synthesized spec NOW, before the (separate) test-generation
+    # engine call. If test generation fails, the spec the compiler already
+    # produced is kept on the project so the caller can save it and a retry
+    # resumes from tests instead of redoing synthesis from scratch.
     project.spec = spec
+    tests = _pin_prior_tests(prior_tests, generate_tests(spec, engine))
     project.tests = tests
 
     files = write_build_bundle(spec, tests, project_dir)

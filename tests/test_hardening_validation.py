@@ -175,7 +175,10 @@ def test_openai_sdk_errors_are_friendly(monkeypatch):
         except Exception:
             return cls.__new__(cls)
 
-    for cls, expect in [(openai.NotFoundError, "404"), (openai.AuthenticationError, "401"),
+    # A bad key surfaces the actionable missing-credentials guidance (not "401");
+    # the other statuses still carry their code.
+    for cls, expect in [(openai.NotFoundError, "404"),
+                        (openai.AuthenticationError, "OPENAI_API_KEY"),
                         (openai.PermissionDeniedError, "403"), (openai.RateLimitError, "429")]:
         eng = OpenAIEngine.__new__(OpenAIEngine)
         eng.model = "gpt-x"; eng.name = "gpt-x@openai"; eng._client = _raiser(mk(cls))

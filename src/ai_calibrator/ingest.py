@@ -168,13 +168,30 @@ def extract_gaps(
         "Extract the facts and identify the gaps."
     )
     result = require_object(engine.complete(prompt, system=_EXTRACT_SYSTEM, schema=GAP_SCHEMA), "extractor")
-    facts = [str(f) for f in as_list(result.get("facts"))]
+    facts = [str(f) for f in as_list(result.get("facts")) if not _looks_like_shard(str(f))]
     gaps = [
         Gap(dimension=g["dimension"], why_it_matters=as_opt_str(g.get("why_it_matters")))
         for g in as_list(result.get("gaps"))
-        if isinstance(g, dict) and is_str(g.get("dimension"))
+        # Drop malformed engine output: a small local model sometimes leaks raw
+        # JSON fragments or prompt-format scaffolding as a "gap". Those must never
+        # reach the user's gap list (or get persisted / fed into the interview).
+        if isinstance(g, dict) and is_str(g.get("dimension")) and not _looks_like_shard(g["dimension"])
     ]
     return facts, gaps
+
+
+# Markers of leaked JSON / prompt scaffolding that a clean natural-language gap
+# label or fact never contains — used to reject malformed engine output.
+_SHARD_MARKERS = ("```", "{", "}", '":', '["', "]}", "gap_content", "all-important-fields", "---")
+
+
+def _looks_like_shard(text: str) -> bool:
+    """True if ``text`` looks like a raw JSON/prompt shard rather than clean prose
+    (a code fence, brace/bracket soup, or an obviously truncated fragment)."""
+    t = text.strip()
+    if not t or len(t) > 200:  # a real gap dimension is a short phrase
+        return True
+    return any(m in t for m in _SHARD_MARKERS)
 
 
 def ingest_project(

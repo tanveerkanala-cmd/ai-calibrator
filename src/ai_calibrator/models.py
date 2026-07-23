@@ -194,6 +194,16 @@ class TestResult(PreservingModel):
 class Scorecard(PreservingModel):
     run_id: str
     results: list[TestResult] = Field(default_factory=list)
+    # Provenance — which models produced this run, and when. Recorded so the
+    # prove-it gate can verify a baseline and candidate were graded by the same
+    # judge (and name the subject each used) instead of comparing blind.
+    subject: str | None = None
+    judge: str | None = None
+    created_at: str | None = None
+    tool_version: str | None = None
+    # True when the run was cut short (Ctrl-C / max_tests) — a partial scorecard
+    # must never be mistaken for a full pass.
+    partial: bool = False
 
     @field_validator("run_id")
     @classmethod
@@ -261,6 +271,42 @@ _WINDOWS_RESERVED_NAMES = frozenset(
 )
 
 
+def validate_project_name(v: object) -> str:
+    """Validate + normalize a project name (it becomes a directory component).
+
+    Shared by the model validator, the CLI, and the API so a name is checked the
+    same way everywhere — and rejected rather than silently rewritten into a
+    different resource. Returns the stripped name, or raises ``ValueError`` with
+    an actionable message."""
+    if not isinstance(v, str) or not v.strip():
+        raise ValueError("project name must be a non-empty string")
+    v = v.strip()
+    if len(v) > 120:
+        # the name becomes a directory name; filesystems cap components at
+        # ~255 bytes — fail here with a clear message, not an OSError later
+        raise ValueError("project name too long (max 120 characters)")
+    # The name becomes a directory component. Reject path separators, the
+    # Windows-reserved characters (\ / : * ? " < > |), control chars, and the
+    # . / .. specials — so a name valid on POSIX can't create an invalid path
+    # (or traverse) on Windows, and vice versa. Fail here, cross-platform,
+    # rather than as a confusing OSError at mkdir time.
+    bad = set('/\\:*?"<>|') & set(v)
+    if bad or any(ord(c) < 32 for c in v):
+        raise ValueError(
+            "project name may not contain path separators or any of \\ / : * ? \" < > | "
+            "(it becomes a folder name); use letters, digits, spaces, - or _"
+        )
+    if v in (".", ".."):
+        raise ValueError("project name cannot be '.' or '..'")
+    if v[-1] in " .":  # Windows silently strips a trailing space/dot from a path component
+        raise ValueError("project name may not end with a space or '.'")
+    # Windows reserved DEVICE names (case-insensitive, with or without an
+    # extension) can't be a folder there — reject cross-platform.
+    if v.split(".", 1)[0].upper() in _WINDOWS_RESERVED_NAMES:
+        raise ValueError(f"project name {v!r} is a reserved device name on Windows — pick another")
+    return v  # normalized: stripped, <= 120, filesystem-safe on every platform
+
+
 class Project(PreservingModel):
     name: str
     goal: str
@@ -269,33 +315,7 @@ class Project(PreservingModel):
     @field_validator("name")
     @classmethod
     def _nonempty_name(cls, v: str) -> str:
-        if not isinstance(v, str) or not v.strip():
-            raise ValueError("project name must be a non-empty string")
-        v = v.strip()
-        if len(v) > 120:
-            # the name becomes a directory name; filesystems cap components at
-            # ~255 bytes — fail here with a clear message, not an OSError later
-            raise ValueError("project name too long (max 120 characters)")
-        # The name becomes a directory component. Reject path separators, the
-        # Windows-reserved characters (\ / : * ? " < > |), control chars, and the
-        # . / .. specials — so a name valid on POSIX can't create an invalid path
-        # (or traverse) on Windows, and vice versa. Fail here, cross-platform,
-        # rather than as a confusing OSError at mkdir time.
-        bad = set('/\\:*?"<>|') & set(v)
-        if bad or any(ord(c) < 32 for c in v):
-            raise ValueError(
-                "project name may not contain path separators or any of \\ / : * ? \" < > | "
-                "(it becomes a folder name); use letters, digits, spaces, - or _"
-            )
-        if v in (".", ".."):
-            raise ValueError("project name cannot be '.' or '..'")
-        if v[-1] in " .":  # Windows silently strips a trailing space/dot from a path component
-            raise ValueError("project name may not end with a space or '.'")
-        # Windows reserved DEVICE names (case-insensitive, with or without an
-        # extension) can't be a folder there — reject cross-platform.
-        if v.split(".", 1)[0].upper() in _WINDOWS_RESERVED_NAMES:
-            raise ValueError(f"project name {v!r} is a reserved device name on Windows — pick another")
-        return v  # normalized: stripped, <= 120, filesystem-safe on every platform
+        return validate_project_name(v)
     materials: list[Material] = Field(default_factory=list)
     facts: list[str] = Field(default_factory=list)
     gaps: list[Gap] = Field(default_factory=list)

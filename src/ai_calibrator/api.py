@@ -2,7 +2,8 @@
 
 A thin FastAPI layer: every endpoint maps to a core pipeline call, so the same
 logic that powers the CLI also drives the web/desktop UI. Engine-dependent
-endpoints build the project's configured engine and surface failures as HTTP 400.
+endpoints build the project's configured engine; an upstream engine failure
+surfaces as 502/504 (see ``_engine_http_error``), a bad request as 400.
 
 Run with `calibrate serve`. Needs the `api` extra:  pip install -e '.[api]'
 """
@@ -160,13 +161,36 @@ def _engine_factory():
     return get_engine
 
 
+def _engine_http_error(exc: Exception) -> "HTTPException":
+    """Map an engine/provider failure to the right HTTP status class.
+
+    An upstream engine timeout is a gateway timeout (504) and any other engine /
+    provider failure is a bad gateway (502) — NOT a client 400, so an API client
+    branching on 4xx-vs-5xx retries/blames correctly. Anything that isn't an
+    engine failure stays a 400 (a genuinely bad request)."""
+    from .engines.base import EngineError, EngineTimeout
+    if isinstance(exc, EngineTimeout):
+        return HTTPException(504, str(exc))
+    if isinstance(exc, EngineError):
+        return HTTPException(502, str(exc))
+    return HTTPException(400, str(exc))
+
+
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB cap on material uploads
+
+# How long a request waits for a contended project lock before returning 423.
+# Long enough that quick concurrent writes serialize cleanly; short enough that a
+# request behind a minutes-long engine op fails fast instead of hanging.
+_LOCK_WAIT_SECONDS = 10.0
 
 
 def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | None = None) -> "FastAPI":
-    root = Path(projects_root) if projects_root else default_projects_root()
+    # Resolve to an absolute path so the banner / health endpoint are unambiguous
+    # from any working directory (a bare relative "projects" reads as a mystery).
+    root = (Path(projects_root) if projects_root else default_projects_root()).resolve()
     root.mkdir(parents=True, exist_ok=True)
-    app = FastAPI(title="AI Calibrator")
+    from . import __version__
+    app = FastAPI(title="AI Calibrator", version=__version__)
 
     # Always enforced — never fully disabled. Shared with `calibrate run`
     # (runtime.py); see webguard.py for the threat model.
@@ -190,12 +214,14 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         return JSONResponse(status_code=422, content={"detail": _san(jsonable_encoder(exc.errors()))})
 
     def _safe(name: str) -> str:
-        s = "".join(c for c in name if c.isalnum() or c in "-_ ").strip()
-        if not s:
-            raise HTTPException(400, "invalid project name")
-        if len(s) > 120:  # names become directory names — filesystems cap ~255 bytes
-            raise HTTPException(400, "project name too long (max 120 characters)")
-        return s
+        # Reject an invalid name rather than silently rewriting it — otherwise a
+        # client that POSTs "../evil" gets back a project called "evil" and every
+        # follow-up call keyed on its submitted name 404s. Same rules as the CLI.
+        from .models import validate_project_name
+        try:
+            return validate_project_name(name)
+        except ValueError as exc:
+            raise HTTPException(400, f"invalid project name: {exc}")
 
     def _dir(name: str) -> Path:
         return root / _safe(name)
@@ -218,11 +244,31 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         on the same project (which would lose updates or collide on run ids).
         404s before locking, so it never creates a stray dir for a missing
         project."""
+        import time
+
+        from .locking import LockBusy
         d = _dir(name)
         if not (d / "project.yaml").exists():
             raise HTTPException(404, f"no project {name!r}")
-        with project_lock(d):
+        # Poll the lock briefly rather than blocking indefinitely: quick concurrent
+        # writes (answers, engine rebinds) serialize within the window and don't
+        # lose updates, but a request stuck behind a multi-minute engine op fails
+        # fast with 423 instead of hanging the connection for minutes.
+        lock = project_lock(d, blocking=False)
+        deadline = time.monotonic() + _LOCK_WAIT_SECONDS
+        while True:
+            try:
+                lock.acquire()
+                break
+            except LockBusy:
+                if time.monotonic() >= deadline:
+                    raise HTTPException(
+                        423, f"an operation is already in progress on project {name!r} — retry shortly")
+                time.sleep(0.05)
+        try:
             yield d
+        finally:
+            lock.release()
 
     def _state(p: Project) -> dict:
         return {
@@ -240,7 +286,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
 
     @app.get("/api/health")
     def health():
-        return {"ok": True, "projects_root": str(root)}
+        return {"ok": True, "projects_root": str(root)}  # absolute (root is resolved)
 
     @app.get("/api/auth")
     def auth():
@@ -271,6 +317,33 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
     @app.get("/api/projects/{name}")
     def get_project(name: str):
         return _state(_load(name))
+
+    @app.delete("/api/projects/{name}")
+    def delete_project(name: str):
+        """Remove a project the web UI / API created (a mistyped or throwaway one)
+        — the delete half of the CRUD surface. Serialized via the project lock so
+        it can't race an in-flight operation on the same project."""
+        import shutil
+        d = _dir(name)
+        if not (d / "project.yaml").exists():
+            raise HTTPException(404, f"no project {name!r}")
+        with project_lock(d):
+            shutil.rmtree(d, ignore_errors=True)
+        return {"deleted": name}
+
+    @app.delete("/api/projects/{name}/materials/{filename}")
+    def delete_material(name: str, filename: str):
+        """Remove one uploaded material file. The filename is basename-only, so it
+        can't traverse outside the project's materials/ directory."""
+        d = _dir(name)
+        if not (d / "project.yaml").exists():
+            raise HTTPException(404, f"no project {name!r}")
+        target = d / "materials" / Path(filename).name
+        if not target.is_file():
+            raise HTTPException(404, f"no material {filename!r}")
+        with project_lock(d):
+            target.unlink(missing_ok=True)
+        return {"deleted": filename}
 
     @app.post("/api/projects/{name}/materials")
     async def upload_material(name: str, file: UploadFile):
@@ -311,14 +384,14 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             project = _load(name)
             materials = d / "materials"
             if not materials.exists() or not any(materials.iterdir()):
-                raise HTTPException(400, "No materials to ingest — upload documents first.")
+                raise HTTPException(400, f"No materials to ingest — POST files to /api/projects/{name}/materials first.")
             try:
                 engine = make_engine(project.engines.extractor)
                 result = ingest_project(project, materials, engine, project_dir=d)
             except HTTPException:
                 raise
             except Exception as exc:
-                raise HTTPException(400, str(exc))
+                raise _engine_http_error(exc)
             save_project(project, d)
         return {
             "materials": result.materials, "gaps": result.gaps,
@@ -329,20 +402,26 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
 
     @app.post("/api/projects/{name}/interview")
     def interview(name: str, make_engine=Depends(_engine_factory)):
-        from .interview import generate_questions
+        from .interview import generate_questions, uncovered_gaps
         with _locked(name) as d:
             project = _load(name)
             if not project.gaps:
-                raise HTTPException(400, "No gaps yet — run `calibrate ingest` first.")
+                raise HTTPException(400, f"No gaps yet — POST /api/projects/{name}/ingest first.")
             try:
                 engine = make_engine(project.engines.interviewer)
-                project.interview = generate_questions(project, engine)
+
+                # Persist after each gap so a timeout keeps partial progress.
+                def _progress(items, done, total):
+                    project.interview = list(items)
+                    save_project(project, d)
+
+                project.interview = generate_questions(project, engine, on_progress=_progress)
             except HTTPException:
                 raise
             except Exception as exc:
-                raise HTTPException(400, str(exc))
+                raise _engine_http_error(exc)
             save_project(project, d)
-        return _state(project)
+        return {**_state(project), "uncovered_gaps": uncovered_gaps(project, project.interview)}
 
     @app.post("/api/projects/{name}/answers")
     def submit_answers(name: str, body: AnswersBody):
@@ -367,7 +446,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         with _locked(name) as d:
             project = _load(name)
             if project.spec is None:
-                raise HTTPException(400, "No spec yet — run compile first (examples attach to the spec).")
+                raise HTTPException(400, f"No spec yet — POST /api/projects/{name}/compile first (examples attach to the spec).")
             added, skipped = merge_examples(project.spec, new, dedup=body.dedup)
             save_project(project, d)
         return {"added": added, "skipped": skipped, **examples_status(_load(name).spec)}
@@ -378,14 +457,14 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         with _locked(name) as d:
             project = _load(name)
             if not any(it.answer for it in project.interview):
-                raise HTTPException(400, "No interview answers yet — run `calibrate interview` first.")
+                raise HTTPException(400, f"No interview answers yet — POST /api/projects/{name}/interview, then submit answers.")
             try:
                 engine = make_engine(project.engines.compiler)
                 result = compile_project(project, engine, project_dir=d)
             except HTTPException:
                 raise
             except Exception as exc:
-                raise HTTPException(400, str(exc))
+                raise _engine_http_error(exc)
             save_project(project, d)
         return {"criteria": result.criteria, "tests": result.tests,
                 "files": result.files, "state": _state(project)}
@@ -397,7 +476,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         with _locked(name) as d:
             project = _load(name)
             if project.spec is None or not project.tests:
-                raise HTTPException(400, "Nothing here yet — run `calibrate compile` (or `import`) first.")
+                raise HTTPException(400, f"Nothing here yet — compile this project first (POST /api/projects/{name}/compile, or /import).")
             log_on = project.log_interactions
             try:
                 subject = make_engine(project.engines.subject)
@@ -419,7 +498,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             except HTTPException:
                 raise
             except Exception as exc:
-                raise HTTPException(400, str(exc))
+                raise _engine_http_error(exc)
         return {"rounds": [
             {"run_id": c.run_id, "pass_rate": c.pass_rate, "weighted_score": c.weighted_score,
              "results": [r.model_dump(mode="json") for r in c.results]}
@@ -433,7 +512,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         with _locked(name) as d:
             project = _load(name)
             if project.spec is None or not project.tests:
-                raise HTTPException(400, "Nothing here yet — run `calibrate compile` (or `import`) first.")
+                raise HTTPException(400, f"Nothing here yet — compile this project first (POST /api/projects/{name}/compile, or /import).")
             try:
                 # factories: engines resolve only after the lint stage passes
                 subject = lambda: make_engine(project.engines.subject)  # noqa: E731
@@ -445,7 +524,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             except HTTPException:
                 raise
             except Exception as exc:
-                raise HTTPException(400, str(exc))
+                raise _engine_http_error(exc)
         return ci_dict(result)
 
     @app.post("/api/projects/{name}/export")
@@ -453,7 +532,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         from .export import export_bundle
         project = _load(name)
         if project.spec is None:
-            raise HTTPException(400, "Nothing here yet — run `calibrate compile` (or `import`) first.")
+            raise HTTPException(400, f"Nothing here yet — compile this project first (POST /api/projects/{name}/compile, or /import).")
         try:
             result = export_bundle(project, project_dir=_dir(name))
         except ValueError as exc:
@@ -467,7 +546,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         with _locked(name) as d:
             project = _load(name)
             if project.spec is None or not project.tests:
-                raise HTTPException(400, "Nothing here yet — run `calibrate compile` (or `import`) first.")
+                raise HTTPException(400, f"Nothing here yet — compile this project first (POST /api/projects/{name}/compile, or /import).")
             specs = body.models or list(DEFAULT_LADDER)
             try:
                 judge = make_engine(project.engines.judge)
@@ -476,7 +555,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             except HTTPException:
                 raise
             except Exception as exc:
-                raise HTTPException(400, str(exc))
+                raise _engine_http_error(exc)
         return rightsize_dict(report)
 
     @app.post("/api/projects/{name}/try")
@@ -488,7 +567,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         from .eval import conversation_prompt
         project = _load(name)
         if project.spec is None:
-            raise HTTPException(400, "Nothing here yet — run `calibrate compile` (or `import`) first.")
+            raise HTTPException(400, f"Nothing here yet — compile this project first (POST /api/projects/{name}/compile, or /import).")
         try:
             subject = make_engine(project.engines.subject)
             # Augment with retrieved knowledge when indexed, so the workbench "try"
@@ -499,7 +578,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         except HTTPException:
             raise
         except Exception as exc:
-            raise HTTPException(400, str(exc))
+            raise _engine_http_error(exc)
         return {"turns": [body.message], "output": output}
 
     @app.post("/api/projects/{name}/feedback")
@@ -549,7 +628,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         with _locked(name) as d:
             project = _load(name)
             if project.spec is None:
-                raise HTTPException(400, "Nothing here yet — run `calibrate compile` (or `import`) first.")
+                raise HTTPException(400, f"Nothing here yet — compile this project first (POST /api/projects/{name}/compile, or /import).")
             new = tests_from_examples(project.spec, project.tests)
             project.tests.extend(new)
             save_project(project, d)
@@ -561,7 +640,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         from .interop import to_promptfoo
         project = _load(name)
         if project.spec is None or not project.tests:
-            raise HTTPException(400, "Nothing here yet — run `calibrate compile` (or `import`) first.")
+            raise HTTPException(400, f"Nothing here yet — compile this project first (POST /api/projects/{name}/compile, or /import).")
         return {"config": to_promptfoo(project)}
 
     @app.get("/api/projects/{name}/judge-check")
@@ -573,7 +652,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         d = _dir(name)
         rid = latest_run_id(d)
         if not rid:
-            raise HTTPException(400, "no scorecard — run eval first")
+            raise HTTPException(400, f"no scorecard — POST /api/projects/{name}/eval first")
         try:
             card = load_scorecard(d, rid)
         except (FileNotFoundError, ValueError, ValidationError) as exc:
@@ -589,7 +668,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         d = _dir(name)
         rid = body.run_id or latest_run_id(d)
         if not rid:
-            raise HTTPException(400, "no scorecard — run eval first")
+            raise HTTPException(400, f"no scorecard — POST /api/projects/{name}/eval first")
         try:
             card = load_scorecard(d, rid)
             save_labels(d, rid, body.labels)  # persist: feeds train-engine as ground truth
@@ -608,7 +687,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         d = _dir(name)
         rid = latest_run_id(d)
         if not rid:
-            raise HTTPException(400, "no scorecard — run eval first")
+            raise HTTPException(400, f"no scorecard — POST /api/projects/{name}/eval first")
         try:
             outs = outputs_of(load_scorecard(d, rid))
         except (FileNotFoundError, ValueError, ValidationError) as exc:
@@ -628,7 +707,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             raise HTTPException(400, "no golden — POST /snapshot to pin one first")
         rid = latest_run_id(d)
         if not rid:
-            raise HTTPException(400, "no scorecard — run eval first")
+            raise HTTPException(400, f"no scorecard — POST /api/projects/{name}/eval first")
         try:
             card = load_scorecard(d, rid)
         except (FileNotFoundError, ValueError, ValidationError) as exc:
@@ -640,7 +719,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         from .lint import lint_dict, lint_spec, lint_unknown_fields
         project = _load(name)
         if project.spec is None:
-            raise HTTPException(400, "Nothing here yet — run `calibrate compile` (or `import`) first.")
+            raise HTTPException(400, f"Nothing here yet — compile this project first (POST /api/projects/{name}/compile, or /import).")
         report = lint_spec(project.spec, project.tests)
         report.issues.extend(lint_unknown_fields(project))
         return lint_dict(report)
@@ -650,7 +729,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         from .coverage import analyze_coverage, coverage_dict
         project = _load(name)
         if project.spec is None:
-            raise HTTPException(400, "Nothing here yet — run `calibrate compile` (or `import`) first.")
+            raise HTTPException(400, f"Nothing here yet — compile this project first (POST /api/projects/{name}/compile, or /import).")
         return coverage_dict(analyze_coverage(project.spec, project.tests))
 
     @app.put("/api/projects/{name}/engines")
@@ -702,7 +781,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         from .report import render_report, report_dict
         project = _load(name)
         if project.spec is None:
-            raise HTTPException(400, "Nothing here yet — run `calibrate compile` (or `import`) first.")
+            raise HTTPException(400, f"Nothing here yet — compile this project first (POST /api/projects/{name}/compile, or /import).")
         cov = analyze_coverage(project.spec, project.tests)
         latest = None
         rid = latest_run_id(_dir(name))
@@ -720,10 +799,10 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         with _locked(name) as d:
             project = _load(name)
             if project.spec is None or not project.tests:
-                raise HTTPException(400, "Nothing here yet — run `calibrate compile` (or `import`) first.")
+                raise HTTPException(400, f"Nothing here yet — compile this project first (POST /api/projects/{name}/compile, or /import).")
             base_id = body.baseline or latest_run_id(d)
             if not base_id:
-                raise HTTPException(400, "no baseline scorecard — run eval first")
+                raise HTTPException(400, f"no baseline scorecard — POST /api/projects/{name}/eval first")
             try:
                 base_card = load_scorecard(d, base_id)
                 subject = make_engine(project.engines.subject)
@@ -735,7 +814,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             except FileNotFoundError as exc:
                 raise HTTPException(400, str(exc))
             except Exception as exc:
-                raise HTTPException(400, str(exc))
+                raise _engine_http_error(exc)
         return drift_dict(report)
 
     @app.post("/api/projects/{name}/redteam")
@@ -745,7 +824,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         with _locked(name) as d:
             project = _load(name)
             if project.spec is None:
-                raise HTTPException(400, "Nothing here yet — run `calibrate compile` (or `import`) first.")
+                raise HTTPException(400, f"Nothing here yet — compile this project first (POST /api/projects/{name}/compile, or /import).")
             try:
                 generator = make_engine(project.engines.compiler)
                 subject = make_engine(project.engines.subject)
@@ -760,7 +839,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             except HTTPException:
                 raise
             except Exception as exc:
-                raise HTTPException(400, str(exc))
+                raise _engine_http_error(exc)
         return {**redteam_dict(report), "tests_added": added}
 
     @app.post("/api/projects/{name}/teach/draft")
@@ -774,7 +853,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         except HTTPException:
             raise
         except Exception as exc:
-            raise HTTPException(400, str(exc))
+            raise _engine_http_error(exc)
         return {"candidates": [{"id": c.id, "input": c.input, "output": c.output} for c in candidates]}
 
     @app.post("/api/projects/{name}/teach/learn")
@@ -797,7 +876,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             except HTTPException:
                 raise
             except Exception as exc:
-                raise HTTPException(400, str(exc))
+                raise _engine_http_error(exc)
         return {"standards_added": result.standards_added, "do_not_added": result.do_not_added,
                 "standards": result.standards, "do_not": result.do_not, "state": _state(project)}
 
@@ -834,7 +913,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             except HTTPException:
                 raise
             except Exception as exc:
-                raise HTTPException(400, str(exc))
+                raise _engine_http_error(exc)
         return _state(project)
 
     @app.post("/api/diff")
@@ -856,7 +935,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         except HTTPException:
             raise
         except Exception as exc:
-            raise HTTPException(400, str(exc))
+            raise _engine_http_error(exc)
         return {
             "stakeholders": list(named),
             "statements": [{"idx": s.idx, "text": s.text, "kind": s.kind, "stakeholder": s.stakeholder}

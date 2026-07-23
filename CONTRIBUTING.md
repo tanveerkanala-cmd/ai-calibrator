@@ -11,8 +11,14 @@ is out of scope.
 ```bash
 git clone https://github.com/tanveerkanala-cmd/ai-calibrator.git && cd ai-calibrator
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -e '.[dev]'    # pytest, ruff, mypy, bandit + the api extra for API tests
+pip install -e '.[all,dev]'    # every engine + web UI + docs + the test/lint tools
 ```
+
+The **full** suite needs `[all,dev]`: several test modules `importorskip` when
+their optional library is absent, so on `[dev]` alone the entire RAG layer (plus
+a few OpenAI / DOCX tests) is silently skipped rather than run. `[dev]` is fine
+for a quick inner-loop run — just know it doesn't cover retrieval. (`[all]` pulls
+a multi-GB ML stack via `rag`; skip it only if you're not touching those paths.)
 
 No API keys are needed for development: the entire test suite runs against
 deterministic fake engines. To exercise a real model locally, install
@@ -21,11 +27,12 @@ deterministic fake engines. To exercise a real model locally, install
 ## Before you open a PR
 
 ```bash
-ruff check .    # must be clean (pyflakes, bugbear, syntax)
-pytest -q       # must be all green — and runs in a few seconds
+ruff check .              # must be clean (pyflakes, bugbear, syntax)
+pytest -q                 # must be all green — and runs in a few seconds
 ```
 
-These two are what CI enforces. `mypy` ships in the `dev` extra as an *advisory*
+These two are what CI enforces (CI also runs the suite once with `[all,dev]` so
+the retrieval/OpenAI/DOCX paths are exercised on every push). `mypy` ships in the `dev` extra as an *advisory*
 tool — the tree is not yet mypy-clean, so a full run reports pre-existing errors
 you did not cause. Don't treat it as a gate; do keep new code annotated.
 

@@ -9,12 +9,19 @@ from __future__ import annotations
 
 from typing import Any
 
-from .base import Engine, call_json
+from .base import (
+    Engine,
+    EngineAuthError,
+    EngineError,
+    EngineTimeout,
+    call_json,
+    missing_credentials_message,
+)
 
 
-def _friendly_anthropic_error(exc: Exception, name: str) -> RuntimeError | None:
-    """Map a raw anthropic-SDK exception to an actionable RuntimeError, or None if
-    it is not an Anthropic API error (then the caller re-raises the original).
+def _friendly_anthropic_error(exc: Exception, name: str) -> EngineError | None:
+    """Map a raw anthropic-SDK exception to an actionable EngineError, or None if
+    it is not an Anthropic SDK error (then the caller re-raises the original).
     Mirrors the OpenAI adapter so the DEFAULT cloud engine never surfaces a raw
     SDK traceback on a bad key / model / rate limit."""
     try:
@@ -22,21 +29,25 @@ def _friendly_anthropic_error(exc: Exception, name: str) -> RuntimeError | None:
     except ImportError:  # pragma: no cover
         return None
     if isinstance(exc, anthropic.AuthenticationError):
-        return RuntimeError(f"Anthropic rejected the credentials (401) for {name}. "
-                            "Set ANTHROPIC_API_KEY or run `calibrate login claude`.")
+        return EngineAuthError(missing_credentials_message("anthropic", name))
     if isinstance(exc, anthropic.PermissionDeniedError):
-        return RuntimeError(f"Anthropic denied access (403) for {name} — your key may lack this model.")
+        return EngineError(f"Anthropic denied access (403) for {name} — your key may lack this model.")
     if isinstance(exc, anthropic.NotFoundError):
-        return RuntimeError(f"Anthropic has no such model for {name} (404), or your key lacks access.")
+        return EngineError(f"Anthropic has no such model for {name} (404), or your key lacks access.")
     if isinstance(exc, anthropic.RateLimitError):
-        return RuntimeError(f"Anthropic rate limit or quota hit (429) for {name} — slow down or check billing.")
+        return EngineError(f"Anthropic rate limit or quota hit (429) for {name} — slow down or check billing.")
     if isinstance(exc, anthropic.APITimeoutError):
-        return RuntimeError(f"Anthropic request timed out for {name} — the API may be slow; retry.")
+        return EngineTimeout(f"Anthropic request timed out for {name} — the API may be slow; retry.")
     if isinstance(exc, anthropic.APIConnectionError):
-        return RuntimeError(f"Could not reach Anthropic for {name} (network/endpoint issue): {exc}")
+        return EngineError(f"Could not reach Anthropic for {name} (network/endpoint issue): {exc}")
     if isinstance(exc, anthropic.APIError):
         status = getattr(exc, "status_code", "?")
-        return RuntimeError(f"Anthropic API error ({status}) for {name}: {getattr(exc, 'message', exc)}")
+        return EngineError(f"Anthropic API error ({status}) for {name}: {getattr(exc, 'message', exc)}")
+    # The base SDK error (NOT an APIError) is what a missing / empty key raises at
+    # request-build time ("Could not resolve authentication method …") — the exact
+    # raw jargon a keyless first run used to hit. Treat it as missing credentials.
+    if isinstance(exc, anthropic.AnthropicError):
+        return EngineAuthError(missing_credentials_message("anthropic", name))
     return None
 
 
@@ -58,10 +69,7 @@ class AnthropicEngine(Engine):
                 anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
             )
         except Exception as exc:
-            raise RuntimeError(
-                "No Claude credentials found. Log in with `calibrate login claude` "
-                "(browser/OAuth — no key needed) or set ANTHROPIC_API_KEY."
-            ) from exc
+            raise EngineAuthError(missing_credentials_message("anthropic", self.name)) from exc
 
     def complete(
         self,
@@ -95,9 +103,9 @@ class AnthropicEngine(Engine):
                     raise friendly from exc
                 raise
             if resp.stop_reason == "refusal":
-                raise RuntimeError(f"Claude declined the request ({self.name}).")
+                raise EngineError(f"Claude declined the request ({self.name}).")
             if resp.stop_reason == "max_tokens":
-                raise RuntimeError(
+                raise EngineError(
                     f"Claude response truncated at max_tokens={self.max_tokens} ({self.name}); "
                     "increase max_tokens for this engine."
                 )
