@@ -77,16 +77,34 @@ def generate_questions(
     failure: ``on_progress(items_so_far, done, total)`` fires after each gap for
     the caller to persist. A gap whose draft comes back malformed is skipped (it
     shows up as uncovered via :func:`uncovered_gaps`, never silently merged away).
+
+    **Ratified answers are never destroyed.** A gap whose dimension already has an
+    answered item is carried through untouched instead of re-asked — cheaper, and
+    it protects the one artifact in a project that cannot be recomputed. Answered
+    items whose dimension is no longer among the gaps (the materials changed since)
+    are kept too, appended after the gap-driven ones: a stale question is a small
+    cost, a discarded answer is the user's work.
     """
+    answered: dict[str, InterviewItem] = {}
+    for it in project.interview:
+        if it.answer and it.dimension not in answered:
+            answered[it.dimension] = it
+
     items: list[InterviewItem] = []
     total = len(project.gaps)
     for i, gap in enumerate(project.gaps, start=1):
-        item = _one_question(project, gap, engine)
+        kept = answered.pop(gap.dimension, None)
+        item = kept.model_copy(deep=True) if kept is not None else _one_question(project, gap, engine)
         if item is not None:
             item.id = f"q{len(items) + 1}"
             items.append(item)
         if on_progress is not None:
             on_progress(items, i, total)
+
+    for leftover in answered.values():  # answered, but its gap is gone
+        clone = leftover.model_copy(deep=True)
+        clone.id = f"q{len(items) + 1}"
+        items.append(clone)
     return items
 
 

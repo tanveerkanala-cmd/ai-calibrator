@@ -378,10 +378,13 @@ def write_build_bundle(spec: BehaviorSpec, tests: list[TestCase], project_dir: s
 
 # Test ids that are PINNED regressions, not regenerable synthesis output: fb_*
 # are absorbed live-feedback cases (flywheel), rt_* are promoted red-team
-# catches. A recompile regenerates the `t*` synthesis tests but must carry these
-# forward, or the product's "a flagged case can never silently regress" promise
-# is a lie. See compile_project.
-_PINNED_TEST_PREFIXES = ("fb_", "rt_")
+# catches, ex_* are the golden good/bad pairs promoted from the spec's examples
+# (`calibrate examples-to-tests`) — nothing regenerates those during compile, so
+# dropping them silently retires the user's own regression anchors. A recompile
+# regenerates the `t*` synthesis tests but must carry these forward, or the
+# product's "a flagged case can never silently regress" promise is a lie.
+# See compile_project.
+_PINNED_TEST_PREFIXES = ("fb_", "rt_", "ex_")
 
 
 def _merge_prior_spec(prior: BehaviorSpec, spec: BehaviorSpec) -> None:
@@ -433,6 +436,16 @@ def compile_project(project: Project, engine: Engine, *, project_dir: str | Path
             spec.do_not = _dedup(list(spec.do_not) + list(prior.do_not))
             have = {ex.input for ex in spec.examples}
             spec.examples = list(spec.examples) + [ex for ex in prior.examples if ex.input not in have]
+            # Same for the SCALAR behavior fields. A synthesis run that simply
+            # didn't restate them (the schema is satisfied by "", which becomes
+            # None) would otherwise delete the voice, the format rule, and the
+            # refusal policy from the rendered prompt — a silent safety regression
+            # that the compile summary, which counts only lists, reports as normal.
+            # A fresh non-empty value still wins; only absence falls back.
+            spec.persona.voice = spec.persona.voice or prior.persona.voice
+            spec.persona.reading_level = spec.persona.reading_level or prior.persona.reading_level
+            spec.format = spec.format or prior.format
+            spec.refusal_policy = spec.refusal_policy or prior.refusal_policy
     else:
         spec = prior or BehaviorSpec(goal=project.goal, task_type=project.task_type)
     # Merge criteria/edge-cases BEFORE generating tests, so fresh tests see the

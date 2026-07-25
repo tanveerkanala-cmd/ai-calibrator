@@ -97,7 +97,10 @@ def run_ci(
 
     # 2. eval — the fresh run under test. Baseline resolves BEFORE it exists.
     subject, judge = _resolve(subject), _resolve(judge)
-    baseline_id = baseline or latest_run_id(project_dir)
+    # A regression baseline must be a FULL run: comparing against a --max-tests
+    # smoke run measures two different test sets against each other, so every
+    # regression on a test the smoke run skipped reads as "no regressions".
+    baseline_id = baseline or latest_run_id(project_dir, full_only=True)
     card = run_eval(project, subject, judge, run_id=next_run_id(project_dir), judge_passes=judge_passes,
                     project_dir=project_dir)
     save_scorecard(project_dir, card)
@@ -130,6 +133,12 @@ def _drift_stage(project_dir: str | Path, baseline_id: str | None, card: Scoreca
         base = load_scorecard(project_dir, baseline_id)
     except (FileNotFoundError, ValueError) as exc:
         return CiStage("drift", "fail", f"baseline {baseline_id!r} unusable: {exc}")
+    if base.partial:
+        # Reachable when the user pins one explicitly with --baseline; the default
+        # already skips partial runs. Comparing across two test sets is meaningless.
+        return CiStage("drift", "skip",
+                       f"baseline {baseline_id} is a PARTIAL run (interrupted, or --max-tests) — "
+                       "not comparable; run a full eval to set a baseline")
     d = compare_scorecards(base, card, tolerance=tolerance)
     detail = f"vs {baseline_id}: Δ {pct_delta(d.delta)}"
     if d.regressed:

@@ -352,7 +352,14 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             raise HTTPException(404, f"no project {name!r}")
         mats = d / "materials"
         mats.mkdir(exist_ok=True)
-        target = mats / Path(file.filename or "upload.txt").name
+        # `.name` already defeats traversal, but it leaves three names that are not
+        # files: "" (from "."), ".." (the project dir), and anything past the
+        # filesystem's component limit. Each one reaches os.replace below and comes
+        # back as a 500 + traceback; every other bad input on this API is a clean 4xx.
+        base = Path(file.filename or "upload.txt").name
+        if base in ("", ".", "..") or len(base.encode("utf-8")) > 200:
+            raise HTTPException(400, "invalid filename — give the file a plain name under 200 bytes")
+        target = mats / base
         # Stream to a unique temp file, then atomically rename into place. A
         # cap-exceed / disconnect mid-upload leaves no partial file, and two
         # concurrent uploads of the same name can't interleave bytes — the last
@@ -370,7 +377,10 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
                     if size > MAX_UPLOAD_BYTES:
                         raise HTTPException(413, "file too large (max 25 MB)")
                     out.write(chunk)
-            os.replace(tmp, target)
+            try:
+                os.replace(tmp, target)
+            except OSError as exc:  # name the filesystem still rejects → 4xx, not a 500
+                raise HTTPException(400, f"could not store {base!r}: {exc.strerror or exc}") from exc
             tmp = None
         finally:
             if tmp is not None:
@@ -784,7 +794,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             raise HTTPException(400, f"Nothing here yet — compile this project first (POST /api/projects/{name}/compile, or /import).")
         cov = analyze_coverage(project.spec, project.tests)
         latest = None
-        rid = latest_run_id(_dir(name))
+        rid = latest_run_id(_dir(name), full_only=True)  # a partial run summarizes nothing
         if rid:
             try:
                 latest = load_scorecard(_dir(name), rid)

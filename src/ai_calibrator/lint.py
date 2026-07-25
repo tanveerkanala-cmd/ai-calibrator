@@ -94,9 +94,20 @@ def lint_spec(spec: BehaviorSpec, tests: list[TestCase]) -> LintReport:
             issues.append(LintIssue("vague_criterion", "warn",
                                     f"Criterion {c.id!r} description is too short to grade reliably.", c.id))
 
-    # Untested criteria (reuse the coverage analysis).
-    for c in analyze_coverage(spec, tests).uncovered_criteria:
+    # Untested criteria + orphan expectations (reuse the coverage analysis).
+    cov = analyze_coverage(spec, tests)
+    for c in cov.uncovered_criteria:
         issues.append(LintIssue("untested_criterion", "warn", f"Criterion {c.id!r} has no targeted test.", c.id))
+    # An `expects` naming a criterion the spec doesn't have grades against nothing:
+    # the test still runs (and still costs an engine call) but contributes no
+    # verdict, so it silently leaves the pass rate's denominator. That is a green
+    # gate over untested behavior — an error, so `ci` refuses to certify it.
+    for cid in sorted(set(cov.orphan_expectations)):
+        who = [t.id for t in tests if cid in (t.expects or [])]
+        issues.append(LintIssue(
+            "orphan_expectation", "error",
+            f"Test(s) {', '.join(who[:5])} expect criterion {cid!r}, which is not in the spec — "
+            "they run but are never graded. Add the criterion, or retarget the tests.", cid))
 
     # A 'never'-heavy spec with no refusal policy usually wants one.
     if spec.do_not and not spec.refusal_policy:

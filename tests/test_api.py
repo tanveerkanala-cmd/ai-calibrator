@@ -770,3 +770,30 @@ def test_nan_body_is_422_not_500(tmp_path):
         assert r.status_code == 422, (url, raw, r.status_code)
     # a finite out-of-range value is still a clean 422
     assert c.post("/api/projects/p/eval", json={"threshold": 5}).status_code == 422
+
+
+def test_upload_with_an_unusable_filename_is_a_400_not_a_500(tmp_path):
+    """`.name` defeats traversal but leaves "" (from "."), ".." and over-long
+    names, which reach os.replace and escape as a 500 + traceback. Every other
+    bad input on this API is a clean 4xx."""
+    c = _client(tmp_path)
+    c.post("/api/projects", json={"name": "p", "goal": "g"})
+
+    for bad in (".", "..", "x" * 300):
+        r = c.post("/api/projects/p/materials", files={"file": (bad, b"hello", "text/plain")})
+        assert r.status_code == 400, (bad, r.status_code)
+        assert "invalid filename" in r.json()["detail"]
+
+    # No temp files left behind, and nothing written outside materials/.
+    mats = tmp_path / "p" / "materials"
+    assert [f.name for f in mats.iterdir() if f.is_file()] == []
+
+
+def test_upload_still_accepts_a_traversal_style_name_as_a_plain_file(tmp_path):
+    c = _client(tmp_path)
+    c.post("/api/projects", json={"name": "p", "goal": "g"})
+    r = c.post("/api/projects/p/materials",
+               files={"file": ("../../evil.txt", b"hello", "text/plain")})
+    assert r.status_code == 200 and r.json()["uploaded"] == "evil.txt"
+    assert (tmp_path / "p" / "materials" / "evil.txt").exists()
+    assert not (tmp_path / "evil.txt").exists()

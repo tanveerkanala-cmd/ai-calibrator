@@ -170,6 +170,11 @@ the draft or type a correction (propose-and-ratify). `--accept-drafts` takes the
 drafts non-interactively. This is where the judgment that lives only in your head
 gets captured.
 
+`--regenerate` re-drafts questions from the current gaps — for example after
+re-ingesting new materials. **Answers you already gave are never re-asked or
+overwritten**: a gap you've answered is carried through untouched, and an answer
+whose gap has since disappeared is kept too. Only unanswered drafts regenerate.
+
 ### `calibrate compile`
 Turns your answers + materials into the **behavior spec** (the source of truth),
 then compiles the artifact bundle into `<project>/build/`: `spec.yaml`,
@@ -178,7 +183,8 @@ configured engine (see §3).
 
 ### `calibrate eval [--refine] [--rounds N] [--threshold 0.8] [--judge-passes N]`
 Runs each test on the configured AI (the `subject` engine), grades each output
-against the rubric with an LLM judge (plus a deterministic empty-output guard),
+against the rubric with an LLM judge (an answer that is empty fails every
+criterion outright, before any grading layer runs),
 and saves a scorecard under `<project>/evals/`. `--refine` loops: it diagnoses
 failures, adds standards to the spec, and re-runs until the pass rate clears
 `--threshold`. `--judge-passes N` (self-consistency) grades each criterion with
@@ -269,7 +275,10 @@ Adversarially tries to make your configured AI **break its own rules** — craft
 attacks (social engineering, edge cases, false authority) against each standard /
 never-rule / edge case, running them, and reporting what broke. `--add-tests`
 promotes confirmed violations into the suite as regressions, so
-`calibrate eval --refine` is then forced to fix them.
+`calibrate eval --refine` is then forced to fix them. A run that produces **no
+probes** (a spec with no concrete rules to attack, or a generator that returned
+nothing usable) is reported as a warning, never as a hold — nothing was attacked,
+so nothing held.
 
 ### `calibrate rightsize [--models a@p,b@p,…] [--threshold 0.8]`
 Runs your existing tests across several models (default: the Claude tier ladder)
@@ -278,13 +287,17 @@ and recommends the **cheapest model that still meets your pass bar** — e.g.
 
 ### `calibrate drift [--baseline RUN] [--tolerance 0]`
 Re-runs the suite and flags **behavior drift** vs a baseline scorecard (default:
-the latest): the pass-rate delta and exactly which tests flipped pass↔fail.
-**CI-friendly** — exits code 2 when behavior regresses, so you can gate a deploy
-or catch a provider's silent model update.
+the latest **full** run): the pass-rate delta and exactly which tests flipped
+pass↔fail. **CI-friendly** — exits code 2 when behavior regresses, so you can gate
+a deploy or catch a provider's silent model update. Partial runs (interrupted, or
+`--max-tests`) are never used as the baseline and are refused if you pin one:
+comparing across two different test sets would hide every regression on a test the
+baseline never ran.
 
 ### `calibrate diff <before> <after>` (no engine — instant)
-Shows how the behavior **spec** changed between two projects — standards,
-never-rules, edge cases, and criteria added / removed / changed. (`drift`
+Shows how the behavior **spec** changed between two projects — the goal, persona,
+format and refusal policy, plus standards, never-rules, edge cases, and criteria
+added / removed / changed (including a retargeted deterministic check). (`drift`
 compares scorecards; `diff` compares the specs themselves.) Great for reviewing
 the effect of a refine, teach, or merge before you ship it.
 
@@ -309,7 +322,9 @@ how trustworthy the configured AI is.
 the project wears its calibration the way a repo wears CI:
 **calibrated | 97% · 12 tests**. Colors are honest: green only for a *passing*
 gate that certifies the *current* spec/subject; orange for ungated or stale; red
-for a failing gate. (The API also serves it live: `GET /api/projects/<name>/badge`.)
+for a failing gate. The numbers are honest too: a green badge reports the run the
+gate actually certified, and neither the badge nor the certificate ever headlines a
+partial (`--max-tests` or interrupted) run. (The API also serves it live: `GET /api/projects/<name>/badge`.)
 
 ### `calibrate export-evals [--format promptfoo]` (no engine)
 Exports the generated test suite + rubric as a **promptfoo** config
@@ -344,7 +359,10 @@ Three properties make it more than a proxy:
 - **`--guard`** re-runs the spec's deterministic checks on every **live** answer:
   a violating answer is retried once; still-failing responses are returned but
   flagged (`x-calibrate-guard: failed:<criteria>` header) and logged to
-  `logs/guard.jsonl` — the tests never stop running.
+  `logs/guard.jsonl` — the tests never stop running. It can only enforce criteria
+  that carry a check, and only `calibrate add-check` creates one — so on a project
+  without any, `run --guard` warns at boot and `GET /` reports
+  `"guard": "inactive"` rather than claiming an enforcement that isn't happening.
 
 `GET /` self-describes the certification; `GET /v1/models` lists the project;
 client `system` messages are ignored by design (the calibrated spec is the

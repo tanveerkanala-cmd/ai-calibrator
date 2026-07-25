@@ -270,3 +270,53 @@ def test_recompile_preserves_pinned_tests_checks_and_criteria(tmp_path):
     # edge_case from the prior spec is still present (not duplicated either)
     situations = [ec.situation for ec in project.spec.edge_cases]
     assert situations.count("customer asks for a medical claim") == 1
+
+
+def test_recompile_preserves_example_derived_tests(tmp_path):
+    """ex_* tests are promoted golden pairs (`calibrate examples-to-tests`) and
+    nothing regenerates them during compile — dropping them silently retires the
+    user's own regression anchors."""
+    from ai_calibrator.compile import compile_project
+    from ai_calibrator.models import TestCase
+
+    project = _project()
+    compile_project(project, SeqEngine([SPEC_PAYLOAD, TESTS_PAYLOAD]), project_dir=tmp_path)
+    project.tests.append(TestCase(id="ex_1", input="a golden pair", expects=[]))
+
+    compile_project(project, SeqEngine([SPEC_PAYLOAD, TESTS_PAYLOAD]), project_dir=tmp_path)
+
+    assert "ex_1" in {t.id for t in project.tests}
+
+
+def test_recompile_keeps_scalar_behavior_fields_when_synthesis_omits_them(tmp_path):
+    """The schema is satisfied by "", which becomes None — so a synthesis run that
+    simply didn't restate the voice, format rule, or refusal policy would delete
+    them from the deployed prompt while the compile summary looks normal."""
+    from ai_calibrator.compile import compile_project, render_system_prompt
+
+    project = _project()
+    compile_project(project, SeqEngine([SPEC_PAYLOAD, TESTS_PAYLOAD]), project_dir=tmp_path)
+    assert project.spec.refusal_policy and project.spec.format and project.spec.persona.voice
+
+    forgetful = {**SPEC_PAYLOAD, "persona": {"voice": "", "reading_level": ""},
+                 "format": "", "refusal_policy": ""}
+    compile_project(project, SeqEngine([forgetful, TESTS_PAYLOAD]), project_dir=tmp_path)
+
+    assert project.spec.refusal_policy == SPEC_PAYLOAD["refusal_policy"]
+    assert project.spec.format == SPEC_PAYLOAD["format"]
+    assert project.spec.persona.voice == SPEC_PAYLOAD["persona"]["voice"]
+    prompt = render_system_prompt(project.spec)
+    assert SPEC_PAYLOAD["refusal_policy"] in prompt
+
+
+def test_recompile_lets_a_real_new_value_replace_the_prior_one(tmp_path):
+    """Only ABSENCE falls back — an intentional change must still take effect."""
+    from ai_calibrator.compile import compile_project
+
+    project = _project()
+    compile_project(project, SeqEngine([SPEC_PAYLOAD, TESTS_PAYLOAD]), project_dir=tmp_path)
+
+    changed = {**SPEC_PAYLOAD, "refusal_policy": "Decline anything legal; escalate immediately."}
+    compile_project(project, SeqEngine([changed, TESTS_PAYLOAD]), project_dir=tmp_path)
+
+    assert project.spec.refusal_policy == "Decline anything legal; escalate immediately."

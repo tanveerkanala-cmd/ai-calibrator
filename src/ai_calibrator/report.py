@@ -136,9 +136,20 @@ def badge_dict(project: Project, project_dir: str | Path) -> dict:
     from .drift import load_scorecard
     from .eval import latest_run_id
 
+    from .ci import latest_gate
+
     status, _ = certification_status(project, project_dir)
     latest = None
-    rid = latest_run_id(project_dir)
+    # A PASSING badge must carry the number the GATE certified, not whatever ran
+    # last: a `--max-tests 1` smoke run after a green gate would otherwise publish
+    # its own 100% in the gate's green. Elsewhere (ungated), the latest full run is
+    # the honest headline — a partial one is not a summary of anything.
+    rid = None
+    if status == "pass":
+        gate = latest_gate(project_dir)
+        rid = (gate or {}).get("run_id")
+    if not rid:
+        rid = latest_run_id(project_dir, full_only=True)
     if rid:
         try:
             latest = load_scorecard(project_dir, rid)

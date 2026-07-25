@@ -88,11 +88,25 @@ def load_examples_report(path: str | Path) -> ImportReport:
                 # ONE bad line must not abort a real-world export — skip + report.
                 report.skipped.append(f"{p.name}:{lineno} — invalid JSON ({exc.msg})")
     elif suffix == ".json":
-        data = json.loads(text or "[]")
+        try:
+            data = json.loads(text or "[]")
+        except json.JSONDecodeError as exc:  # already a ValueError — message it clearly
+            raise ValueError(f"{p.name} is not valid JSON: {exc.msg} (line {exc.lineno}, column "
+                             f"{exc.colno}). Fix the file and retry.") from exc
         rows = data if isinstance(data, list) else [data]
         indexed = [(r, i) for i, r in enumerate(rows, start=1)]
     elif suffix in (".yaml", ".yml"):
-        data = yaml.safe_load(text) or []
+        # A YAMLError is NOT a ValueError, so an unguarded parse escapes the CLI's
+        # `except ValueError` and reaches the user as a pyyaml traceback — for a
+        # hand-written file, the likeliest failure there is.
+        try:
+            data = yaml.safe_load(text) or []
+        except yaml.YAMLError as exc:
+            where = getattr(exc, "problem_mark", None)
+            spot = f" (line {where.line + 1}, column {where.column + 1})" if where is not None else ""
+            what = getattr(exc, "problem", None) or exc
+            raise ValueError(f"{p.name} is not valid YAML: {what}{spot}. "
+                             "Check for stray tabs or unclosed quotes, then retry.") from exc
         rows = data if isinstance(data, list) else [data]
         indexed = [(r, i) for i, r in enumerate(rows, start=1)]
     else:

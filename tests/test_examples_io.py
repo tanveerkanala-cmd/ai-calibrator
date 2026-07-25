@@ -103,3 +103,27 @@ def test_examples_status_threshold_guidance():
     assert st["unique_inputs"] == 10 and st["short_by"] == 40 and st["enough_to_finetune"] is False
     spec.examples = [Example(input=f"q{i}", good_output="x") for i in range(55)]
     assert examples_status(spec)["enough_to_finetune"] is True
+
+
+def test_malformed_yaml_import_is_a_friendly_error(tmp_path):
+    """A YAMLError is not a ValueError, so an unguarded parse escapes the CLI's
+    handler and reaches a non-technical user as a pyyaml traceback."""
+    f = tmp_path / "examples.yaml"
+    f.write_text('- input: "unclosed\n  output: x\n', encoding="utf-8")
+
+    with pytest.raises(ValueError) as exc:
+        load_examples_report(f)
+
+    msg = str(exc.value)
+    assert "examples.yaml" in msg and "not valid YAML" in msg
+    assert "line" in msg  # points at the problem
+
+
+def test_malformed_json_import_is_a_friendly_error(tmp_path):
+    f = tmp_path / "examples.json"
+    f.write_text('[{"input": "a",}]', encoding="utf-8")
+
+    with pytest.raises(ValueError) as exc:
+        load_examples_report(f)
+
+    assert "not valid JSON" in str(exc.value)

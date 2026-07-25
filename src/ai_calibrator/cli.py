@@ -897,8 +897,18 @@ def run(
     if not is_local:
         typer.secho(f"⚠  Binding to {host} exposes the (unauthenticated) AI beyond localhost.",
                     fg=typer.colors.YELLOW)
+    # --guard only enforces criteria that carry a deterministic check, and only
+    # `calibrate add-check` creates one. Requesting it on a project without any
+    # would otherwise print "guard ON" over an endpoint checking nothing.
+    guard_armed = guard and bool(
+        project.spec is not None and [c for c in project.spec.eval_criteria if c.check is not None]
+    )
+    if guard and not guard_armed:
+        typer.secho("⚠ --guard requested, but no criterion has a deterministic check — "
+                    "nothing will be enforced on live answers.", fg=typer.colors.YELLOW, bold=True)
+        typer.echo("  Add one with `calibrate add-check <project> <criterion> <kind> <value>`.")
     typer.echo(f"Serving '{project.name}' (subject: {project.engines.subject}"
-               + (", guard ON" if guard else "") + f") at http://{host}:{port}/v1")
+               + (", guard ON" if guard_armed else "") + f") at http://{host}:{port}/v1")
     import json as _json
     import shlex
     payload = _json.dumps({"model": project.name,
@@ -1152,11 +1162,21 @@ def redteam(
             save_project(project, path)
             write_build_bundle(project.spec, project.tests, path)
 
-    color = typer.colors.GREEN if not report.violations else typer.colors.RED
-    typer.secho(
-        f"\nHeld {pct(report.hold_rate)} — {len(report.violations)}/{report.probes} probe(s) caused a violation.",
-        fg=color, bold=True,
-    )
+    if not report.probes:
+        # No probes ran, so nothing was attacked — never report that as holding.
+        typer.secho(
+            "\n⚠ No probes were generated — nothing was attacked, so this is not a pass.",
+            fg=typer.colors.YELLOW, bold=True,
+        )
+        typer.echo("  The spec needs concrete rules to attack (standards, never-rules, edge cases,")
+        typer.echo("  or a refusal policy), and the generator must return usable probes. Re-run after")
+        typer.echo("  adding rules, or try again if the generator returned nothing usable.")
+    else:
+        color = typer.colors.GREEN if not report.violations else typer.colors.RED
+        typer.secho(
+            f"\nHeld {pct(report.hold_rate)} — {len(report.violations)}/{report.probes} probe(s) caused a violation.",
+            fg=color, bold=True,
+        )
     for r in report.violations:
         typer.secho(f"  ✗ [{r.severity}] {r.target}", fg=typer.colors.RED)
         typer.echo(f"     probe ({r.tactic}): {r.input[:100]}")
@@ -1248,6 +1268,13 @@ def diff(
         for x in removed:
             typer.secho(f"  - {x}", fg=typer.colors.RED)
 
+    if d.fields_changed:
+        typer.secho("\nBehavior fields:", bold=True)
+        for name, before_v, after_v in d.fields_changed:
+            typer.secho(f"  ~ {name}", fg=typer.colors.YELLOW)
+            typer.secho(f"      - {before_v if before_v is not None else '(unset)'}", fg=typer.colors.RED)
+            typer.secho(f"      + {after_v if after_v is not None else '(unset)'}", fg=typer.colors.GREEN)
+
     _section("Standards", d.standards_added, d.standards_removed)
     _section("Never-rules", d.do_not_added, d.do_not_removed)
     _section("Edge cases", d.edge_cases_added, d.edge_cases_removed)
@@ -1258,7 +1285,7 @@ def diff(
         for x in d.criteria_removed:
             typer.secho(f"  - {x}", fg=typer.colors.RED)
         for x in d.criteria_changed:
-            typer.secho(f"  ~ {x} (description/weight changed)", fg=typer.colors.YELLOW)
+            typer.secho(f"  ~ {x} (description/weight/check changed)", fg=typer.colors.YELLOW)
 
 
 @app.command()
@@ -1286,11 +1313,20 @@ def drift(
         if project.spec is None or not project.tests:
             typer.secho("Nothing to check — run `calibrate compile` first.", fg=typer.colors.YELLOW)
             raise typer.Exit(code=1)
-        base_id = baseline or latest_run_id(path)
+        # Default to the latest FULL run: a --max-tests smoke run as the baseline
+        # compares two different test sets, hiding every regression it never ran.
+        base_id = baseline or latest_run_id(path, full_only=True)
         if not base_id:
-            typer.secho("No baseline scorecard yet — run `calibrate eval` first to set one.", fg=typer.colors.YELLOW)
+            typer.secho("No full baseline scorecard yet — run `calibrate eval` first to set one.",
+                        fg=typer.colors.YELLOW)
             raise typer.Exit(code=1)
         base_card = _scorecard_or_exit(path, base_id)  # corrupt/missing baseline → friendly exit
+        if base_card.partial:  # only reachable via an explicitly pinned --baseline
+            typer.secho(f"Baseline {base_id} is a PARTIAL run (interrupted, or --max-tests) — "
+                        "it covers only some tests, so a comparison against it is not meaningful. "
+                        "Pin a full run with --baseline, or run `calibrate eval`.",
+                        fg=typer.colors.RED)
+            raise typer.Exit(code=1)
         try:
             subject = get_engine(project.engines.subject)
             judge = get_engine(project.engines.judge)
@@ -1380,7 +1416,9 @@ def report(
 
     cov = analyze_coverage(project.spec, project.tests)
     latest = None
-    rid = latest_run_id(path)
+    # Headline the latest FULL run: a `--max-tests` smoke run summarizes nothing,
+    # and a certificate is a claim about the whole suite.
+    rid = latest_run_id(path, full_only=True)
     if rid:
         try:
             latest = load_scorecard(path, rid)

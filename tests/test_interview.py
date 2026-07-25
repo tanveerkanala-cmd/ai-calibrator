@@ -76,3 +76,58 @@ def test_on_progress_fires_per_gap():
 def test_question_schema_is_strict_compatible():
     assert QUESTION_SCHEMA["additionalProperties"] is False
     assert set(QUESTION_SCHEMA["required"]) == set(QUESTION_SCHEMA["properties"])
+
+
+def test_regenerate_preserves_ratified_answers():
+    """Regeneration must never destroy the human's answers — the one artifact in a
+    project that cannot be recomputed. A gap already answered is not re-asked."""
+    from ai_calibrator.models import InterviewItem
+
+    project = Project(name="p", goal="g", task_type=TaskType.ASSISTANT)
+    project.gaps = [Gap(dimension="tone"), Gap(dimension="format")]
+    project.interview = [
+        InterviewItem(id="q1", dimension="tone", question="What tone?",
+                      draft_answer="warm", answer="warm and direct"),
+    ]
+    engine = FakeEngine([{"question": "What format?", "draft_answer": "bullets"}])
+
+    items = generate_questions(project, engine)
+
+    by_dim = {it.dimension: it for it in items}
+    assert by_dim["tone"].answer == "warm and direct", "a ratified answer was destroyed"
+    assert by_dim["format"].answer is None
+    assert len(engine.calls) == 1, "an already-answered gap must not be re-asked"
+    assert [it.id for it in items] == ["q1", "q2"]
+
+
+def test_regenerate_keeps_answers_whose_gap_disappeared():
+    """Re-ingesting different materials changes the gap list; answers already given
+    are still the user's work and must survive, appended after the gap-driven ones."""
+    from ai_calibrator.models import InterviewItem
+
+    project = Project(name="p", goal="g", task_type=TaskType.ASSISTANT)
+    project.gaps = [Gap(dimension="format")]
+    project.interview = [
+        InterviewItem(id="q1", dimension="retired", question="Old question?", answer="a real answer"),
+    ]
+    engine = FakeEngine([{"question": "What format?"}])
+
+    items = generate_questions(project, engine)
+
+    assert [it.dimension for it in items] == ["format", "retired"]
+    assert items[1].answer == "a real answer"
+
+
+def test_unanswered_items_are_regenerated_not_kept():
+    """Only ANSWERED items are protected: a drafted-but-unanswered question is
+    regenerable output, so --regenerate must actually regenerate it."""
+    from ai_calibrator.models import InterviewItem
+
+    project = Project(name="p", goal="g", task_type=TaskType.ASSISTANT)
+    project.gaps = [Gap(dimension="tone")]
+    project.interview = [InterviewItem(id="q1", dimension="tone", question="Stale question?")]
+    engine = FakeEngine([{"question": "Fresh question?"}])
+
+    items = generate_questions(project, engine)
+
+    assert items[0].question == "Fresh question?"

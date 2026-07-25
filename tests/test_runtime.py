@@ -333,3 +333,24 @@ def test_tools_param_rejected_with_400(tmp_path):
     # a plain request (no tools) still works
     assert c.post("/v1/chat/completions",
                   json={"messages": [{"role": "user", "content": "hi"}]}).status_code == 200
+
+
+def test_guard_reports_inactive_when_no_criterion_carries_a_check(tmp_path):
+    """Only `calibrate add-check` ever creates a Check, so a normally-compiled
+    project guards nothing. An owner who believes every live answer is re-checked
+    is worse off than one who knows it isn't."""
+    _seed(tmp_path)  # no check on the criterion
+    r = _client(tmp_path, RecordingEngine(["ok"]), guard=True).get("/")
+    assert r.json()["guard"] == "inactive"
+
+
+def test_guard_reports_true_when_it_can_actually_enforce(tmp_path):
+    _seed(tmp_path, check=Check(kind="contains", value="30-day"))
+    r = _client(tmp_path, RecordingEngine(["within the 30-day window"]), guard=True).get("/")
+    assert r.json()["guard"] is True
+
+
+def test_guard_off_is_reported_as_false(tmp_path):
+    _seed(tmp_path, check=Check(kind="contains", value="30-day"))
+    r = _client(tmp_path, RecordingEngine(["ok"]), guard=False).get("/")
+    assert r.json()["guard"] is False

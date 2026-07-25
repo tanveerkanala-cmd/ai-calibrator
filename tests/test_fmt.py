@@ -43,7 +43,9 @@ def test_ci_eval_detail_is_honest_at_249_of_250(tmp_path):
         name = "s@test"
 
         def complete(self, prompt, *, system=None, schema=None):
-            return "UNLUCKY answer" if prompt == "q249" else "fine"
+            # The eval sends the transcript-encoded prompt the runtime serves
+            # ("User: q249\nAssistant:"), so match on the turn, not the whole string.
+            return "UNLUCKY answer" if "User: q249\n" in prompt else "fine"
 
     p = Project(name="p", goal="g")
     p.spec = BehaviorSpec(goal="g", standards=["Always answer with the documented policy."],
@@ -83,8 +85,9 @@ def test_ci_eval_detail_is_honest_at_249_of_250(tmp_path):
         name = "s@test"
 
         def complete(self, prompt, *, system=None, schema=None):
-            n = int(prompt[1:]) if prompt.startswith("q") and prompt[1:].isdigit() else 0
-            return "UNLUCKY" if n >= 199 else "fine"
+            # Prompt is transcript-encoded: "User: q<N>\nAssistant:".
+            m = re.search(r"^User: q(\d+)$", prompt, re.M)
+            return "UNLUCKY" if m and int(m.group(1)) >= 199 else "fine"
 
     r2 = run_ci(p, Subject199(), Judge(), project_dir=tmp_path, threshold=0.8)
     stage = next(s for s in r2.stages if s.name == "eval")

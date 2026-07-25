@@ -136,8 +136,16 @@ def conversation_prompt(history_lines: list[str], user_turn: str) -> str:
 
 
 def _conversation_output(subject: Engine, system: str | None, user_turns: list[str],
-                         project_dir: str | Path | None = None) -> str:
-    """Run a multi-turn conversation; return the full transcript (graded as the output).
+                         project_dir: str | Path | None = None) -> tuple[str, str]:
+    """Run a multi-turn conversation; return ``(transcript, answers)``.
+
+    Two different texts, for two different consumers. The **transcript** (the
+    alternating ``User:`` / ``Assistant:`` lines) is what gets recorded on the
+    scorecard and shown to the judge, which needs the questions to grade the
+    replies in context. The **answers** (the assistant turns alone) are what the
+    deterministic checks grade: a check asks what the AI *said*, so it must never
+    see the user's words — otherwise ``not_contains "cure"`` fails because the
+    user asked about a cure, and ``max_chars`` bills the AI for the question.
 
     History is encoded into each prompt (works across every engine without a
     messages-based interface). The base system prompt is constant; when a
@@ -146,13 +154,15 @@ def _conversation_output(subject: Engine, system: str | None, user_turns: list[s
     you serve)."""
     from . import rag
     lines: list[str] = []
+    replies: list[str] = []
     for turn in user_turns:
         eff_system = rag.augment_system(system, project_dir, turn)
         prompt = conversation_prompt(lines, turn)
         reply = as_str(subject.complete(prompt, system=eff_system)).strip()
+        replies.append(reply)
         lines.append(f"User: {turn}")
         lines.append(f"Assistant: {reply}")
-    return "\n".join(lines)
+    return "\n".join(lines), "\n".join(replies)
 
 
 # Called before each test runs: (done, total, test_id). Lets the CLI show live
@@ -235,10 +245,16 @@ def run_eval(
             # by the guard below) instead of an AttributeError on .strip().
             turns = [test.input] + [f for f in test.follow_ups if is_str(f)]
             if len(turns) > 1:  # multi-turn conversation test
-                output = _conversation_output(subject, system, turns, project_dir)
+                # `output` is the transcript (recorded + judged); `answers` is the
+                # assistant's words alone, which is what the checks may grade.
+                output, answers = _conversation_output(subject, system, turns, project_dir)
             else:
                 eff_system = rag.augment_system(system, project_dir, test.input)  # RAG when indexed
-                output = as_str(subject.complete(test.input, system=eff_system))
+                # Encode the single turn exactly as the runtime and the API's /try
+                # do (`conversation_prompt`), so the certified pass rate is earned
+                # on the prompt the deployed endpoint actually sends.
+                output = as_str(subject.complete(conversation_prompt([], test.input), system=eff_system))
+                answers = output
             # De-dup while preserving order: a duplicated id in `expects` (hand-edited
             # YAML, or an engine that repeats one) would otherwise append the same
             # CriterionResult multiple times, multiplying that criterion's weight in
@@ -250,26 +266,34 @@ def run_eval(
             ]
             graded: dict[str, CriterionResult] = {}
 
-            # First grading layer — criteria with a deterministic check are graded
-            # exactly by code (no judge), and run even on empty output.
-            for cid in expected:
-                chk = crit_by_id[cid].check
-                if chk is not None:
-                    passed, why = run_check(chk, output)
-                    graded[cid] = CriterionResult(criterion_id=cid, passed=passed,
-                                                  score=1.0 if passed else 0.0, rationale=why)
+            # An answer that says NOTHING fails everything, before any grading layer
+            # runs. This has to come first: the negative-form checks (not_contains,
+            # max_chars) are all trivially satisfied by "", so a subject that returned
+            # nothing would otherwise score 1.0 on a test whose criteria are entirely
+            # deterministic — a certified, green gate in front of a silent AI.
+            if not answers.strip():
+                for cid in expected:
+                    graded[cid] = CriterionResult(criterion_id=cid, passed=False, score=0.0,
+                                                  rationale="empty output")
+            else:
+                # First grading layer — criteria with a deterministic check are graded
+                # exactly by code (no judge), against the AI's words only.
+                for cid in expected:
+                    chk = crit_by_id[cid].check
+                    if chk is not None:
+                        passed, why = run_check(chk, answers)
+                        graded[cid] = CriterionResult(criterion_id=cid, passed=passed,
+                                                      score=1.0 if passed else 0.0, rationale=why)
 
-            # Remaining criteria go to the LLM judge (empty output fails them outright).
-            judged = [(cid, crit_by_id[cid].description) for cid in expected if crit_by_id[cid].check is None]
-            if judged and not output.strip():
-                for cid, _ in judged:
-                    graded[cid] = CriterionResult(criterion_id=cid, passed=False, score=0.0, rationale="empty output")
-            elif judged and judge_passes > 1:
-                for cr in _judge_consensus(judge, test.input, output, judged, judge_passes):
-                    graded[cr.criterion_id] = cr
-            elif judged:
-                for cr in _judge(judge, test.input, output, judged):
-                    graded[cr.criterion_id] = cr
+                # Remaining criteria go to the LLM judge, which sees the full transcript.
+                judged = [(cid, crit_by_id[cid].description) for cid in expected
+                          if crit_by_id[cid].check is None]
+                if judged and judge_passes > 1:
+                    for cr in _judge_consensus(judge, test.input, output, judged, judge_passes):
+                        graded[cr.criterion_id] = cr
+                elif judged:
+                    for cr in _judge(judge, test.input, output, judged):
+                        graded[cr.criterion_id] = cr
 
             # Reassemble in requested order — test.expects is an ordered list, so the
             # results must follow it; the checked/judged split is an internal detail.
@@ -317,14 +341,19 @@ def next_run_id(project_dir: str | Path) -> str:
     return f"run-{n + 1:04d}"
 
 
-def latest_run_id(project_dir: str | Path) -> str | None:
+def latest_run_id(project_dir: str | Path, *, full_only: bool = False) -> str | None:
     """The most recent ``run-NNNN`` that has a saved scorecard, or None.
 
     Returns the newest run whose scorecard file EXISTS — it does not validate the
     contents. A corrupt/truncated scorecard is surfaced honestly by the caller
     ("Could not read scorecard <id>" on the CLI, a 409 on the API) rather than
     silently skipped, so the user learns their file is broken instead of seeing a
-    misleading "no scorecard yet"."""
+    misleading "no scorecard yet".
+
+    ``full_only`` skips PARTIAL scorecards (an interrupted run, or ``--max-tests``).
+    Use it wherever the run is a *reference point* rather than the latest news —
+    a regression baseline compares pass rates over two test sets, so a smoke run
+    silently becoming the baseline hides every regression it never ran."""
     evals = Path(project_dir) / "evals"
     best: str | None = None
     n = 0
@@ -335,8 +364,20 @@ def latest_run_id(project_dir: str | Path) -> str | None:
                     k = int(d.name.split("-", 1)[1])
                 except ValueError:
                     continue
-                if k > n:
-                    n, best = k, d.name
+                if k <= n:
+                    continue
+                if full_only:
+                    # Read the flag directly (drift.load_scorecard would be a cycle).
+                    # A scorecard we can't read isn't provably full, so it can't serve
+                    # as a reference point either — skip it and let the caller's own
+                    # "could not read" path report a broken file.
+                    try:
+                        raw = json.loads((d / "scorecard.json").read_text(encoding="utf-8"))
+                        if not isinstance(raw, dict) or raw.get("partial"):
+                            continue
+                    except (OSError, ValueError):
+                        continue
+                n, best = k, d.name
     return best
 
 

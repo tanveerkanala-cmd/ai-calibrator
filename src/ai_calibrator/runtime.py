@@ -162,11 +162,17 @@ def create_ai_app(project_dir: str | Path, *, engine: Engine | None = None, guar
         while len(recent) > RECENT_COMPLETIONS:
             recent.popitem(last=False)
 
+    # Requested but with nothing to enforce: only `calibrate add-check` ever puts a
+    # deterministic check on a criterion, so a normally-compiled project guards
+    # nothing. Say "inactive" rather than "true" — an owner who believes every live
+    # answer is being re-checked is worse off than one who knows it isn't.
+    guard_state_label: bool | str = guard and (True if checks else "inactive")
+
     @app.get("/")
     def root():
         """The endpoint self-describes its certification."""
         return {"name": project.name, "goal": project.goal, "engine": engine.name,
-                "certification": status, "detail": detail, "guard": guard,
+                "certification": status, "detail": detail, "guard": guard_state_label,
                 "openai_base_url": "/v1", "feedback": "POST /v1/feedback"}
 
     @app.get("/v1/models")
