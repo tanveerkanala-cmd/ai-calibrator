@@ -338,6 +338,13 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             raise HTTPException(404, f"no project {name!r}")
         with project_lock(d):
             shutil.rmtree(d, ignore_errors=True)
+        # Second pass AFTER the lock is released. The lock file lives inside the
+        # tree and is held open for the duration of the block; Windows refuses to
+        # unlink an open file, so `.lock` (and therefore the directory) routinely
+        # survives the first rmtree there. Nothing is wrong in that case — retry
+        # now that the handle is closed.
+        if d.exists():
+            shutil.rmtree(d, ignore_errors=True)
         # ignore_errors swallows every OSError, so verify rather than assume: a
         # delete that removed nothing (or half the tree) must not report success
         # while the project's uploaded documents are still on disk.

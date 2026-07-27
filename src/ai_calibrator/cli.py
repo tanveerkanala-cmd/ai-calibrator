@@ -967,7 +967,9 @@ def run(
     if not is_local:
         typer.secho(f"⚠  Binding to {host} exposes the (unauthenticated) AI beyond localhost.",
                     fg=typer.colors.YELLOW)
-    if host in ("0.0.0.0", "::"):
+    # Compares the --host flag; nothing is bound here. (bandit reads the literal
+    # as a bind-all — it is the opposite: this branch exists to WARN about one.)
+    if host in ("0.0.0.0", "::"):  # nosec B104
         # A wildcard bind allowlists the literal wildcard, but clients send the
         # machine's real address in Host — so every request would 400. Say so.
         typer.secho(f"⚠  --host {host} listens on every interface, but the Host guard only "
