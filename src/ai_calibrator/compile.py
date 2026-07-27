@@ -215,6 +215,7 @@ def spec_from_dict(out: dict, *, goal: str, task_type: TaskType, knowledge_sourc
         ],
         examples=[
             Example(
+                source="engine",  # the compiler wrote both sides — not a training target
                 input=ex["input"],
                 good_output=as_opt_str(ex.get("good_output")),
                 bad_output=as_opt_str(ex.get("bad_output")),

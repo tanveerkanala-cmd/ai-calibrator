@@ -5,11 +5,11 @@ when captured), emits a runnable LoRA recipe + training script, and provides the
 **prove-it gate**: a fine-tune is only worth keeping if it BEATS the configured
 prompt+RAG baseline on the same eval harness. Non-technical users never see this.
 
-The dataset should be dominated by human-authored/corrected outputs: a model
-writing its own training targets teaches it nothing new. Note that
-`spec.examples` also holds compiler-synthesized rows and `Example` carries no
-provenance field, so this is guidance the code cannot yet enforce — the gate
-(`beats_baseline`) is the safeguard that the result actually helps.
+The dataset contains only human-authored or human-ratified outputs: a model
+writing its own training targets teaches it nothing new, so compiler-synthesized
+examples are excluded by `Example.source` and the count is reported. The gate
+scores the candidate on the tests that were NOT training prompts, so a fine-tune
+that merely memorized its dataset cannot pass.
 """
 
 from __future__ import annotations
@@ -186,26 +186,28 @@ class FinetuneResult:
     method: str
     bundle_dir: str
     files: list[str]
+    # Examples with a usable answer that were NOT trainable (compiler-synthesized).
+    # Reported so "0 examples" reads as "none of yours are human-authored" rather
+    # than as an unexplained empty bundle.
+    excluded_engine: int = 0
 
 
 def assemble_dataset(project: Project) -> list[dict]:
     """Chat-format SFT rows from the spec's good examples.
 
-    IMPORTANT — provenance. ``spec.examples`` is a mixed bag: rows imported by the
-    owner, rows ratified through `teach`, corrections absorbed from live feedback,
-    AND rows the compiler engine invented during synthesis. `Example` carries no
-    provenance field, so this cannot filter to human-authored rows only, which
-    means a fine-tune trained here CAN include model-written targets (partial
-    self-distillation). Prefer a dataset dominated by imported or corrected
-    examples; see docs/USAGE.md. The eval-loop corrections are the signal that
-    actually teaches something new."""
+    Only HUMAN-AUTHORED or HUMAN-RATIFIED examples become training targets
+    (``Example.trainable``). Compiler-synthesized rows are excluded: a model
+    writing both the prompt and the ideal answer teaches it nothing new, and
+    training on its own output is the self-distillation the design forbids. The
+    excluded count is reported so a project whose examples are all engine-written
+    gets an empty dataset and an explanation rather than a bad fine-tune."""
     spec = project.spec
     if spec is None:
         raise ValueError("No spec — run `calibrate compile` first.")
     system = render_system_prompt(spec)
     rows: list[dict] = []
     for ex in spec.examples:
-        if ex.input and ex.good_output:
+        if ex.input and ex.good_output and ex.trainable:
             rows.append({
                 "messages": [
                     {"role": "system", "content": system},
@@ -245,6 +247,21 @@ def recommend_recipe(
 def beats_baseline(baseline: Scorecard, candidate: Scorecard, margin: float = 0.0) -> bool:
     """The prove-it gate: keep the fine-tune only if it beats the baseline."""
     return candidate.pass_rate > baseline.pass_rate + margin
+
+
+def held_out_rate(card: Scorecard, exclude_ids: set[str]) -> tuple[float, int]:
+    """(pass_rate, n) over the graded tests NOT in ``exclude_ids``.
+
+    The dataset is built from ``spec.examples`` and `examples-to-tests` / `absorb`
+    turn those same examples into tests, so the headline pass rate can include
+    prompts the model trained on — a memorizing fine-tune scores well on those by
+    construction. This is the number the gate should actually turn on. Returns
+    (0.0, 0) when nothing is held out, which the caller must treat as "cannot
+    judge", not as a failure."""
+    graded = [r for r in card.results if r.criteria and r.test_id not in exclude_ids]
+    if not graded:
+        return 0.0, 0
+    return round(sum(1 for r in graded if r.passed) / len(graded), 4), len(graded)
 
 
 def training_overlap(project: Project, card: Scorecard) -> list[str]:
@@ -319,6 +336,8 @@ def export_finetune(
     epochs: int | None = None, max_steps: int | None = None,
 ) -> FinetuneResult:
     rows = assemble_dataset(project)
+    excluded = sum(1 for ex in (project.spec.examples if project.spec else [])
+                   if ex.input and ex.good_output and not ex.trainable)
     recipe = recommend_recipe(len(rows), base_model=base_model, epochs=epochs, max_steps=max_steps)
 
     out = Path(project_dir) / "finetune"
@@ -344,4 +363,5 @@ def export_finetune(
     return FinetuneResult(
         examples=len(rows), base_model=recipe["base_model"],
         method=recipe["method"], bundle_dir=str(out), files=files,
+        excluded_engine=excluded,
     )

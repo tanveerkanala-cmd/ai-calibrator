@@ -940,10 +940,17 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             project = _load(name)
             judged = [Judged(input=j.input, output=j.output, approved=j.approved, reason=j.reason)
                       for j in body.judgments]
+            # Persist the human's judgments BEFORE the inference call, exactly as the
+            # CLI does. They are the expensive part — a person's attention — and they
+            # do not depend on `learned`, so an engine failure below must not discard
+            # them. The second apply_learned folds in the standards ONLY (empty
+            # judgment list), so nothing is recorded twice.
+            apply_learned(project, judged, None)
+            save_project(project, d)
             try:
                 generator = make_engine(project.engines.compiler)
                 learned = infer_standards(project.goal, judged, generator)
-                result = apply_learned(project, judged, learned)
+                result = apply_learned(project, [], learned)
                 save_project(project, d)
                 if project.tests:
                     from .compile import write_build_bundle

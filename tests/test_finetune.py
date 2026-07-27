@@ -26,9 +26,11 @@ def _project_with_examples():
         goal="answer questions",
         standards=["Be concise."],
         examples=[
-            Example(input="Can I return this?", good_output="Yes, within 30 days.", why="cites policy"),
-            Example(input="cure my acne?", good_output="I can't make medical claims; see a dermatologist."),
-            Example(input="no target here", good_output=None),  # skipped (no good_output)
+            Example(input="Can I return this?", good_output="Yes, within 30 days.",
+                    why="cites policy", source="human"),
+            Example(input="cure my acne?", source="human",
+                    good_output="I can't make medical claims; see a dermatologist."),
+            Example(input="no target here", good_output=None, source="human"),  # skipped (no good_output)
         ],
     )
     return p

@@ -108,10 +108,30 @@ class EdgeCase(PreservingModel):
 
 
 class Example(PreservingModel):
+    """A worked example. ``source`` records WHERE it came from, which decides
+    whether it may be used as a fine-tuning target.
+
+    A model writing both the prompt and the ideal answer teaches it nothing new
+    (self-distillation), so only human-authored or human-ratified rows are
+    trainable. Without this field the dataset builder could not tell an example
+    the compiler invented from one the owner imported or corrected, and the docs
+    had to admit the "never self-distill" rule was unenforceable. Defaults to
+    ``engine`` so an example from an older project.yaml — which predates the
+    field and was almost certainly compiler-synthesized — is treated as the
+    untrainable case rather than silently trusted."""
     input: str
     good_output: str | None = None
     bad_output: str | None = None
     why: str | None = None
+    # "human": the owner supplied it (import, add-example).
+    # "human_ratified": a human judged or corrected it (teach, live feedback).
+    # "engine": the compiler synthesized it. Not a fine-tuning target.
+    source: Literal["human", "human_ratified", "engine"] = "engine"
+
+    @property
+    def trainable(self) -> bool:
+        """True when this example may be used as a fine-tuning target."""
+        return self.source in ("human", "human_ratified")
 
 
 class Check(PreservingModel):

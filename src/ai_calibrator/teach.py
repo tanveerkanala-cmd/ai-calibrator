@@ -182,6 +182,7 @@ def apply_learned(project: Project, judged: list[Judged], learned: dict | None) 
             good_output=out if j.approved else None,
             bad_output=None if j.approved else out,
             why=as_opt_str(j.reason),
+            source="human_ratified",  # a human approved or rejected this output
         ))
         recorded += 1
 

@@ -91,3 +91,59 @@ jobs:
       - run: pip install -e '.[dev]'
       - name: Bandit (medium+ severity)
         run: bandit -r src/ai_calibrator --severity-level medium -q
+
+  package:
+    # Every other job installs with `pip install -e`, which imports straight from
+    # src/ and therefore proves nothing about the DISTRIBUTION. This builds the
+    # wheel and sdist, installs each into a clean venv, and exercises the console
+    # script from site-packages — so a packaging mistake (a missing web asset, a
+    # dropped py.typed, a broken entry point) fails here instead of reaching the
+    # first stranger who runs `pip install`.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Build wheel + sdist
+        run: |
+          pip install build twine
+          python -m build
+          twine check dist/*
+      - name: Wheel ships what it must, and nothing it must not
+        run: |
+          python - <<'PY'
+          import zipfile, glob, sys
+          whl = glob.glob("dist/*.whl")[0]
+          names = zipfile.ZipFile(whl).namelist()
+          required = ["ai_calibrator/py.typed", "ai_calibrator/web/index.html",
+                      "ai_calibrator/web/app.js", "ai_calibrator/web/style.css"]
+          missing = [r for r in required if r not in names]
+          leaked = [n for n in names if n.startswith(("tests/", "docs/")) or n.endswith(".lock")]
+          print(f"{whl}: {len(names)} files")
+          if missing or leaked:
+              print("MISSING:", missing)
+              print("LEAKED:", leaked)
+              sys.exit(1)
+          PY
+      - name: Install the WHEEL into a clean venv and run the console script
+        run: |
+          python -m venv /tmp/wheelenv
+          /tmp/wheelenv/bin/pip install -q "$(ls dist/*.whl)[api]"
+          /tmp/wheelenv/bin/calibrate --version
+          /tmp/wheelenv/bin/calibrate --help > /dev/null
+          # The UI must be served from site-packages, not from the source tree.
+          /tmp/wheelenv/bin/python - <<'PY'
+          from pathlib import Path
+          import ai_calibrator, ai_calibrator.api as api
+          assert "site-packages" in ai_calibrator.__file__, ai_calibrator.__file__
+          for asset in ("index.html", "app.js", "style.css"):
+              p = Path(api.WEB_DIR) / asset
+              assert p.is_file(), f"{asset} missing from the installed package"
+          print("installed package serves its own web assets")
+          PY
+      - name: Install the SDIST into a clean venv
+        run: |
+          python -m venv /tmp/sdistenv
+          /tmp/sdistenv/bin/pip install -q "$(ls dist/*.tar.gz)"
+          /tmp/sdistenv/bin/calibrate --version

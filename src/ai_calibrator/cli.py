@@ -2087,26 +2087,39 @@ def finetune(
         if not (baseline and candidate):
             typer.secho("--gate needs --baseline <run-id> and --candidate <run-id>.", fg=typer.colors.RED)
             raise typer.Exit(code=1)
-        from .finetune import beats_baseline, training_overlap
+        from .finetune import beats_baseline, held_out_rate, training_overlap
 
         base_card, cand_card = _scorecard_or_exit(path, baseline), _scorecard_or_exit(path, candidate)
-        win = beats_baseline(base_card, cand_card)
         typer.echo(f"baseline [{baseline}]: {pct(base_card.pass_rate)}    "
                    f"candidate [{candidate}]: {pct(cand_card.pass_rate)}")
 
         # The dataset is built from spec.examples, and examples-to-tests / absorb
-        # turn those same examples into ex_*/fb_* tests — so the gate can grade the
-        # fine-tune on prompts it trained on. That is not a held-out comparison and
-        # a model that merely memorized would pass it. Say so.
+        # turn those same examples into ex_*/fb_* tests — so the headline rate can
+        # include prompts the model trained on, which a memorizing fine-tune passes
+        # by construction. Decide the gate on the HELD-OUT tests only.
         overlap = training_overlap(project, cand_card)
         graded = [r for r in cand_card.results if r.criteria]
         if overlap:
-            typer.secho(f"⚠ NOT held out: {len(overlap)} of {len(graded)} graded test(s) use an "
-                        "input that is also a TRAINING prompt "
+            excl = set(overlap)
+            cand_held, n_held = held_out_rate(cand_card, excl)
+            base_held, _ = held_out_rate(base_card, excl)
+            typer.secho(f"⚠ {len(overlap)} of {len(graded)} graded test(s) use an input that is "
+                        "also a TRAINING prompt "
                         f"({', '.join(overlap[:5])}{', …' if len(overlap) > 5 else ''}).",
                         fg=typer.colors.YELLOW, bold=True)
-            typer.echo("  A fine-tune that memorized the dataset would pass this gate. Add tests "
-                       "whose inputs are not in the dataset before trusting the verdict.")
+            if n_held == 0:
+                typer.secho("✗ CANNOT JUDGE — every graded test is a training prompt, so this "
+                            "comparison cannot distinguish learning from memorization.",
+                            fg=typer.colors.RED, bold=True)
+                typer.echo("  Add tests whose inputs are NOT in the dataset "
+                           "(`calibrate redteam --add-tests`, or write them by hand), re-run both "
+                           "evals, and gate again.")
+                raise typer.Exit(code=2)
+            typer.echo(f"  gating on the {n_held} held-out test(s): "
+                       f"baseline {pct(base_held)} → candidate {pct(cand_held)}")
+            win = cand_held > base_held
+        else:
+            win = beats_baseline(base_card, cand_card)
 
         def _prov(card):
             bits = [f"subject={card.subject}"] if card.subject else []
@@ -2146,6 +2159,15 @@ def finetune(
             "⚠ No training examples yet. The Advanced tier needs human-authored / "
             "corrected examples — add examples to the spec (or capture eval "
             "corrections) before fine-tuning will help.",
+            fg=typer.colors.YELLOW,
+        )
+    if result.excluded_engine:
+        # Say why they were left out: a model trained on its own synthesized
+        # answers learns nothing new, so those rows are not training targets.
+        typer.secho(
+            f"  {result.excluded_engine} compiler-written example(s) excluded — a model "
+            "trained on its own output learns nothing. Import your own examples "
+            "(`calibrate examples --import`) or capture corrections with `calibrate teach`.",
             fg=typer.colors.YELLOW,
         )
     typer.secho(

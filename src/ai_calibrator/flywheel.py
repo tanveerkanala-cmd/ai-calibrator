@@ -135,11 +135,13 @@ def absorb_feedback(project: Project, project_dir: str | Path) -> AbsorbResult:
         if verdict == "up":
             result.ups += 1
             example = Example(input=turns[-1], good_output=output,
-                              why=reason or "approved in live use")
+                              why=reason or "approved in live use",
+                              source="human_ratified")  # a human approved this answer
         else:
             result.downs += 1
             example = Example(input=turns[-1], bad_output=output, good_output=correction,
-                              why=reason or "flagged in live use")
+                              why=reason or "flagged in live use",
+                              source="human_ratified")  # a human flagged it and may have corrected it
 
         # Feedback is time-ordered, so the LATEST verdict on an answer wins. Without
         # this, a `down` on text an earlier `up` stored as good_output just appends a

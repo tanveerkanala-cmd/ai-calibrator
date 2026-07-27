@@ -186,18 +186,18 @@ training data, we harvest what the interview and eval loop already produced.
 1. **Dataset assembly.** Build the set from: the spec's examples, the interview's
    ratified answers, and — most valuable — the **human-corrected outputs from the
    eval/refine loop** (the cases where you said "wrong; here's right"). Format for
-   the chosen trainer (chat JSONL, etc.). *Avoid self-distillation* — the model
-   writing both prompt and ideal answer teaches nothing; corrections are the
-   signal. (v0 caveat: `spec.examples` also holds compiler-synthesized rows and
-   carries no provenance field, so the dataset builder cannot yet filter to
-   human-authored examples. Curate before training.)
+   the chosen trainer (chat JSONL, etc.). *Never self-distill* — the model writing
+   both prompt and ideal answer teaches nothing; corrections are the signal. This
+   is enforced, not advised: every `Example` records its `source` (human /
+   human_ratified / engine) and only the first two become training targets, with
+   the excluded count reported.
 2. **Approach recommendation.** LoRA vs full fine-tune, base model, and
    hyperparameters — fit to the user's hardware tier (§5.1). Default: LoRA.
 3. **Runnable recipe.** Emit a training script wrapping standard OSS toolkits
    (`unsloth` / `axolotl` / `LLaMA-Factory` / PEFT). Capable GPU → run locally;
    otherwise → a **cloud recipe** (RunPod/Vast template + script) the user runs on
    their own rented GPU and account.
-4. **Prove-it gate.** Score the fine-tuned model on the **same eval
+4. **Prove-it gate.** Score the fine-tuned model on the **held-out eval
    harness** (§9). **Only accept a fine-tune that measurably beats the prompt+RAG
    baseline** — otherwise the tool tells you to stay on configuration. This is
    what stops impressive-looking fine-tunes that don't actually help.

@@ -7,6 +7,20 @@ versions follow [SemVer](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Example provenance.** Every `Example` records its `source` (`human`,
+  `human_ratified`, or `engine`), and only human-authored or human-ratified rows
+  become fine-tuning targets. The "never self-distill" rule was previously advice
+  the code could not enforce; it is now enforced, and the excluded count is
+  reported so an empty dataset is explained rather than mysterious.
+- **The prove-it gate scores held-out tests only.** It detects which graded tests
+  were also training prompts, excludes them, and decides on the remainder —
+  refusing to judge (exit 2) when every graded test was a training prompt, rather
+  than passing a fine-tune that may only have memorized its dataset.
+- **A `package` CI job.** Every other job installs with `pip install -e`, which
+  imports from `src/` and proves nothing about the distribution. This builds the
+  wheel and sdist, checks the wheel ships `py.typed` and the web assets and leaks
+  no tests or docs, installs both into clean venvs, and runs the console script
+  and the UI from site-packages.
 - `calibrate --version` / `-V`.
 - `all` package extra (`pip install -e '.[all]'`) — every engine, the
   web UI, and document ingestion in one install.
@@ -22,6 +36,13 @@ versions follow [SemVer](https://semver.org/).
   architecture section references (`§9`) into user-facing text.
 
 ### Fixed
+- **An empty answer is no longer scored as a red-team "hold".** A subject that
+  said nothing was counted as having withstood the probe, inflating the hold rate,
+  while `eval` fails every criterion on that same empty output. It is now ungraded
+  — neither held nor broke — and excluded from the rate.
+- **The API's `/teach/learn` saves judgments before inferring standards**, as the
+  CLI does, so an engine failure no longer discards a whole judging session. The
+  second call folds in the standards only, so nothing is recorded twice.
 - **The Engine-Trainer's generated `train.py` now runs.** It shipped with
   `__EPOCHS__` / `__MAX_STEPS__` unsubstituted; those are valid Python
   identifiers, so the file parsed and only failed with `NameError` after the

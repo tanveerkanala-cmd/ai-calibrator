@@ -1040,3 +1040,61 @@ def test_train_engine_route_names_the_roles_that_are_logged(tmp_path):
     r = _client(tmp_path).post("/api/projects/p/train-engine/extractor")
     assert r.status_code == 400
     assert "nothing records the extractor role" in r.json()["detail"]
+
+
+def test_teach_learn_keeps_judgments_when_inference_fails(tmp_path):
+    """Parity with the CLI: the judgments are a person's attention and do not
+    depend on the inferred standards, so an engine failure must not discard them."""
+    from ai_calibrator.store import load_project
+
+    from ai_calibrator.engines.base import EngineError
+
+    class BoomInfer:
+        name = "fake@test"
+
+        def __init__(self, spec):
+            pass
+
+        def complete(self, prompt, *, system=None, schema=None):
+            raise EngineError("upstream is down")
+
+    c = _client(tmp_path)
+    c.post("/api/projects", json={"name": "p", "goal": "g"})
+    app = create_app(tmp_path)
+    app.dependency_overrides[_engine_factory] = lambda: (lambda spec: BoomInfer(spec))
+    c2 = TestClient(app, raise_server_exceptions=False)
+
+    r = c2.post("/api/projects/p/teach/learn", json={"judgments": [
+        {"input": "q1", "output": "a1", "approved": True, "reason": None},
+        {"input": "q2", "output": "a2", "approved": False, "reason": "too vague"},
+    ]})
+    assert r.status_code in (502, 504)                      # the failure is reported
+    spec = load_project(tmp_path / "p").spec
+    assert spec is not None
+    assert [e.input for e in spec.examples] == ["q1", "q2"]  # and nothing was lost
+
+
+def test_teach_learn_records_each_judgment_once(tmp_path):
+    """The checkpoint must not double-record — the defect the CLI had."""
+    from ai_calibrator.store import load_project
+
+    class Infer:
+        name = "fake@test"
+
+        def __init__(self, spec):
+            pass
+
+        def complete(self, prompt, *, system=None, schema=None):
+            return {"standards": ["S1"], "do_not": []}
+
+    c = _client(tmp_path)
+    c.post("/api/projects", json={"name": "p", "goal": "g"})
+    app = create_app(tmp_path)
+    app.dependency_overrides[_engine_factory] = lambda: (lambda spec: Infer(spec))
+    r = TestClient(app).post("/api/projects/p/teach/learn", json={"judgments": [
+        {"input": "q1", "output": "a1", "approved": True, "reason": None}]})
+    assert r.status_code == 200
+
+    spec = load_project(tmp_path / "p").spec
+    assert len(spec.examples) == 1
+    assert spec.standards == ["S1"]

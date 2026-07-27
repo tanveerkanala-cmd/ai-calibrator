@@ -193,7 +193,8 @@ def test_train_offers_deps_and_respects_decline(tmp_path, monkeypatch):
     import yaml
     (tmp_path / "project.yaml").write_text(yaml.safe_dump({
         "name": "p", "goal": "g",
-        "spec": {"goal": "g", "examples": [{"input": "hi", "good_output": "hello there"}],
+        "spec": {"goal": "g",
+                 "examples": [{"input": "hi", "good_output": "hello there", "source": "human"}],
                  "eval_criteria": [{"id": "c1", "description": "d", "weight": "high"}]},
     }))
     real = importlib.util.find_spec

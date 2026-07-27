@@ -528,11 +528,12 @@ writes a merged model to `finetune/merged/`, which you serve either via
 bind as the project's `subject` (the bundle README spells out both). Run the
 **prove-it gate** — keep the fine-tune *only* if it beats your configured
 baseline on the same evals (both scorecards must be full runs graded by the same
-judge; the gate warns otherwise). **The suite is not automatically held out:**
-the dataset is built from `spec.examples`, and `examples-to-tests` / `absorb`
-turn those same examples into `ex_*` / `fb_*` tests, so a fine-tune can be graded
-on prompts it trained on. The gate reports that overlap — add tests whose inputs
-are not in the dataset before you trust the verdict:
+judge; the gate warns otherwise). **The gate scores only held-out tests.** The
+dataset is built from `spec.examples`, and `examples-to-tests` / `absorb` turn
+those same examples into `ex_*` / `fb_*` tests — so the gate detects which graded
+tests were also training prompts, excludes them, and decides on the rest. If every
+graded test was a training prompt it refuses to judge (exit 2) rather than pass a
+fine-tune that may only have memorized:
 ```bash
 calibrate finetune my-support-ai --gate --baseline <run-id> --candidate <run-id>
 ```

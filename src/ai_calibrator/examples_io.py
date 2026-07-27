@@ -38,7 +38,10 @@ def _row_to_example(row: dict) -> Example | None:
     out = _pick(row, _OUTPUT_KEYS)
     if not is_str(inp):
         return None                       # an example must at least have an input
-    return Example(input=inp, good_output=as_opt_str(out), bad_output=as_opt_str(_pick(row, _BAD_KEYS)))
+    # Imported from the owner's own file (past replies, an FAQ, a spreadsheet):
+    # human-authored, so trainable.
+    return Example(input=inp, good_output=as_opt_str(out),
+                   bad_output=as_opt_str(_pick(row, _BAD_KEYS)), source="human")
 
 
 @dataclass

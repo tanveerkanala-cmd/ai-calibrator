@@ -337,3 +337,94 @@ def test_install_hints_name_a_command_a_reader_can_run():
         if "pip install 'ai-calibrator[" in line
     ]
     assert not unrunnable, unrunnable
+
+
+# --- an empty answer is never a defence, on any surface -------------------
+
+def test_redteam_empty_answer_is_ungraded_not_held():
+    """An AI that says nothing neither broke the rule nor withstood the probe.
+    Scoring it as held counted silence as a successful defence and inflated
+    hold_rate — while eval fails every criterion on the same empty output."""
+    from ai_calibrator.redteam import ProbeResult, RedTeamReport
+
+    empty = ProbeResult(input="i", target="t", tactic="x", output="",
+                        violated=None, severity="low", rationale="empty output")
+    held = ProbeResult(input="i2", target="t", tactic="x", output="a real answer",
+                       violated=False, severity="low", rationale="ok")
+    report = RedTeamReport(run_id="redteam-0001", results=[empty, held])
+
+    assert report.ungraded == [empty]
+    assert report.hold_rate == 1.0        # one graded probe, and it held
+    assert len(report.results) == 2       # the empty one is still reported
+
+
+def test_redteam_all_empty_answers_is_not_a_clean_hold():
+    from ai_calibrator.redteam import ProbeResult, RedTeamReport
+
+    results = [ProbeResult(input=f"i{i}", target="t", tactic="x", output="",
+                           violated=None, severity="low", rationale="empty output")
+               for i in range(3)]
+    assert RedTeamReport(run_id="r", results=results).hold_rate == 0.0
+
+
+# --- the fine-tune dataset may only contain human-authored targets ---------
+
+def test_compiler_written_examples_are_not_training_targets():
+    """A model writing both the prompt and the ideal answer teaches it nothing.
+    Provenance is what makes that rule enforceable rather than aspirational."""
+    from ai_calibrator.finetune import assemble_dataset
+
+    p = Project(name="p", goal="g")
+    p.spec = BehaviorSpec(goal="g", examples=[
+        Example(input="q1", good_output="engine wrote this", source="engine"),
+        Example(input="q2", good_output="the owner imported this", source="human"),
+        Example(input="q3", good_output="a human corrected this", source="human_ratified"),
+    ])
+    rows = assemble_dataset(p)
+    trained_on = [r["messages"][-1]["content"] for r in rows]
+    assert trained_on == ["the owner imported this", "a human corrected this"]
+
+
+def test_examples_default_to_untrainable():
+    """An example from a project.yaml written before provenance existed was
+    almost certainly compiler-synthesized, so the default must be the safe one."""
+    assert Example(input="q", good_output="a").source == "engine"
+    assert not Example(input="q", good_output="a").trainable
+
+
+def test_finetune_reports_what_it_excluded(tmp_path):
+    from ai_calibrator.finetune import export_finetune
+
+    p = Project(name="p", goal="g")
+    p.spec = BehaviorSpec(goal="g", examples=[
+        Example(input=f"q{i}", good_output="a", source="engine") for i in range(3)])
+    result = export_finetune(p, project_dir=tmp_path)
+    assert result.examples == 0 and result.excluded_engine == 3
+
+
+# --- the prove-it gate turns on held-out tests -----------------------------
+
+def _card(run_id, outcomes):
+    return Scorecard(run_id=run_id, results=[
+        ResultModel(test_id=tid, output="o",
+                    criteria=[CriterionResult(criterion_id="c1", passed=ok, score=1.0 if ok else 0.0)])
+        for tid, ok in outcomes])
+
+
+def test_gate_scores_only_the_held_out_tests():
+    """A fine-tune that memorized its training prompts scores well on them by
+    construction, so the headline rate cannot distinguish learning from recall."""
+    from ai_calibrator.finetune import held_out_rate
+
+    # ex_1/ex_2 were training prompts; t1/t2 were not.
+    card = _card("run-2", [("ex_1", True), ("ex_2", True), ("t1", False), ("t2", False)])
+    assert card.pass_rate == 0.5                       # flattering headline
+    rate, n = held_out_rate(card, {"ex_1", "ex_2"})
+    assert (rate, n) == (0.0, 2)                       # honest: it learned nothing
+
+
+def test_held_out_rate_reports_zero_tests_rather_than_a_verdict():
+    from ai_calibrator.finetune import held_out_rate
+
+    card = _card("run-2", [("ex_1", True)])
+    assert held_out_rate(card, {"ex_1"}) == (0.0, 0)   # caller must treat as "cannot judge"
