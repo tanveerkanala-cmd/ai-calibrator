@@ -115,14 +115,32 @@ class FileLock:
                 # EDEADLK is specifically "still held by another holder" (see the
                 # msvcrt docs); any other OSError is a real failure, re-raised.
                 os.lseek(self._fd, 0, os.SEEK_SET)
-                while True:
-                    try:
-                        msvcrt.locking(self._fd, msvcrt.LK_LOCK, 1)
-                        break
-                    except OSError as exc:
-                        if exc.errno != errno.EDEADLK:
-                            raise
-                        time.sleep(0.05)
+                # Probe without blocking first — this is what makes blocking=False
+                # and on_wait work here as they do on the fcntl path. Without it the
+                # API's 423 fast-fail and the CLI's "locked, waiting…" notice were
+                # both dead code on Windows: every caller silently blocked forever.
+                contended = False
+                try:
+                    msvcrt.locking(self._fd, msvcrt.LK_NBLCK, 1)
+                except OSError as exc:
+                    if exc.errno not in (errno.EDEADLK, errno.EACCES, errno.EAGAIN):
+                        raise
+                    contended = True
+                if contended:
+                    if not self._blocking:
+                        os.close(self._fd)
+                        self._fd = None
+                        raise LockBusy(f"{self.path.parent.name} is locked by another process")
+                    if self._on_wait is not None:
+                        self._on_wait()
+                    while True:
+                        try:
+                            msvcrt.locking(self._fd, msvcrt.LK_LOCK, 1)
+                            break
+                        except OSError as exc:
+                            if exc.errno != errno.EDEADLK:
+                                raise
+                            time.sleep(0.05)
             # _BACKEND == "none": best-effort no-op (atomic writes still apply).
         except OSError:
             # Never leak the descriptor if locking itself failed.

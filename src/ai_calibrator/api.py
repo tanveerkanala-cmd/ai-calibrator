@@ -5,7 +5,7 @@ logic that powers the CLI also drives the web/desktop UI. Engine-dependent
 endpoints build the project's configured engine; an upstream engine failure
 surfaces as 502/504 (see ``_engine_http_error``), a bad request as 400.
 
-Run with `calibrate serve`. Needs the `api` extra:  pip install -e '.[api]'
+Run with `calibrate serve`. Needs the `api` extra:  pip install 'ai-calibrator[api]'
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ try:
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel, Field, ValidationError
 except ImportError as exc:  # pragma: no cover - depends on optional extra
-    raise RuntimeError("The API needs the `api` extra:  pip install -e '.[api]'") from exc
+    raise RuntimeError("The API needs the `api` extra:  pip install 'ai-calibrator[api]'") from exc
 
 from .auth import all_status
 from .models import EngineBinding, Project, TaskType
@@ -270,9 +270,18 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         finally:
             lock.release()
 
-    def _state(p: Project) -> dict:
+    def _state(p: Project, key: str | None = None) -> dict:
+        """Project state for the web UI.
+
+        ``name`` is the ROUTING key — the directory component every route resolves
+        through — not the project's stored ``name`` field. The two diverge whenever
+        a project folder is copied or renamed, and the UI builds every subsequent
+        request URL from this value: publishing the stored name there makes the UI
+        show one project and mutate another. ``display_name`` keeps the stored one
+        for headings."""
         return {
-            "name": p.name,
+            "name": key if key is not None else p.name,
+            "display_name": p.name,
             "goal": p.goal,
             "task_type": p.task_type.value,
             "materials": [m.model_dump(mode="json") for m in p.materials],
@@ -312,11 +321,11 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
                 raise HTTPException(409, "project already exists")
             save_project(project, d)
             write_project_gitignore(d)
-        return _state(project)
+        return _state(project, name)
 
     @app.get("/api/projects/{name}")
     def get_project(name: str):
-        return _state(_load(name))
+        return _state(_load(name), name)
 
     @app.delete("/api/projects/{name}")
     def delete_project(name: str):
@@ -329,6 +338,12 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             raise HTTPException(404, f"no project {name!r}")
         with project_lock(d):
             shutil.rmtree(d, ignore_errors=True)
+        # ignore_errors swallows every OSError, so verify rather than assume: a
+        # delete that removed nothing (or half the tree) must not report success
+        # while the project's uploaded documents are still on disk.
+        if d.exists():
+            raise HTTPException(409, f"could not fully delete {name!r} — files remain at {d}. "
+                                     "Check permissions or another process holding them open.")
         return {"deleted": name}
 
     @app.delete("/api/projects/{name}/materials/{filename}")
@@ -407,7 +422,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             "materials": result.materials, "gaps": result.gaps,
             "facts": result.facts, "indexed": result.indexed,
             "skipped": [{"path": rel, "reason": reason} for rel, reason in result.skipped],
-            "state": _state(project),
+            "state": _state(project, name),
         }
 
     @app.post("/api/projects/{name}/interview")
@@ -431,7 +446,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             except Exception as exc:
                 raise _engine_http_error(exc)
             save_project(project, d)
-        return {**_state(project), "uncovered_gaps": uncovered_gaps(project, project.interview)}
+        return {**_state(project, name), "uncovered_gaps": uncovered_gaps(project, project.interview)}
 
     @app.post("/api/projects/{name}/answers")
     def submit_answers(name: str, body: AnswersBody):
@@ -444,7 +459,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
                     by_id[qid].answer = ans
                     applied += 1
             save_project(project, d)
-        return {"applied": applied, "state": _state(project)}
+        return {"applied": applied, "state": _state(project, name)}
 
     @app.post("/api/projects/{name}/examples")
     def add_examples(name: str, body: ExamplesBody):
@@ -466,7 +481,9 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         from .compile import compile_project
         with _locked(name) as d:
             project = _load(name)
-            if not any(it.answer for it in project.interview):
+            # A merged project has a spec but no interview; compile preserves an
+            # existing spec, so gating on the interview alone made merge a dead end.
+            if not any(it.answer for it in project.interview) and project.spec is None:
                 raise HTTPException(400, f"No interview answers yet — POST /api/projects/{name}/interview, then submit answers.")
             try:
                 engine = make_engine(project.engines.compiler)
@@ -477,7 +494,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
                 raise _engine_http_error(exc)
             save_project(project, d)
         return {"criteria": result.criteria, "tests": result.tests,
-                "files": result.files, "state": _state(project)}
+                "files": result.files, "state": _state(project, name)}
 
     @app.post("/api/projects/{name}/eval")
     def evaluate(name: str, body: EvalBody, make_engine=Depends(_engine_factory)):
@@ -629,7 +646,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             if project.spec is not None and project.tests:
                 write_build_bundle(project.spec, project.tests, d)
         out = absorb_dict(result)
-        out["state"] = _state(project)
+        out["state"] = _state(project, name)
         return out
 
     @app.post("/api/projects/{name}/examples-to-tests")
@@ -643,7 +660,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             project.tests.extend(new)
             save_project(project, d)
             write_build_bundle(project.spec, project.tests, d)
-        return {"added": len(new), "state": _state(project)}
+        return {"added": len(new), "state": _state(project, name)}
 
     @app.get("/api/projects/{name}/promptfoo")
     def promptfoo_(name: str):
@@ -765,7 +782,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             except ValueError as exc:
                 raise HTTPException(400, str(exc))
             save_project(project, d)
-        return {"engines": project.engines.model_dump(), "state": _state(project)}
+        return {"engines": project.engines.model_dump(), "state": _state(project, name)}
 
     @app.get("/api/projects/{name}/badge")
     def badge_(name: str):
@@ -810,11 +827,17 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             project = _load(name)
             if project.spec is None or not project.tests:
                 raise HTTPException(400, f"Nothing here yet — compile this project first (POST /api/projects/{name}/compile, or /import).")
-            base_id = body.baseline or latest_run_id(d)
+            # Must be a FULL run: comparing against a --max-tests / interrupted
+            # smoke run measures two different test sets, so every regression on a
+            # test the baseline never ran reads as "no regressions".
+            base_id = body.baseline or latest_run_id(d, full_only=True)
             if not base_id:
-                raise HTTPException(400, f"no baseline scorecard — POST /api/projects/{name}/eval first")
+                raise HTTPException(400, f"no full baseline scorecard — POST /api/projects/{name}/eval first")
             try:
                 base_card = load_scorecard(d, base_id)
+                if base_card.partial:
+                    raise HTTPException(400, f"baseline {base_id} is a PARTIAL run (interrupted, or "
+                                             "--max-tests) — not comparable; run a full eval first")
                 subject = make_engine(project.engines.subject)
                 judge = make_engine(project.engines.judge)
                 report, _ = run_drift(project, subject, judge, baseline=base_card,
@@ -888,7 +911,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             except Exception as exc:
                 raise _engine_http_error(exc)
         return {"standards_added": result.standards_added, "do_not_added": result.do_not_added,
-                "standards": result.standards, "do_not": result.do_not, "state": _state(project)}
+                "standards": result.standards, "do_not": result.do_not, "state": _state(project, name)}
 
     def _merge_sources(sources: list[str]):
         """Load + validate >=2 distinct stakeholder projects with specs."""
@@ -924,7 +947,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
                 raise
             except Exception as exc:
                 raise _engine_http_error(exc)
-        return _state(project)
+        return _state(project, name)
 
     @app.post("/api/diff")
     def diff_(body: DiffBody):
@@ -936,7 +959,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
 
     @app.post("/api/merge/detect")
     def merge_detect(body: MergeDetectBody, make_engine=Depends(_engine_factory)):
-        from .stakeholders import conflict_dict, detect_conflicts, gather
+        from .stakeholders import conflict_dict, detect_conflicts, gather, scalar_conflicts
         named, first = _merge_sources(body.sources)
         statements = gather(named)
         try:
@@ -951,6 +974,14 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             "statements": [{"idx": s.idx, "text": s.text, "kind": s.kind, "stakeholder": s.stakeholder}
                            for s in statements],
             "conflicts": [conflict_dict(c) for c in conflicts],
+            # Scalar behavior fields the engine's detector never sees (it is handed
+            # standards and never-rules only). Reported so a client can show a
+            # refusal-policy disagreement instead of it being resolved silently.
+            "field_conflicts": [
+                {"field": field, "values": [{"stakeholder": n, "value": v} for n, v in vals],
+                 "resolved_to": {"stakeholder": vals[0][0], "value": vals[0][1]}}
+                for field, vals in scalar_conflicts(named)
+            ],
         }
 
     @app.post("/api/merge/apply")
@@ -966,7 +997,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             proj = merged_project(out_name, named, goal=goal, task_type=first.task_type,
                                   drops=set(body.drops), additions=body.additions)
             save_project(proj, out_dir)
-        return _state(proj)
+        return _state(proj, out_name)
 
     @app.post("/api/projects/{name}/log")
     def set_log(name: str, body: LogBody):

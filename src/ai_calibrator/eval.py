@@ -65,15 +65,21 @@ def judge_prompt(test_input: str, output: str, criteria: list[tuple[str, str]]) 
 
 
 def _as_float(value: object) -> float:
-    """Coerce a model-supplied score to a finite float, defaulting to 0.0.
+    """Coerce a model-supplied score to a float in [0, 1], defaulting to 0.0.
 
-    A non-compliant judge could return a non-numeric or non-finite score; that
-    must not raise or poison the scorecard arithmetic."""
+    A non-compliant judge could return a non-numeric, non-finite, or out-of-range
+    score; none of those may raise or poison the scorecard arithmetic. Clamping
+    matters as much as the finite check: a judge answering on a 0-100 or 1-5 scale
+    (routine for the small local models this tool supports) would otherwise push
+    the weighted mean above 1.0, and `pct` renders anything >= 1 as the reassuring
+    ">99%" — an anomaly hidden instead of surfaced, right next to a 0% pass rate."""
     try:
         f = float(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return 0.0
-    return f if math.isfinite(f) else 0.0
+    if not math.isfinite(f):
+        return 0.0
+    return min(1.0, max(0.0, f))
 
 
 def _judge(

@@ -89,12 +89,16 @@ def test_merge_dedups_within_batch_and_against_existing():
     assert [e.input for e in spec.examples] == ["a", "b"]
 
 
-def test_dedup_examples_keeps_first():
+def test_dedup_examples_keeps_latest_in_first_position():
+    """The newest example for an input wins — it is the most recently ratified
+    (a live-feedback correction, or a `teach` judgment). First-wins would delete
+    the correction and keep the answer a human already rejected. Order is stable:
+    the survivor sits where the first occurrence was."""
     spec = BehaviorSpec(goal="g", examples=[
         Example(input="a", good_output="first"), Example(input="a", good_output="second"),
         Example(input="b", good_output="B")])
     assert dedup_examples(spec) == 1
-    assert [(e.input, e.good_output) for e in spec.examples] == [("a", "first"), ("b", "B")]
+    assert [(e.input, e.good_output) for e in spec.examples] == [("a", "second"), ("b", "B")]
 
 
 def test_examples_status_threshold_guidance():

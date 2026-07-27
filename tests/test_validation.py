@@ -137,7 +137,7 @@ def test_stages_tolerate_null_list_fields():
                         eval_criteria=[EvalCriterion(id="c1", description="d", weight=Weight.HIGH)])
     assert generate_tests(spec, NullEng()) == []
     assert generate_questions(Project(name="p", goal="g", gaps=[Gap(dimension="d")]), NullEng()) == []
-    assert extract_gaps("g", "assistant", [(Path("x.md"), "t")], NullEng()) == ([], [])
+    assert extract_gaps("g", "assistant", [(Path("x.md"), "t")], NullEng()) == ([], [], 1)
     card = Scorecard(run_id="r", results=[TestResult(test_id="t", output="o",
                      criteria=[CriterionResult(criterion_id="c1", passed=False)])])
     assert refine_spec(Project(name="p", goal="g", spec=spec), card, NullEng()) == []
@@ -217,7 +217,7 @@ def test_extract_gaps_tolerates_non_string_fields():
                 {"dimension": "tone", "why_it_matters": 9},
             ]}
 
-    facts, gaps = extract_gaps("g", "assistant", [(Path("x.md"), "text")], Bad())  # must NOT raise
+    facts, gaps, _ = extract_gaps("g", "assistant", [(Path("x.md"), "text")], Bad())  # must NOT raise
     assert [g.dimension for g in gaps] == ["tone"]   # non-string dimension dropped
     assert gaps[0].why_it_matters is None            # non-string optional -> None
 

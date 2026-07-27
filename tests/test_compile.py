@@ -236,7 +236,7 @@ def test_tests_from_examples_dedups_against_follow_ups():
 def test_recompile_preserves_pinned_tests_checks_and_criteria(tmp_path):
     """A recompile must NOT silently drop what the user accumulated: pinned
     fb_/rt_ regression tests, deterministic add-check criteria, red-team-only
-    criteria, and edge_cases all survive re-synthesis (finding: recompile wipe)."""
+    criteria, and edge_cases all survive re-synthesis."""
     from ai_calibrator.compile import compile_project
     from ai_calibrator.models import Check, EvalCriterion, TestCase, Weight
 

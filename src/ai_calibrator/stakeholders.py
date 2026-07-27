@@ -155,6 +155,30 @@ def conflict_dict(c: Conflict) -> dict:
     }
 
 
+def scalar_conflicts(named_specs: dict[str, BehaviorSpec]) -> list[tuple[str, list[tuple[str, str]]]]:
+    """Scalar behavior fields where stakeholders disagree.
+
+    Returns ``[(field, [(stakeholder, value), ...]), ...]`` for every field where two
+    or more stakeholders supplied DIFFERENT non-empty values. These never reach
+    ``detect_conflicts`` (which only ever sees standards and never-rules), so
+    without this a merge silently keeps one team's refusal policy and drops
+    another's while reporting "no conflicts". Needs no engine — string inequality
+    is the whole test."""
+    fields = (
+        ("persona.voice", lambda sp: sp.persona.voice if sp.persona else None),
+        ("persona.reading_level", lambda sp: sp.persona.reading_level if sp.persona else None),
+        ("format", lambda sp: sp.format),
+        ("refusal_policy", lambda sp: sp.refusal_policy),
+    )
+    out: list[tuple[str, list[tuple[str, str]]]] = []
+    for label, get in fields:
+        vals = [(n, get(sp)) for n, sp in sorted(named_specs.items())]
+        vals = [(n, v) for n, v in vals if is_str(v) and v.strip()]
+        if len({v for _, v in vals}) > 1:
+            out.append((label, vals))
+    return out
+
+
 def build_merged_spec(
     named_specs: dict[str, BehaviorSpec],
     *,
@@ -185,13 +209,30 @@ def build_merged_spec(
             if key not in seen_edges:
                 seen_edges.add(key)
                 edge_cases.append(e)
+    # Criteria: collapse only TRUE duplicates. Criterion ids are engine-generated
+    # snake_case labels, so two independently compiled specs routinely both have
+    # `accuracy` or `tone` meaning different things — deduping on the bare id would
+    # silently discard one stakeholder's criterion along with its deterministic
+    # check. Namespace a genuine collision instead of losing it.
     criteria: list[EvalCriterion] = []
-    seen_crit: set[str] = set()
-    for sp in specs:
+    seen_crit: dict[str, EvalCriterion] = {}
+    for name, sp in sorted(named_specs.items()):
         for c in sp.eval_criteria:
-            if c.id not in seen_crit:
-                seen_crit.add(c.id)
+            prior = seen_crit.get(c.id)
+            if prior is None:
+                seen_crit[c.id] = c
                 criteria.append(c)
+            elif (prior.description, prior.weight, prior.check) == (c.description, c.weight, c.check):
+                continue  # the same criterion contributed twice — genuinely a dup
+            else:
+                alt = c.model_copy(deep=True)
+                alt.id = f"{name}_{c.id}"
+                n = 2
+                while alt.id in seen_crit:
+                    alt.id = f"{name}_{c.id}_{n}"
+                    n += 1
+                seen_crit[alt.id] = alt
+                criteria.append(alt)
     examples: list[Example] = []
     seen_ex: set[str] = set()
     for sp in specs:
@@ -201,9 +242,16 @@ def build_merged_spec(
                 examples.append(ex)
     knowledge = _dedup([k for sp in specs for k in sp.knowledge_sources])
 
-    persona = next((sp.persona for sp in specs if sp.persona and (sp.persona.voice or sp.persona.reading_level)), Persona())
-    fmt = next((sp.format for sp in specs if sp.format), None)
-    refusal = next((sp.refusal_policy for sp in specs if sp.refusal_policy), None)
+    # Scalar behavior fields. These render straight into the system prompt, so
+    # picking one by argument order silently ships a different AI depending on the
+    # order of --from flags — and the conflict never appears in the audit file.
+    # Resolve deterministically by stakeholder name (never insertion order) and let
+    # the caller report the values that lost. See scalar_conflicts().
+    by_name = sorted(named_specs.items())
+    persona = next((sp.persona for _, sp in by_name
+                    if sp.persona and (sp.persona.voice or sp.persona.reading_level)), Persona())
+    fmt = next((sp.format for _, sp in by_name if sp.format), None)
+    refusal = next((sp.refusal_policy for _, sp in by_name if sp.refusal_policy), None)
 
     return BehaviorSpec(
         goal=goal, task_type=task_type, persona=persona,

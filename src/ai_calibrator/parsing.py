@@ -1,7 +1,7 @@
 """Parse uploaded materials into plain text, and chunk them for retrieval.
 
 Text/markdown work with the stdlib. PDF and DOCX need the `docs` extra
-(`pip install -e '.[docs]'`) and are imported lazily so the rest of the tool
+(`pip install 'ai-calibrator[docs]'`) and are imported lazily so the rest of the tool
 runs without them.
 """
 
@@ -60,8 +60,12 @@ def read_document(path: str | Path) -> str:
     # text and get filtered out by the caller's `.strip()` check.
     try:
         return p.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return ""
+    except OSError as exc:
+        # Do NOT swallow this. Returning "" makes the caller's `.strip()` filter
+        # drop the file with no entry in `skipped`, so a permission-denied file —
+        # or one deleted between the scan and the read — vanishes from the corpus
+        # silently. parse_materials' per-file handler turns this into a report.
+        raise ValueError(f"{p.name}: {exc.strerror or exc}") from exc
 
 
 def _read_pdf(p: Path) -> str:
@@ -69,7 +73,7 @@ def _read_pdf(p: Path) -> str:
         from pypdf import PdfReader
     except ImportError as exc:  # pragma: no cover - optional extra
         raise RuntimeError(
-            "PDF parsing needs the `docs` extra:  pip install -e '.[docs]'"
+            "PDF parsing needs the `docs` extra:  pip install 'ai-calibrator[docs]'"
         ) from exc
     reader = PdfReader(str(p))
     # Page-by-page with an immediate per-page + running truncation, so a bomb
@@ -119,7 +123,7 @@ def _read_docx(p: Path) -> str:
         import docx  # python-docx
     except ImportError as exc:  # pragma: no cover - optional extra
         raise RuntimeError(
-            "DOCX parsing needs the `docs` extra:  pip install -e '.[docs]'"
+            "DOCX parsing needs the `docs` extra:  pip install 'ai-calibrator[docs]'"
         ) from exc
     import zipfile
     # Bound the REAL decompression first; only then hand a verified-safe file to

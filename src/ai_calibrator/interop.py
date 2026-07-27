@@ -37,7 +37,15 @@ def to_promptfoo(project: Project) -> str:
     crit = {c.id: c.description for c in spec.eval_criteria}
 
     tests = []
+    omitted: list[str] = []
     for t in project.tests:
+        # A multi-turn test's later turns are what the eval harness actually sends.
+        # Exporting only the first turn would silently turn it into a different
+        # (single-turn) test carrying the same assertions, so the promptfoo pass
+        # rate would not mean what the calibrator's does. Omit and say so.
+        if t.follow_ups:
+            omitted.append(t.id)
+            continue
         targeted = [cid for cid in (t.expects or list(crit)) if cid in crit]
         asserts = [{"type": "llm-rubric", "value": crit[cid]} for cid in targeted]
         if not asserts:  # no criteria → grade against the goal so the test still runs
@@ -55,7 +63,13 @@ def to_promptfoo(project: Project) -> str:
         "defaultTest": {"options": {"provider": _provider_id(project.engines.judge)}},
         "tests": tests,
     }
-    return yaml.safe_dump(config, sort_keys=False, allow_unicode=True, width=100)
+    out = yaml.safe_dump(config, sort_keys=False, allow_unicode=True, width=100)
+    if omitted:
+        out = (f"# NOTE: {len(omitted)} multi-turn test(s) omitted — this export is single-turn "
+               f"only ({', '.join(omitted[:10])}"
+               + (", …" if len(omitted) > 10 else "") + ").\n"
+               "# The pass rate here therefore covers fewer tests than `calibrate eval`.\n") + out
+    return out
 
 
 def export_promptfoo(project: Project, *, project_dir: str | Path) -> Path:

@@ -33,6 +33,25 @@ def _looks_like_placeholder(key: str) -> bool:
             or len(k.split("-")[-1]) < 8)
 
 
+def _anthropic_cli() -> str | None:
+    """Path to the Anthropic CLI, or None.
+
+    `ant` is also the name of Apache Ant, an extremely common Java build tool, so
+    a bare `shutil.which("ant")` would report a Claude login as available and then
+    exec a build tool. Verify what the binary actually is before trusting it."""
+    path = shutil.which("ant")
+    if not path:
+        return None
+    try:
+        out = subprocess.run([path, "--version"], capture_output=True, text=True,
+                             timeout=5).stdout.lower()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if "apache ant" in out:  # the Java build tool, not the Anthropic CLI
+        return None
+    return path
+
+
 def anthropic_status() -> AuthStatus:
     key = os.getenv("ANTHROPIC_API_KEY")
     if key:
@@ -43,7 +62,7 @@ def anthropic_status() -> AuthStatus:
         return AuthStatus("claude", True, "ANTHROPIC_API_KEY is set")
     if os.getenv("ANTHROPIC_AUTH_TOKEN"):
         return AuthStatus("claude", True, "ANTHROPIC_AUTH_TOKEN is set (OAuth/login token)")
-    if shutil.which("ant"):
+    if _anthropic_cli() is not None:
         # Presence of the CLI does not mean the user is logged in — report it as
         # not-yet-confirmed rather than a false "configured".
         return AuthStatus(
@@ -77,11 +96,13 @@ def all_status() -> list[AuthStatus]:
 
 def login_anthropic() -> int:
     """Launch the official Anthropic CLI browser login; return its exit code."""
-    if not shutil.which("ant"):
+    cli = _anthropic_cli()
+    if cli is None:
         raise RuntimeError(
             "Browser login to Claude uses the Anthropic CLI (`ant`), which isn't installed.\n"
+            "  (If you do have an `ant` on PATH, it is Apache Ant — a different tool.)\n"
             "  Install it:  brew install anthropics/tap/ant   (or see docs.claude.com)\n"
             "  …then re-run `calibrate login claude`. Or skip login and set ANTHROPIC_API_KEY."
         )
     # Interactive: inherit stdio so the browser/device flow works.
-    return subprocess.call(["ant", "auth", "login"])
+    return subprocess.call([cli, "auth", "login"])

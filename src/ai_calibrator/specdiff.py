@@ -24,6 +24,8 @@ class SpecDiff:
     criteria_added: list[str] = field(default_factory=list)
     criteria_removed: list[str] = field(default_factory=list)
     criteria_changed: list[str] = field(default_factory=list)  # id in both, description/weight/check differs
+    knowledge_added: list[str] = field(default_factory=list)
+    knowledge_removed: list[str] = field(default_factory=list)
     # Scalar behavior fields: (field, before, after). These render straight into the
     # system prompt, so a change here changes the deployed AI as surely as a new
     # standard does — reporting "no behavior change" for a reversed refusal policy
@@ -35,7 +37,7 @@ class SpecDiff:
         return any((self.standards_added, self.standards_removed, self.do_not_added, self.do_not_removed,
                     self.edge_cases_added, self.edge_cases_removed,
                     self.criteria_added, self.criteria_removed, self.criteria_changed,
-                    self.fields_changed))
+                    self.fields_changed, self.knowledge_added, self.knowledge_removed))
 
 
 def _added_removed(before: list[str], after: list[str]) -> tuple[list[str], list[str]]:
@@ -74,6 +76,10 @@ def diff_specs(before: BehaviorSpec, after: BehaviorSpec) -> SpecDiff:
     be = [f"When {e.situation}: {e.ruling}" for e in before.edge_cases]
     ae = [f"When {e.situation}: {e.ruling}" for e in after.edge_cases]
     d.edge_cases_added, d.edge_cases_removed = _added_removed(be, ae)
+    # render_system_prompt appends a grounding paragraph iff knowledge_sources is
+    # non-empty, so this genuinely changes the deployed prompt.
+    d.knowledge_added, d.knowledge_removed = _added_removed(
+        list(before.knowledge_sources), list(after.knowledge_sources))
 
     bc = {c.id: c for c in before.eval_criteria}
     ac = {c.id: c for c in after.eval_criteria}
@@ -96,4 +102,5 @@ def diff_dict(d: SpecDiff) -> dict:
         "do_not": {"added": d.do_not_added, "removed": d.do_not_removed},
         "edge_cases": {"added": d.edge_cases_added, "removed": d.edge_cases_removed},
         "criteria": {"added": d.criteria_added, "removed": d.criteria_removed, "changed": d.criteria_changed},
+        "knowledge_sources": {"added": d.knowledge_added, "removed": d.knowledge_removed},
     }

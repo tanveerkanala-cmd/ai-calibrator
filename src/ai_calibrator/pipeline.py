@@ -76,11 +76,19 @@ def calibrate_loop(
     max_rounds: int = 3,
     judge_passes: int = 1,
     project_dir=None,
+    on_spec_change=None,
 ) -> list[Scorecard]:
     """Eval → (if below threshold) refine the spec → re-eval, up to max_rounds.
 
     Mutates ``project.spec.standards`` as it refines. Returns one scorecard per
     round so callers can show the pass-rate trajectory.
+
+    ``on_spec_change(project)`` fires immediately after each round's standards are
+    added, BEFORE the next round runs. Persist there: each round's scorecard is
+    saved as soon as it is graded, so a caller that only saves after the loop
+    would — on any interruption, a Ctrl-C or a 529 — leave scorecards on disk that
+    were earned under a spec the project never recorded. The newest full run and
+    the pinned golden would then describe a spec that never existed.
 
     Raises ``ValueError`` for nonsensical controls — ``max_rounds < 1`` (the
     loop would silently run zero rounds and return no scorecards) or a
@@ -112,5 +120,7 @@ def calibrate_loop(
             break  # nothing NEW to add — more rounds would just repeat themselves
         # Update the source of truth; the next round re-renders the system prompt.
         project.spec.standards.extend(new_standards)
+        if on_spec_change is not None:
+            on_spec_change(project)  # persist before the next round earns a scorecard
 
     return cards

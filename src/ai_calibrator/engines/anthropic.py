@@ -2,7 +2,7 @@
 
 Opt-in quality upgrade over the local default. Credentials resolve from
 ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, or an `ant auth login` profile — so
-`calibrate login claude` makes this work with no key. Install: pip install -e '.[cloud]'
+`calibrate login claude` makes this work with no key. Install: pip install 'ai-calibrator[cloud]'
 """
 
 from __future__ import annotations
@@ -58,7 +58,7 @@ class AnthropicEngine(Engine):
         except ImportError as exc:  # pragma: no cover - optional extra
             raise RuntimeError(
                 "The Anthropic cloud engine needs the `anthropic` package.\n"
-                "  Install it with:  pip install -e '.[cloud]'"
+                "  Install it with:  pip install 'ai-calibrator[cloud]'"
             ) from exc
 
         self.name = f"{model}@anthropic"

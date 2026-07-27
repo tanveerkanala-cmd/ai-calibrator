@@ -175,15 +175,23 @@ def merge_examples(spec: BehaviorSpec, new: list[Example], *, dedup: bool = True
 
 
 def dedup_examples(spec: BehaviorSpec) -> int:
-    """Remove later examples whose input duplicates an earlier one. Returns the
-    number removed (order-preserving — the first occurrence wins)."""
+    """Collapse examples that share an input. Returns the number removed.
+
+    The LAST occurrence wins, kept in the position of the first (so order is
+    stable). Later is better here: examples accumulate over time, and the newest
+    one for an input is the most recently ratified — a correction absorbed from
+    live feedback, or a `teach` judgment. First-wins would delete the correction
+    and keep the answer a human already rejected."""
+    last: dict[str, Example] = {}
+    for ex in spec.examples:
+        last[ex.input] = ex
     seen: set[str] = set()
     kept: list[Example] = []
     for ex in spec.examples:
         if ex.input in seen:
             continue
         seen.add(ex.input)
-        kept.append(ex)
+        kept.append(last[ex.input])
     removed = len(spec.examples) - len(kept)
     spec.examples = kept
     return removed

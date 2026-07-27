@@ -1,9 +1,8 @@
 """OllamaEngine adapter — verified with mocked httpx (no server needed).
 
-Closes a real coverage gap: the local engine that powers the tool out-of-the-box
-had no unit tests. Covers the happy paths, the JSON-schema path through
-call_json, and the error paths (connection refused, HTTP error, malformed
-response) — including the clear-error fix for missing response keys.
+Covers the happy paths, the JSON-schema path through call_json, and the error
+paths (connection refused, HTTP error, malformed response), including a clear
+message when the response is missing keys.
 """
 
 import httpx
@@ -115,7 +114,8 @@ def test_schema_with_unparseable_output_retries_then_raises(monkeypatch):
 
 
 def test_timeout_env_override(monkeypatch):
-    """Journey finding: 120s was hardcoded — a slow machine had no knob."""
+    """The Ollama timeout is env-overridable — a hardcoded 120s leaves a slow
+    machine no knob."""
     monkeypatch.delenv("CALIBRATOR_OLLAMA_TIMEOUT", raising=False)
     assert OllamaEngine("m").timeout == 120.0
     monkeypatch.setenv("CALIBRATOR_OLLAMA_TIMEOUT", "420")

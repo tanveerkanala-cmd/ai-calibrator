@@ -1,8 +1,7 @@
 """RAG indexing — guarded (the `rag` extra is heavy; skip when absent).
 
-Closes a real coverage gap: build_index had NO tests because the rag extra was
-never installed in this session's CI. These run wherever lancedb +
-sentence-transformers are present."""
+Covers build_index and retrieval; runs wherever lancedb + sentence-transformers
+are present."""
 
 import pytest
 

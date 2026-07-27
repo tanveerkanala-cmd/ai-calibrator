@@ -5,8 +5,10 @@ when captured), emits a runnable LoRA recipe + training script, and provides the
 **prove-it gate**: a fine-tune is only worth keeping if it BEATS the configured
 prompt+RAG baseline on the same eval harness. Non-technical users never see this.
 
-The dataset must come from human-authored/corrected outputs — never self-distill
-(a model writing its own training targets teaches it nothing new). The gate
+The dataset should be dominated by human-authored/corrected outputs: a model
+writing its own training targets teaches it nothing new. Note that
+`spec.examples` also holds compiler-synthesized rows and `Example` carries no
+provenance field, so this is guidance the code cannot yet enforce — the gate
 (`beats_baseline`) is the safeguard that the result actually helps.
 """
 
@@ -46,6 +48,26 @@ from trl import SFTConfig, SFTTrainer
 BASE = "__BASE__"
 OUT = "__OUT__"
 
+# Hyperparameters live in recipe.yaml so editing that file actually changes the
+# run (it is documented as editable). Values here are the fallback when the file
+# is missing or unreadable.
+DEFAULTS = {"learning_rate": 2e-4, "lora_r": 16, "lora_alpha": 32,
+            "lora_dropout": 0.05, "max_seq_len": 2048}
+
+
+def _recipe() -> dict:
+    cfg = dict(DEFAULTS)
+    try:
+        import yaml
+        with open("recipe.yaml", encoding="utf-8") as f:
+            loaded = yaml.safe_load(f) or {}
+        for k in DEFAULTS:
+            if isinstance(loaded.get(k), (int, float)):
+                cfg[k] = loaded[k]
+    except Exception:
+        pass
+    return cfg
+
 
 def _device() -> str:
     if torch.cuda.is_available():
@@ -76,19 +98,21 @@ def main() -> None:
         dtype = torch.bfloat16 if device == "cuda" else torch.float32
         model = AutoModelForCausalLM.from_pretrained(BASE, dtype=dtype).to(device)
 
+    cfg = _recipe()
     config = SFTConfig(
         output_dir=OUT,
         num_train_epochs=__EPOCHS__,
         max_steps=__MAX_STEPS__,   # -1 = unbounded (epochs decide); >0 caps total steps
-        learning_rate=2e-4,
+        learning_rate=float(cfg["learning_rate"]),
         per_device_train_batch_size=1,
         gradient_accumulation_steps=8,
         logging_steps=5,
         dataset_text_field="text",
-        max_length=2048,
+        max_length=int(cfg["max_seq_len"]),
         bf16=(device == "cuda"),
     )
-    peft_config = LoraConfig(r=16, lora_alpha=32, lora_dropout=0.05, task_type="CAUSAL_LM")
+    peft_config = LoraConfig(r=int(cfg["lora_r"]), lora_alpha=int(cfg["lora_alpha"]),
+                             lora_dropout=float(cfg["lora_dropout"]), task_type="CAUSAL_LM")
     trainer = SFTTrainer(model=model, args=config, train_dataset=dataset, peft_config=peft_config)
     trainer.train()
     trainer.save_model(OUT)
@@ -132,6 +156,28 @@ if __name__ == "__main__":
 
 MERGE_OUT = "merged"
 
+# Every placeholder the trainer template carries. Rendering must substitute ALL of
+# them: a leftover `__EPOCHS__` is a valid Python identifier, so the emitted file
+# still parses (an ast.parse check passes) and only fails with NameError at run
+# time — after the multi-GB base model has been downloaded.
+_TRAIN_PLACEHOLDERS = ("__BASE__", "__OUT__", "__EPOCHS__", "__MAX_STEPS__")
+
+
+def render_train_py(recipe: dict) -> str:
+    """Render the trainer template for ``recipe`` — the ONE place that substitutes.
+
+    Both bundle writers (``export_finetune`` and ``train_engine.export_engine_bundle``)
+    go through here so neither can drift from the template's placeholder set."""
+    src = (_TRAIN_PY
+           .replace("__BASE__", str(recipe["base_model"]))
+           .replace("__OUT__", str(recipe["output_dir"]))
+           .replace("__EPOCHS__", str(int(recipe["epochs"])))
+           .replace("__MAX_STEPS__", str(int(recipe["max_steps"]))))
+    left = [p for p in _TRAIN_PLACEHOLDERS if p in src]
+    if left:  # a template edit added a placeholder this function doesn't know
+        raise ValueError(f"train.py template not fully rendered — left: {', '.join(left)}")
+    return src
+
 
 @dataclass
 class FinetuneResult:
@@ -145,10 +191,14 @@ class FinetuneResult:
 def assemble_dataset(project: Project) -> list[dict]:
     """Chat-format SFT rows from the spec's good examples.
 
-    (Future: also append the human-corrected outputs captured during eval — those
-    are the highest-value signal. We never use the model's own passing outputs as
-    targets, which would be self-distillation.)
-    """
+    IMPORTANT — provenance. ``spec.examples`` is a mixed bag: rows imported by the
+    owner, rows ratified through `teach`, corrections absorbed from live feedback,
+    AND rows the compiler engine invented during synthesis. `Example` carries no
+    provenance field, so this cannot filter to human-authored rows only, which
+    means a fine-tune trained here CAN include model-written targets (partial
+    self-distillation). Prefer a dataset dominated by imported or corrected
+    examples; see docs/USAGE.md. The eval-loop corrections are the signal that
+    actually teaches something new."""
     spec = project.spec
     if spec is None:
         raise ValueError("No spec — run `calibrate compile` first.")
@@ -195,6 +245,23 @@ def recommend_recipe(
 def beats_baseline(baseline: Scorecard, candidate: Scorecard, margin: float = 0.0) -> bool:
     """The prove-it gate: keep the fine-tune only if it beats the baseline."""
     return candidate.pass_rate > baseline.pass_rate + margin
+
+
+def training_overlap(project: Project, card: Scorecard) -> list[str]:
+    """Test ids in ``card`` whose input was also a TRAINING prompt.
+
+    The dataset is built from ``spec.examples`` and `examples-to-tests` /
+    `absorb` turn those same examples into ``ex_*`` / ``fb_*`` tests, so the gate
+    can end up grading a model on prompts it memorized. That is not a held-out
+    comparison, and a memorizing fine-tune would pass it. Callers report the
+    overlap so the number is read for what it is."""
+    trained = {
+        ex.input for ex in (project.spec.examples if project.spec else [])
+        if ex.input and ex.good_output
+    }
+    by_id = {t.id: t.input for t in project.tests}
+    return sorted(r.test_id for r in card.results
+                  if by_id.get(r.test_id) in trained)
 
 
 def _readme(recipe: dict, n: int) -> str:
@@ -262,11 +329,7 @@ def export_finetune(
         atomic_write_text(out / fn, content)
         files.append(f"finetune/{fn}")
 
-    train_py = (_TRAIN_PY
-                .replace("__BASE__", recipe["base_model"])
-                .replace("__OUT__", recipe["output_dir"])
-                .replace("__EPOCHS__", str(int(recipe["epochs"])))
-                .replace("__MAX_STEPS__", str(int(recipe["max_steps"]))))
+    train_py = render_train_py(recipe)
     merge_py = (_MERGE_PY
                 .replace("__BASE__", recipe["base_model"])
                 .replace("__OUT__", recipe["output_dir"])

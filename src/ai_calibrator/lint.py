@@ -94,6 +94,20 @@ def lint_spec(spec: BehaviorSpec, tests: list[TestCase]) -> LintReport:
             issues.append(LintIssue("vague_criterion", "warn",
                                     f"Criterion {c.id!r} description is too short to grade reliably.", c.id))
 
+    # Duplicate TEST ids. drift.compare_scorecards and snapshot.outputs_of both key
+    # results by test_id, so a duplicate makes one of the two invisible to
+    # regression and golden-output checking — a pinned anchor that can no longer
+    # fail the gate. An error, so `ci` refuses to certify the suite.
+    seen_tests: set[str] = set()
+    dupe_tests: set[str] = set()
+    for t in tests:
+        (dupe_tests if t.id in seen_tests else seen_tests).add(t.id)
+    for tid in sorted(dupe_tests):
+        issues.append(LintIssue(
+            "duplicate_test_id", "error",
+            f"Test id {tid!r} appears more than once — drift and snapshot key results by id, "
+            "so only one of them is ever compared. Give each test a unique id.", tid))
+
     # Untested criteria + orphan expectations (reuse the coverage analysis).
     cov = analyze_coverage(spec, tests)
     for c in cov.uncovered_criteria:

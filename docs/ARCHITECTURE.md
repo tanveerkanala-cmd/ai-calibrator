@@ -186,15 +186,18 @@ training data, we harvest what the interview and eval loop already produced.
 1. **Dataset assembly.** Build the set from: the spec's examples, the interview's
    ratified answers, and — most valuable — the **human-corrected outputs from the
    eval/refine loop** (the cases where you said "wrong; here's right"). Format for
-   the chosen trainer (chat JSONL, etc.). *Never self-distill* — the model writing
-   both prompt and ideal answer teaches nothing; corrections are the signal.
+   the chosen trainer (chat JSONL, etc.). *Avoid self-distillation* — the model
+   writing both prompt and ideal answer teaches nothing; corrections are the
+   signal. (v0 caveat: `spec.examples` also holds compiler-synthesized rows and
+   carries no provenance field, so the dataset builder cannot yet filter to
+   human-authored examples. Curate before training.)
 2. **Approach recommendation.** LoRA vs full fine-tune, base model, and
    hyperparameters — fit to the user's hardware tier (§5.1). Default: LoRA.
 3. **Runnable recipe.** Emit a training script wrapping standard OSS toolkits
    (`unsloth` / `axolotl` / `LLaMA-Factory` / PEFT). Capable GPU → run locally;
    otherwise → a **cloud recipe** (RunPod/Vast template + script) the user runs on
    their own rented GPU and account.
-4. **Prove-it gate.** Score the fine-tuned model on the **same held-out eval
+4. **Prove-it gate.** Score the fine-tuned model on the **same eval
    harness** (§9). **Only accept a fine-tune that measurably beats the prompt+RAG
    baseline** — otherwise the tool tells you to stay on configuration. This is
    what stops impressive-looking fine-tunes that don't actually help.
@@ -224,8 +227,7 @@ do_not:
 edge_cases:
   - situation: "Customer is angry and threatens chargeback"
     ruling: "Acknowledge, de-escalate, escalate to human within 1 reply."
-format:
-  default: "≤120 words, no markdown tables"
+format: "≤120 words, no markdown tables"
 refusal_policy: "Decline legal/medical advice; redirect to a human."
 knowledge_sources: [billing_policy.pdf, faq.md]
 eval_criteria:                 # each becomes a rubric item + test cases
@@ -305,13 +307,14 @@ engines:
   # judge:     qwen2.5:14b@ollama
 ```
 
-### 5.1 Engine selection — hardware-adaptive (capability tiers)
+### 5.1 Engine selection — capability tiers (guidance, not auto-detection)
 
-The tool assumes **nothing** about the user's machine. On first run it detects
-OS / RAM / GPU VRAM and recommends an engine, degrading gracefully so *everyone*
-gets a working setup:
+The tool assumes **nothing** about the user's machine, but it does **not** probe
+it either: there is no hardware detection. Every role binds to Anthropic Claude
+by default, and you rebind with `calibrate engines` (see USAGE §5). The table
+below is guidance for choosing what to bind — read it yourself and pick:
 
-| Tier | Hardware | Default engine | Fine-tune (v1.x) |
+| Tier | Hardware | Suggested binding | Fine-tune |
 |------|----------|----------------|------------------|
 | **0** | No/old GPU, or "I prefer cloud" | BYO cloud key (Claude/GPT), or a tiny 1–3B local model | cloud only |
 | **1** | 8–16 GB VRAM (e.g. a 3080 Ti) | local quantized 7–14B via Ollama | cloud |
@@ -319,10 +322,11 @@ gets a working setup:
 | **3** | 48 GB+ / multi-GPU | large local models; local fine-tuning | local |
 
 Rules:
-- The recommendation is always **overridable** (pick a bigger/smaller model, or
-  force cloud).
-- A user with **no GPU and no key** is told their options plainly (add a key, or
-  install a small local model) — never a broken state.
+- Every binding is set explicitly with `calibrate engines <project> --all
+  <model>@ollama` (or per role) — nothing is chosen for you.
+- A user with **no GPU and no key** is told their options plainly by
+  `calibrate auth` (add a key, or install a small local model) — never a broken
+  state.
 - **Training routes by capability:** if the machine can't fine-tune, the tool
   emits a *cloud training recipe* the user runs on their own rented GPU. It never
   silently assumes local training is possible.
@@ -369,17 +373,19 @@ A **Project** is a directory (git-friendly):
 
 ```
 my-project/
-  goal.yaml
+  project.yaml              # goal, materials, gaps, interview, spec, tests, engine bindings
   materials/                # uploaded source files
-  knowledge.db              # local vector index (chunks + embeddings)
-  interview.jsonl           # transcript: questions, drafts, ratified answers
-  spec.yaml                 # the Behavior Spec — source of truth
-  build/                    # compiled artifacts (system_prompt, rubric, tests…)
+  knowledge.lancedb/        # local vector index (chunks + embeddings), when `rag` is installed
+  build/                    # compiled artifacts (system_prompt.txt, rubric.yaml, tests.jsonl…)
   evals/
     run-0001/ scorecard.json failures.jsonl
     run-0002/ ...
-  engines.yaml              # role → provider bindings
+    last-gate.json          # the persisted `ci` verdict `calibrate run` boots against
+  logs/                     # engine decisions + live feedback (0600), when enabled
 ```
+
+One file holds the project state (`project.yaml`); everything else is a
+regenerable artifact. See USAGE §5 for the field-by-field walkthrough.
 
 Everything is plain files → diffable, versionable, shareable as a git repo.
 Vector store: local (LanceDB / sqlite-vss / Chroma) or pgvector if hosted.

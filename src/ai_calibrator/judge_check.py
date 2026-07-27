@@ -45,7 +45,11 @@ def save_labels(project_dir: str | Path, run_id: str, labels: list[dict]) -> Pat
     for label in load_labels(project_dir, run_id) + list(labels):
         # Require an explicit "passed" — otherwise a label missing it would be
         # silently persisted as a FAIL (bool(None)); load_labels enforces the same.
-        if isinstance(label, dict) and label.get("test_id") and label.get("criterion_id") and "passed" in label:
+        # Ids must be STRINGS: they become a dict key here, so a list/dict id would
+        # raise "unhashable type" and escape the API route as an unhandled 500.
+        if (isinstance(label, dict) and isinstance(label.get("test_id"), str)
+                and isinstance(label.get("criterion_id"), str)
+                and label["test_id"] and label["criterion_id"] and "passed" in label):
             merged[(label["test_id"], label["criterion_id"])] = {
                 "test_id": label["test_id"], "criterion_id": label["criterion_id"],
                 "passed": bool(label.get("passed")),
@@ -121,7 +125,10 @@ def judge_agreement(card: Scorecard, human_labels: list[dict]) -> JudgeAgreement
     judge = {(r.test_id, c.criterion_id): c for r in card.results for c in r.criteria}
     ag = JudgeAgreement(total=0, agreed=0)
     for label in human_labels:
-        key = (label.get("test_id"), label.get("criterion_id"))
+        if not (isinstance(label, dict) and isinstance(label.get("test_id"), str)
+                and isinstance(label.get("criterion_id"), str)):
+            continue  # same scalar-id contract as save_labels — never crash on a bad row
+        key = (label["test_id"], label["criterion_id"])
         cr = judge.get(key)
         if cr is None:
             continue

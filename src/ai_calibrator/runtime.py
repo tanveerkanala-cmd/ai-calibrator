@@ -132,7 +132,7 @@ def create_ai_app(project_dir: str | Path, *, engine: Engine | None = None, guar
         from fastapi.responses import StreamingResponse
         from starlette.concurrency import run_in_threadpool
     except ImportError as exc:  # pragma: no cover - depends on optional extra
-        raise RuntimeError("Serving needs the `api` extra:  pip install -e '.[api]'") from exc
+        raise RuntimeError("Serving needs the `api` extra:  pip install 'ai-calibrator[api]'") from exc
 
     directory = Path(project_dir)
     project = load_project(directory)
@@ -186,7 +186,11 @@ def create_ai_app(project_dir: str | Path, *, engine: Engine | None = None, guar
         prompt = encode_messages(messages)
         # RAG: augment the system with chunks retrieved for the latest user turn,
         # exactly as run_eval does — so the served AI matches the tested one.
-        query = _content_text(messages[-1].get("content")) if messages else None
+        # The LAST USER turn, not the raw last message: encode_messages drops
+        # system entries, so a client that puts a system message last would
+        # otherwise make the served AI retrieve knowledge for the system text.
+        query = next((_content_text(m.get("content")) for m in reversed(messages)
+                      if isinstance(m, dict) and m.get("role") == "user"), None)
         eff_system = rag.augment_system(system, directory, query or "")
         content = as_str(engine.complete(prompt, system=eff_system)).strip()
         guard_state: dict = {}
@@ -315,6 +319,13 @@ def create_ai_app(project_dir: str | Path, *, engine: Engine | None = None, guar
             turns = [t for t in raw if is_str(t) and t.strip()]
             if not turns or not output.strip():
                 raise HTTPException(400, "pass a completion_id, or `input` (or `turns`) and `output`")
+
+        # Same cap as the chat route. An absorbed record becomes a permanent test
+        # input sent to BOTH the subject and the judge on every future eval, so an
+        # unbounded payload here is a one-request, permanent cost amplifier.
+        correction_len = len(body.get("correction") or "") if is_str(body.get("correction")) else 0
+        if sum(len(t) for t in turns) + len(output) + correction_len > MAX_CHAT_CHARS:
+            raise HTTPException(400, f"feedback too large (>{MAX_CHAT_CHARS} characters)")
 
         correction, reason = body.get("correction"), body.get("reason")
         # append_feedback takes the blocking project lock — off the event loop so

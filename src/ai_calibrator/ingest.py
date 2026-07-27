@@ -65,6 +65,10 @@ class IngestResult:
     gaps: int
     indexed: int | None  # None = vector index skipped (rag extra absent / disabled)
     skipped: list[tuple[str, str]]  # (relpath, reason) — files that failed to parse
+    # How many parsed documents the extractor actually read. Fewer than
+    # ``materials`` means the corpus hit MAX_EXTRACT_CHARS and the tail files did
+    # not inform the facts or the gap list.
+    analyzed: int = 0
 
 
 def _excerpt(text: str, n: int = 240) -> str:
@@ -130,9 +134,15 @@ def parse_materials(
     return docs, skipped
 
 
-def _join_capped(docs: list[tuple[Path, str]], cap: int) -> str:
+def _join_capped(docs: list[tuple[Path, str]], cap: int) -> tuple[str, int]:
+    """Join documents up to ``cap`` characters; return (corpus, documents_included).
+
+    The count matters: the gap list drives the whole interview, so a corpus
+    truncated at the cap means gaps were derived from a fraction of the materials.
+    The caller reports that instead of implying every file was analyzed."""
     parts: list[str] = []
     total = 0
+    included = 0
     for p, text in docs:
         header = f"\n\n=== {Path(p).name} ===\n"
         # Reserve the header in the budget so total (header + body) never exceeds
@@ -144,7 +154,8 @@ def _join_capped(docs: list[tuple[Path, str]], cap: int) -> str:
         body = text[:budget]
         parts.append(header + body)
         total += len(header) + len(body)
-    return "".join(parts)
+        included += 1
+    return "".join(parts), included
 
 
 def extract_gaps(
@@ -152,9 +163,12 @@ def extract_gaps(
     task_type: str,
     docs: list[tuple[Path, str]],
     engine: Engine,
-) -> tuple[list[str], list[Gap]]:
-    """Run the Extractor engine over the materials → (facts, gaps)."""
-    corpus = _join_capped(docs, MAX_EXTRACT_CHARS)
+) -> tuple[list[str], list[Gap], int]:
+    """Run the Extractor engine over the materials → (facts, gaps, docs_analyzed).
+
+    ``docs_analyzed`` can be fewer than ``len(docs)``: the corpus is capped at
+    MAX_EXTRACT_CHARS, and files past the cap contribute nothing."""
+    corpus, analyzed = _join_capped(docs, MAX_EXTRACT_CHARS)
     # Fence the materials so the extractor treats them as DATA, not instructions.
     # A document is untrusted input — this is defense-in-depth against prompt
     # injection (a doc that says "ignore your rules"); the owner still reviews the
@@ -177,7 +191,7 @@ def extract_gaps(
         # reach the user's gap list (or get persisted / fed into the interview).
         if isinstance(g, dict) and is_str(g.get("dimension")) and not _looks_like_shard(g["dimension"])
     ]
-    return facts, gaps
+    return facts, gaps, analyzed
 
 
 # Markers of leaked JSON / prompt scaffolding that a clean natural-language gap
@@ -219,12 +233,20 @@ def ingest_project(
 
     facts: list[str] = []
     gaps: list[Gap] = []
+    analyzed = 0
     if docs:  # don't call the engine on an empty corpus
-        facts, gaps = extract_gaps(project.goal, project.task_type.value, docs, engine)
+        facts, gaps, analyzed = extract_gaps(project.goal, project.task_type.value, docs, engine)
 
     indexed: int | None = None
-    if build_index and project_dir is not None and chunks:
-        indexed = rag.build_index(project_dir, chunks)
+    if build_index and project_dir is not None:
+        if chunks:
+            indexed = rag.build_index(project_dir, chunks)
+        else:
+            # No chunks means the corpus is now EMPTY (every material removed, or
+            # none of them indexable). Leaving the previous table in place would
+            # keep injecting documents the owner has deleted into every graded and
+            # served prompt — the index must never outlive its source.
+            indexed = 0 if rag.drop_index(project_dir) else None
 
     project.materials = materials
     project.facts = facts
@@ -236,4 +258,5 @@ def ingest_project(
         gaps=len(gaps),
         indexed=indexed,
         skipped=skipped,
+        analyzed=analyzed,
     )

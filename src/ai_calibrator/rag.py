@@ -48,6 +48,21 @@ def build_index(project_dir: str | Path, records: list[dict]) -> int | None:
     return len(rows)
 
 
+def drop_index(project_dir: str | Path) -> bool:
+    """Delete the project's knowledge index. True if one was there to remove.
+
+    Called when a re-ingest yields no chunks: the index is a build artifact of the
+    materials, so an empty corpus must leave an empty index. Without this, deleting
+    every material leaves the old table in place and its text keeps being injected
+    into every graded and served prompt."""
+    import shutil
+    db_path = Path(project_dir) / "knowledge.lancedb"
+    if not db_path.exists():
+        return False
+    shutil.rmtree(db_path, ignore_errors=True)
+    return not db_path.exists()
+
+
 # --- retrieval: consumed by eval and the runtime so the AI you TEST is the ---
 # --- RAG-augmented AI you SERVE (both call augment_system identically) --------
 
@@ -57,6 +72,37 @@ def _embedder():
     return SentenceTransformer(EMBED_MODEL)
 
 
+# Why the last retrieval attempt returned nothing, or "" if it succeeded (or was
+# never attempted). An index that EXISTS but cannot be queried — embedder model
+# absent from the cache, offline machine, corrupt table, version skew — silently
+# degrades the AI to prompt-only, and every banner that only checks "does the
+# directory exist" still reports retrieval as on. Callers read this to say so.
+_last_error: str = ""
+
+
+def last_retrieval_error() -> str:
+    """Why the most recent ``retrieve`` failed, or '' if it did not fail."""
+    return _last_error
+
+
+def probe(project_dir: str | Path) -> str:
+    """'' if retrieval actually works for this project, else why it does not.
+
+    An honest check: opens the table AND runs the embedder, because a present
+    index directory proves neither."""
+    db_path = Path(project_dir) / "knowledge.lancedb"
+    if not db_path.exists():
+        return "no index"
+    try:
+        import lancedb
+        db = lancedb.connect(str(db_path))
+        _embedder().encode(["probe"])
+        db.open_table(TABLE)
+        return ""
+    except Exception as exc:
+        return f"{type(exc).__name__}: {exc}"
+
+
 def retrieve(project_dir: str | Path, query: str, top_k: int = TOP_K) -> list[str]:
     """Top-k chunk texts most similar to ``query`` from the project's index.
 
@@ -64,7 +110,11 @@ def retrieve(project_dir: str | Path, query: str, top_k: int = TOP_K) -> list[st
     ``rag`` extra isn't installed, no index exists, or anything goes wrong — so
     retrieval NEVER breaks an eval or the serving endpoint. It checks the index
     path before importing the (heavy) embedder, so a project without an index
-    pays nothing."""
+    pays nothing. A FAILURE (as opposed to "no index") is recorded in
+    ``last_retrieval_error`` so the caller can report a silent degradation rather
+    than quietly grading a prompt-only bot."""
+    global _last_error
+    _last_error = ""
     if not isinstance(query, str) or not query.strip():
         return []
     db_path = Path(project_dir) / "knowledge.lancedb"
@@ -78,7 +128,8 @@ def retrieve(project_dir: str | Path, query: str, top_k: int = TOP_K) -> list[st
         vec = _embedder().encode([query]).tolist()[0]
         hits = db.open_table(TABLE).search(vec).limit(max(1, top_k)).to_list()
         return [h["text"] for h in hits if isinstance(h.get("text"), str)]
-    except Exception:
+    except Exception as exc:
+        _last_error = f"{type(exc).__name__}: {exc}"
         return []
 
 

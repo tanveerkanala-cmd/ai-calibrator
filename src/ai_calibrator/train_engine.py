@@ -22,7 +22,7 @@ from typing import Any
 import yaml
 
 from .engines.base import Engine
-from .finetune import _TRAIN_PY, recommend_recipe
+from .finetune import recommend_recipe, render_train_py
 from .store import atomic_write_text
 
 TRAINABLE_ROLES = {"extractor", "interviewer", "predictor", "compiler", "judge"}
@@ -202,7 +202,7 @@ def export_engine_bundle(project_dir: str | Path, role: str, *, base_model: str 
 
     _write("dataset.jsonl", "".join(json.dumps(r) + "\n" for r in rows))
     _write("recipe.yaml", yaml.safe_dump(recipe, sort_keys=False, allow_unicode=True))
-    _write("train.py", _TRAIN_PY.replace("__BASE__", recipe["base_model"]).replace("__OUT__", recipe["output_dir"]))
+    _write("train.py", render_train_py(recipe))
     _write("README.md", _engine_readme(role, recipe, len(rows), len(human)))
 
     return TrainEngineResult(role=role, examples=len(rows), base_model=recipe["base_model"],

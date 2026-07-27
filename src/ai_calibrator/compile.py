@@ -295,11 +295,22 @@ def tests_from_examples(spec: BehaviorSpec, existing: list[TestCase] = ()) -> li
     the pinned fb test starts at the FIRST; without this, examples-to-tests would
     double-pin the same exchange)."""
     seen = {t.input for t in existing} | {f for t in existing for f in t.follow_ups}
+    # Mint ids against the ids already TAKEN, not against the example's position.
+    # Anything that shifts indices (a dedup, a removed example) would otherwise
+    # re-issue an id an existing pinned test already owns, and a duplicate test id
+    # is invisible to drift and snapshot — both key results by test_id, so the
+    # second silently overwrites the first and the pinned anchor stops existing.
+    taken = {t.id for t in existing}
     out: list[TestCase] = []
-    for i, ex in enumerate(spec.examples, start=1):
+    n = 1
+    for ex in spec.examples:
         if is_str(ex.input) and ex.input not in seen:
             seen.add(ex.input)
-            out.append(TestCase(id=f"ex_{i}", input=ex.input, expects=[], notes="from spec example"))
+            while f"ex_{n}" in taken:
+                n += 1
+            tid = f"ex_{n}"
+            taken.add(tid)
+            out.append(TestCase(id=tid, input=ex.input, expects=[], notes="from spec example"))
     return out
 
 

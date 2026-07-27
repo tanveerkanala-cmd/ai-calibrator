@@ -44,7 +44,11 @@ def append_feedback(project_dir: str | Path, record: dict) -> None:
         d = Path(project_dir) / "logs"
         d.mkdir(parents=True, exist_ok=True, mode=0o700)
         with open_private_append(d / FEEDBACK_FILE) as fh:  # 0600 — holds user queries
-            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+            # A lone surrogate anywhere in the record would raise UnicodeEncodeError
+            # on the UTF-8 handle, losing a human's verdict to a bare 500. Scrub
+            # rather than reject: the feedback matters more than the exact bytes.
+            line = json.dumps(record, ensure_ascii=False)
+            fh.write(line.encode("utf-8", "replace").decode("utf-8") + "\n")
 
 
 def read_feedback(project_dir: str | Path) -> list[dict]:
@@ -73,6 +77,7 @@ class AbsorbResult:
     examples_added: int = 0
     tests_added: int = 0
     skipped: int = 0                       # malformed or duplicate records
+    superseded: int = 0                    # earlier examples retracted by a later verdict
     test_ids: list[str] = field(default_factory=list)
 
 
@@ -136,6 +141,22 @@ def absorb_feedback(project: Project, project_dir: str | Path) -> AbsorbResult:
             example = Example(input=turns[-1], bad_output=output, good_output=correction,
                               why=reason or "flagged in live use")
 
+        # Feedback is time-ordered, so the LATEST verdict on an answer wins. Without
+        # this, a `down` on text an earlier `up` stored as good_output just appends a
+        # contradiction: the spec asserts the same text is both good and bad, and the
+        # fine-tune dataset (which filters on good_output alone) keeps training
+        # toward the answer a human rejected.
+        retracted = [
+            ex for ex in spec.examples
+            if ex.input == example.input
+            and ((verdict == "down" and ex.good_output is not None and ex.good_output == output)
+                 or (verdict == "up" and ex.bad_output is not None and ex.bad_output == output))
+        ]
+        for ex in retracted:
+            spec.examples.remove(ex)
+            existing_examples.discard((ex.input, ex.good_output, ex.bad_output))
+            result.superseded += 1
+
         ekey = (example.input, example.good_output, example.bad_output)
         if ekey not in existing_examples:
             existing_examples.add(ekey)
@@ -163,4 +184,5 @@ def absorb_feedback(project: Project, project_dir: str | Path) -> AbsorbResult:
 def absorb_dict(result: AbsorbResult) -> dict:
     return {"ups": result.ups, "downs": result.downs,
             "examples_added": result.examples_added, "tests_added": result.tests_added,
-            "skipped": result.skipped, "test_ids": result.test_ids}
+            "skipped": result.skipped, "superseded": result.superseded,
+            "test_ids": result.test_ids}

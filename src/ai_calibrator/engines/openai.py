@@ -3,7 +3,7 @@
 Bind any role to ``<model>@openai`` (e.g. ``gpt-4o@openai``). Works with any
 OpenAI-compatible endpoint via ``OPENAI_BASE_URL``. Strict ``json_schema`` is the
 primary structured-output path; if a model doesn't support it, this falls back
-to a plain JSON-instruction call. Install: pip install -e '.[cloud]'
+to a plain JSON-instruction call. Install: pip install 'ai-calibrator[cloud]'
 """
 
 from __future__ import annotations
@@ -44,7 +44,13 @@ def _friendly_openai_error(name: str, model: str, exc: Exception) -> EngineError
         return EngineError(f"Could not reach OpenAI for {name} (network/endpoint issue): {exc}")
     if isinstance(exc, openai.APIError):
         status = getattr(exc, "status_code", "?")
-        return EngineError(f"OpenAI API error ({status}) for {name}: {getattr(exc, 'message', exc)}")
+        err = EngineError(f"OpenAI API error ({status}) for {name}: {getattr(exc, 'message', exc)}")
+        # Carry the HTTP status so callers can distinguish "this model rejected the
+        # request" (400 — e.g. no strict-json_schema support, safe to retry
+        # unconstrained) from a timeout / 429 / 5xx, which must never silently
+        # downgrade to an unconstrained call.
+        err.status = status if isinstance(status, int) else None
+        return err
     # The base SDK error (NOT an APIError) is what a missing / empty key raises
     # before any HTTP call — treat it as missing credentials, not a raw traceback.
     if isinstance(exc, openai.OpenAIError):
@@ -59,7 +65,7 @@ class OpenAIEngine(Engine):
         except ImportError as exc:  # pragma: no cover - optional extra
             raise RuntimeError(
                 "The OpenAI cloud engine needs the `openai` package.\n"
-                "  Install it with:  pip install -e '.[cloud]'"
+                "  Install it with:  pip install 'ai-calibrator[cloud]'"
             ) from exc
 
         self.name = f"{model}@openai"
@@ -125,10 +131,14 @@ class OpenAIEngine(Engine):
         def _call() -> str:
             try:
                 return self._chat(messages, response_format=response_format)
-            except Exception:
-                # The model may not support strict json_schema — fall back to a
-                # plain call with a JSON-only instruction. (Auth/other errors
-                # re-raise from this second call, so they aren't masked.)
+            except EngineError as exc:
+                # ONLY "this model doesn't support strict json_schema" may fall back.
+                # Catching everything meant a transient timeout, a 429, a 5xx or an
+                # auth failure silently dropped schema enforcement, and an
+                # unconstrained-but-parseable reply was then accepted as a
+                # successfully constrained result.
+                if getattr(exc, "status", None) != 400:
+                    raise
                 instructed = messages + [
                     {
                         "role": "system",

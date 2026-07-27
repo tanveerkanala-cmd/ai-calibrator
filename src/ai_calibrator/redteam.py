@@ -20,7 +20,8 @@ from pathlib import Path
 
 from .coerce import as_bool, as_list, as_opt_str, as_str, is_str
 from .compile import render_system_prompt
-from .engines.base import Engine, require_object
+from .engines.base import Engine
+from .eval import conversation_prompt, require_object
 from .models import BehaviorSpec, EvalCriterion, Project, TestCase, Weight
 from .store import atomic_write_text
 
@@ -172,7 +173,10 @@ def run_redteam(
         # Probe the AI as DEPLOYED: augment with retrieved knowledge when an index
         # exists, exactly as eval/run do — else redteam tests a different AI.
         eff_system = rag.augment_system(system, project_dir, p["input"])
-        output = as_str(subject.complete(p["input"], system=eff_system))  # tolerate non-string output
+        # Transcript-encode exactly as eval, /try and the runtime do — probing a
+        # prompt shape the product never serves tests a different AI.
+        output = as_str(subject.complete(conversation_prompt([], p["input"]),
+                                         system=eff_system))  # tolerate non-string output
         if output.strip():
             violated, severity, rationale = _judge_violation(judge, p["target"], p["input"], output)
         else:

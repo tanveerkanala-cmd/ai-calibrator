@@ -1,3 +1,5 @@
+import pytest
+
 from ai_calibrator.parsing import chunk_text, read_document
 
 
@@ -7,8 +9,12 @@ def test_read_text_file(tmp_path):
     assert "Hello world" in read_document(f)
 
 
-def test_read_missing_file_is_empty(tmp_path):
-    assert read_document(tmp_path / "nope.txt") == ""
+def test_read_missing_file_is_reported(tmp_path):
+    # Reporting beats silence: returning "" made parse_materials drop the file with
+    # no entry in `skipped`, so a permission-denied file — or one deleted between
+    # the scan and the read — vanished from the corpus unannounced.
+    with pytest.raises(ValueError, match="nope.txt"):
+        read_document(tmp_path / "nope.txt")
 
 
 def test_chunk_packs_paragraphs_within_size():

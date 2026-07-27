@@ -38,8 +38,8 @@ jobs:
     # importorskip when their libraries are absent — so on `dev` alone the entire
     # RAG layer (and a few openai/docx tests) NEVER RUN. This job installs every
     # extra so retrieval, the OpenAI adapter, and document parsing are exercised
-    # on each push, and asserts a minimum collected-test count so a silently
-    # uncollected module can't hide behind a green badge.
+    # on each push, and fails if anything skips — a skip here means an extra
+    # silently failed to import and a whole layer went untested behind a green badge.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -48,13 +48,22 @@ jobs:
           python-version: "3.12"
       - name: Install (all engines + web UI + docs + dev)
         run: pip install -e '.[all,dev]'
-      - name: Test (exercises rag / openai / docx paths that `dev` alone skips)
-        run: pytest -q
-      - name: Guard against silently-uncollected modules
+      - name: Every optional extra must actually import
+        # The real guard. A loose collected-count floor could not catch this: losing
+        # the whole retrieval layer costs only ~10 collected tests, and losing
+        # openai/docx costs zero, so the count stayed above any sane threshold in
+        # exactly the scenarios this job exists to prevent.
+        run: python -c "import lancedb, sentence_transformers, openai, docx, pypdf, anthropic"
+      - name: Test — and fail on any skip (one run, not two)
+        # With [all,dev] installed nothing here has a legitimate reason to skip, so
+        # `-W error` is not needed: the skip count IS the coverage guard. Tee the
+        # output so the assertion reads the same run the log shows.
         run: |
-          COUNT=$(pytest --collect-only -q 2>/dev/null | grep -c "::")
-          echo "collected $COUNT tests with all extras"
-          test "$COUNT" -ge 444
+          set -o pipefail
+          pytest -q -rs | tee pytest.out
+          SKIPPED=$(grep -c "^SKIPPED" pytest.out || true)
+          echo "skipped: $SKIPPED"
+          test "$SKIPPED" -eq 0
 
   locale:
     # Guards the encoding class: files are written UTF-8, so every read must be

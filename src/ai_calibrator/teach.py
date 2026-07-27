@@ -19,7 +19,8 @@ from pathlib import Path
 
 from .coerce import as_list, as_opt_str, as_str, is_str
 from .compile import render_system_prompt
-from .engines.base import Engine, require_object
+from .engines.base import Engine
+from .eval import conversation_prompt, require_object
 from .models import BehaviorSpec, Example, Project
 
 INPUTS_SCHEMA = {
@@ -113,7 +114,10 @@ def propose_candidates(
         # Candidates must reflect the DEPLOYED AI (RAG-augmented when indexed), so
         # the standards inferred from the human's judgments match what ships.
         eff_system = rag.augment_system(system, project_dir, inp)
-        output = as_str(subject.complete(inp, system=eff_system))  # tolerate non-string output
+        # Same transcript encoding as eval and the runtime: the standards inferred
+        # from these judgments must describe the AI that actually ships.
+        output = as_str(subject.complete(conversation_prompt([], inp),
+                                         system=eff_system))  # tolerate non-string output
         candidates.append(Candidate(id=f"ex{i}", input=inp, output=output))
     return candidates
 
@@ -137,11 +141,15 @@ def infer_standards(goal: str, judged: list[Judged], engine: Engine) -> dict:
     }
 
 
-def apply_learned(project: Project, judged: list[Judged], learned: dict) -> LearnResult:
+def apply_learned(project: Project, judged: list[Judged], learned: dict | None) -> LearnResult:
     """Fold inferred standards into the spec and record judgments as examples.
 
     Creates a minimal spec if the project has none (judgment-first bootstrap).
-    De-duplicates against existing standards/never-rules."""
+    De-duplicates against existing standards/never-rules.
+
+    ``learned=None`` records the judgments alone. Callers use that to checkpoint a
+    human's judging session BEFORE the standards-inference engine call, so an
+    engine failure there cannot discard minutes of a person's attention."""
     if project.spec is None:
         project.spec = BehaviorSpec(goal=project.goal, task_type=project.task_type)
     spec = project.spec
@@ -149,6 +157,7 @@ def apply_learned(project: Project, judged: list[Judged], learned: dict) -> Lear
     # Dedup within each incoming batch AND across BOTH lists: the same sentence
     # must never sit in standards and do_not at once (a self-contradiction the
     # spec would then render on both sides). First list to claim a rule wins.
+    learned = learned or {}
     taken = set(spec.standards) | set(spec.do_not)
     new_standards: list[str] = []
     for s in as_list(learned.get("standards")):

@@ -91,8 +91,13 @@ def test_build_merged_unions_other_dimensions_with_dedup():
     }
     spec = build_merged_spec(named, goal="g", task_type=TaskType.ASSISTANT)
     assert set(spec.standards) == {"s1", "s2"}
-    assert [c.id for c in spec.eval_criteria] == ["c1", "c2"]      # dedup by id, first wins
-    assert spec.eval_criteria[0].description == "d"
+    # A shared id with a DIFFERENT meaning is namespaced, never dropped: criterion
+    # ids are engine-generated labels, so two specs colliding on `c1` is routine
+    # and silently discarding one stakeholder's criterion loses their check too.
+    by_id = {c.id: c for c in spec.eval_criteria}
+    assert set(by_id) == {"c1", "c2", "b_c1"}
+    assert by_id["c1"].description == "d"
+    assert by_id["b_c1"].description == "dup-id"
     assert {e.input for e in spec.examples} == {"i1", "i2"}        # dedup by input
     assert len(spec.edge_cases) == 1
 

@@ -79,18 +79,43 @@ def _resolve_project(path: Path, projects: Optional[Path]) -> Path:
     return path
 
 
-def _require_project(path: Path) -> None:
+def _cleanup_empty_project_dir(path: Path, we_created: bool) -> None:
+    """Remove a directory this command created for a project that never got built.
+
+    ``import`` and ``merge`` legitimately create their destination before the work
+    that can fail, so a failure leaves a directory holding only a ``.lock`` — the
+    exact litter ``_require_project`` prevents everywhere else. Only ever removes a
+    directory WE created, and only when nothing but the lock is in it."""
+    if not we_created:
+        return
+    try:
+        d = Path(path)
+        if not d.is_dir():
+            return
+        leftovers = [f for f in d.iterdir() if f.name != ".lock"]
+        if leftovers:
+            return  # something real is in there — never touch it
+        (d / ".lock").unlink(missing_ok=True)
+        d.rmdir()
+    except OSError:
+        pass  # cleanup is best-effort; never mask the original failure
+
+
+def _require_project(path: Path, on_error=None) -> None:
     """Exit friendly if there's no project here — WITHOUT creating anything.
 
     ``project_lock`` mkdirs the directory and drops a ``.lock`` file, so calling
     it for a typo'd/nonexistent project name litters a junk directory. Call this
-    before the lock so a missing project is reported without side effects."""
+    before the lock so a missing project is reported without side effects.
+
+    ``on_error(reason)`` lets a machine-readable caller (``ci --json``) render the
+    failure in its own format instead of a coloured sentence."""
     if not (Path(path) / "project.yaml").exists():
-        typer.secho(
-            f"No calibrator project at {Path(path)} (missing project.yaml). "
-            "Run `calibrate init` first.",
-            fg=typer.colors.RED,
-        )
+        msg = (f"No calibrator project at {Path(path)} (missing project.yaml). "
+               "Run `calibrate init` first.")
+        if on_error is not None:
+            raise on_error(msg)
+        typer.secho(msg, fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
 
@@ -111,19 +136,27 @@ def _warn_unknown_keys(project: Project) -> None:
                     fg=typer.colors.YELLOW)
 
 
-def _load(path: Path) -> Project:
+def _load(path: Path, on_error=None) -> Project:
     try:
         project = load_project(path)
         _warn_unknown_keys(project)
         return project
     except FileNotFoundError as exc:
+        if on_error is not None:
+            raise on_error(str(exc))
         typer.secho(str(exc), fg=typer.colors.RED)
         raise typer.Exit(code=1)
-    except (yaml.YAMLError, ValidationError, ValueError) as exc:
-        # Corrupt or incomplete project.yaml (hand-edited, partially written by an
-        # old version, or truncated) — show a friendly message, not a traceback.
+    except (OSError, yaml.YAMLError, ValidationError, ValueError) as exc:
+        # Corrupt, incomplete, or UNREADABLE project.yaml (hand-edited, partially
+        # written by an old version, truncated, no read permission, or a directory
+        # where the file should be) — a friendly message, never a traceback. OSError
+        # belongs here for the same reason _scorecard_or_exit and report.py catch it.
+        msg = (f"The project at {path}/ could not be read "
+               f"({Path(path) / 'project.yaml'}): {exc}")
+        if on_error is not None:
+            raise on_error(msg)
         typer.secho(
-            f"The project at {path}/ is invalid or corrupted "
+            f"The project at {path}/ is invalid or corrupted, or could not be read "
             f"({Path(path) / 'project.yaml'}):",
             fg=typer.colors.RED,
         )
@@ -223,6 +256,13 @@ def import_(
         typer.secho("The prompt file is empty.", fg=typer.colors.YELLOW)
         raise typer.Exit(code=1)
 
+    # project_lock() mkdirs the destination, which raises a raw FileExistsError
+    # when the path is an existing FILE. `init` guards this; import must too.
+    if path.exists() and not path.is_dir():
+        typer.secho(f"A file named {path} already exists — pick another destination.",
+                    fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
     name = path.resolve().name or "project"
     engine_spec = engine
     try:
@@ -231,17 +271,26 @@ def import_(
         typer.secho(str(exc), fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
-    with project_lock(path, on_wait=_lock_wait_notice):
-        if (path / "project.yaml").exists():
-            typer.secho(f"A project already exists at {path}/.", fg=typer.colors.RED)
-            raise typer.Exit(code=1)
-        typer.echo(f"Reverse-calibrating {prompt} with {eng.name} …")
-        try:
-            project = reverse_project(name, goal, prompt_text, eng,
-                                      task_type=task_type, engine_spec=engine_spec, project_dir=path)
-        except Exception as exc:
-            typer.secho(f"Import failed: {exc}", fg=typer.colors.RED)
-            raise typer.Exit(code=1)
+    # Remember whether we are the ones creating the directory: if the engine call
+    # fails we must not leave a junk project dir holding only a .lock behind (the
+    # litter _require_project exists to prevent), but we must never delete a
+    # directory the user already had.
+    _we_created = not path.exists()
+    try:
+        with project_lock(path, on_wait=_lock_wait_notice):
+            if (path / "project.yaml").exists():
+                typer.secho(f"A project already exists at {path}/.", fg=typer.colors.RED)
+                raise typer.Exit(code=1)
+            typer.echo(f"Reverse-calibrating {prompt} with {eng.name} …")
+            try:
+                project = reverse_project(name, goal, prompt_text, eng,
+                                          task_type=task_type, engine_spec=engine_spec, project_dir=path)
+            except Exception as exc:
+                typer.secho(f"Import failed: {exc}", fg=typer.colors.RED)
+                raise typer.Exit(code=1)
+    except typer.Exit:
+        _cleanup_empty_project_dir(path, _we_created)
+        raise
 
     spec = project.spec
     typer.secho(
@@ -584,7 +633,11 @@ def compile(path: Path = typer.Argument(Path("."), help="Project directory.")) -
     _require_project(path)  # no junk .lock dir for a typo'd name
     with project_lock(path, on_wait=_lock_wait_notice):
         project = _load(path)
-        if not any(it.answer for it in project.interview):
+        # A merged project carries a spec but no interview, and compile_project
+        # already preserves an existing spec when there is nothing to synthesize
+        # from. Gating on the interview alone made `merge` a dead end: the very
+        # next step it tells you to run always refused.
+        if not any(it.answer for it in project.interview) and project.spec is None:
             typer.secho(
                 "No interview answers yet — run `calibrate interview` first.",
                 fg=typer.colors.YELLOW,
@@ -697,10 +750,16 @@ def eval_(
         # a prompt-only bot — say so, so a high pass rate isn't read as "it can use
         # my docs" when it can't (the exported bot would answer blind).
         from . import rag
-        if project.materials and not (rag.index_available()
-                                      and (Path(path) / "knowledge.lancedb").exists()):
-            typer.secho("  retrieval: OFF — grading a prompt-only bot (the `rag` extra / index "
-                        "is absent; your documents are NOT in play).", fg=typer.colors.YELLOW)
+        if project.materials:
+            # Probe for real: an index directory that exists proves nothing — a
+            # missing embedder model or a corrupt table degrades retrieval to
+            # nothing while every path-based check still reports it as on.
+            why = rag.probe(path) if rag.index_available() else "the `rag` extra is not installed"
+            if why:
+                detail = ("your documents are NOT in play" if why == "no index"
+                          else f"index present but unusable — {why}")
+                typer.secho(f"  retrieval: OFF — grading a prompt-only bot ({detail}).",
+                            fg=typer.colors.YELLOW)
 
         def _progress(done, total, test_id):
             typer.echo(f"  · [{done}/{total}] {test_id} — subject + judge …")
@@ -709,9 +768,19 @@ def eval_(
             if refine:
                 from .compile import write_build_bundle
                 from .pipeline import calibrate_loop
+
+                def _persist_spec(proj):
+                    # Checkpoint each round's refinement BEFORE the next round is
+                    # graded: scorecards are saved as they are earned, so saving the
+                    # spec only after the loop would let an interruption leave runs
+                    # on disk that no recorded spec ever produced.
+                    save_project(proj, path)
+                    write_build_bundle(proj.spec, proj.tests, path)
+
                 cards = calibrate_loop(
                     project, subject, judge, refiner,
                     threshold=threshold, max_rounds=rounds, judge_passes=judge_passes, project_dir=path,
+                    on_spec_change=_persist_spec,
                 )
                 save_project(project, path)  # refined standards persist
                 write_build_bundle(project.spec, project.tests, path)  # refresh build/ to match
@@ -796,26 +865,28 @@ def ci(
     from .engine_log import wrap_engine
     from .engines import get_engine
 
-    if not math.isfinite(threshold) or not (0.0 <= threshold <= 1.0):
-        typer.secho("--threshold must be a number between 0 and 1.", fg=typer.colors.RED)
-        raise typer.Exit(code=1)
-    if not math.isfinite(tolerance) or tolerance < 0:
-        typer.secho("--tolerance must be a number >= 0.", fg=typer.colors.RED)
-        raise typer.Exit(code=1)
-    if not (1 <= judge_passes <= 9):
-        typer.secho("--judge-passes must be between 1 and 9.", fg=typer.colors.RED)
-        raise typer.Exit(code=1)
+    def _fail(reason: str, human: str | None = None, code: int = 1):
+        """Every --json exit path emits JSON. A pipeline that pipes `ci --json`
+        into a parser must get a structured reason, not a coloured sentence."""
+        if as_json:
+            typer.echo(_json.dumps({"ok": False, "gate": "error", "reason": reason}))
+        else:
+            typer.secho(human or reason, fg=typer.colors.RED)
+        return typer.Exit(code=code)
 
-    _require_project(path)  # no junk .lock dir for a typo'd name
+    if not math.isfinite(threshold) or not (0.0 <= threshold <= 1.0):
+        raise _fail("--threshold must be a number between 0 and 1.")
+    if not math.isfinite(tolerance) or tolerance < 0:
+        raise _fail("--tolerance must be a number >= 0.")
+    if not (1 <= judge_passes <= 9):
+        raise _fail("--judge-passes must be between 1 and 9.")
+
+    _require_project(path, on_error=_fail)  # no junk .lock dir for a typo'd name
     with project_lock(path, on_wait=_lock_wait_notice):
-        project = _load(path)
+        project = _load(path, on_error=_fail)
         if project.spec is None or not project.tests:
             reason = "nothing to gate — run `calibrate compile` (or `import`) first"
-            if as_json:  # --json must emit JSON on EVERY exit path, not a bare string
-                typer.echo(_json.dumps({"ok": False, "gate": "error", "reason": reason}))
-            else:
-                typer.secho(f"Nothing to gate — {reason}.", fg=typer.colors.YELLOW)
-            raise typer.Exit(code=1)
+            raise _fail(reason, f"Nothing to gate — {reason}.")
         # Factories: engines are acquired only if lint passes — a lint-broken spec
         # shouldn't demand credentials, and an engine problem shouldn't mask lint.
         log_on = project.log_interactions
@@ -825,8 +896,7 @@ def ci(
             result = run_ci(project, subject, judge, project_dir=path, threshold=threshold,
                             tolerance=tolerance, judge_passes=judge_passes, baseline=baseline)
         except Exception as exc:
-            typer.secho(f"CI gate could not run: {exc}", fg=typer.colors.RED)
-            raise typer.Exit(code=1)
+            raise _fail(f"CI gate could not run: {exc}")
 
     if as_json:
         typer.echo(_json.dumps(ci_dict(result), indent=2))
@@ -891,12 +961,20 @@ def run(
         typer.secho(str(exc), fg=typer.colors.RED)
         raise typer.Exit(code=1)
     except ImportError:
-        typer.secho("Serving needs the `api` extra:  pip install -e '.[api]'", fg=typer.colors.RED)
+        typer.secho("Serving needs the `api` extra:  pip install 'ai-calibrator[api]'", fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
     if not is_local:
         typer.secho(f"⚠  Binding to {host} exposes the (unauthenticated) AI beyond localhost.",
                     fg=typer.colors.YELLOW)
+    if host in ("0.0.0.0", "::"):
+        # A wildcard bind allowlists the literal wildcard, but clients send the
+        # machine's real address in Host — so every request would 400. Say so.
+        typer.secho(f"⚠  --host {host} listens on every interface, but the Host guard only "
+                    f"allows the literal '{host}', so real clients will get "
+                    "400 'host not allowed'.", fg=typer.colors.YELLOW, bold=True)
+        typer.echo("   Bind the address clients will actually use, e.g. "
+                   "`--host 192.168.1.50`, or keep it on 127.0.0.1 and put a proxy in front.")
     # --guard only enforces criteria that carry a deterministic check, and only
     # `calibrate add-check` creates one. Requesting it on a project without any
     # would otherwise print "guard ON" over an endpoint checking nothing.
@@ -947,10 +1025,16 @@ def absorb(path: Path = typer.Argument(Path("."), help="Project directory.")) ->
     typer.echo(f"  examples added: {result.examples_added}   pinned tests added: {result.tests_added}"
                + (f" ({', '.join(result.test_ids)})" if result.test_ids else "")
                + (f"   skipped: {result.skipped}" if result.skipped else ""))
-    if result.tests_added or result.examples_added:
+    if result.tests_added:
+        # Only a new TEST moves config_hash; an examples-only absorb leaves the
+        # fingerprint (and therefore the gate) exactly where it was.
         typer.secho("The AI just learned from real use — its certification is now stale.",
                     fg=typer.colors.YELLOW)
         typer.echo("Run `calibrate ci` to re-certify against the suite that now includes it.")
+    elif result.examples_added:
+        typer.echo("  Examples only — the certification fingerprint is unchanged, so the gate "
+                   "still reflects what it certified. Re-run `calibrate ci` when you want the "
+                   "new material graded.")
 
 
 @app.command(name="add-check")
@@ -1367,13 +1451,24 @@ def snapshot(
     from .snapshot import compare, load_golden, outputs_of, save_golden
 
     _load(path)  # validate project
+    # Resolve the newest run either way, so a corrupt scorecard still surfaces
+    # honestly ("Could not read scorecard") instead of being silently skipped.
     rid = latest_run_id(path)
     if not rid:
         typer.secho("No scorecard yet — run `calibrate eval` first.", fg=typer.colors.YELLOW)
         raise typer.Exit(code=1)
-    latest = outputs_of(_scorecard_or_exit(path, rid))
+    card = _scorecard_or_exit(path, rid)
+    latest = outputs_of(card)
 
     if not check:
+        # Never PIN from a partial run: the golden is the most reference-y artifact
+        # there is, and a --max-tests or interrupted run would overwrite a complete
+        # golden with a strict subset, silently narrowing every future --check.
+        if card.partial:
+            typer.secho(f"{rid} is a PARTIAL run (interrupted, or --max-tests) — pinning it would "
+                        "replace the golden with a subset of the suite. Run a full "
+                        "`calibrate eval` first.", fg=typer.colors.RED)
+            raise typer.Exit(code=1)
         save_golden(path, latest)
         typer.secho(f"✓ Pinned {len(latest)} golden output(s) from {rid} → golden.json.", fg=typer.colors.GREEN)
         return
@@ -1488,20 +1583,35 @@ def teach(
         reason = typer.prompt("  Why? (optional, Enter to skip)", default="", show_default=False).strip() or None
         judged.append(Judged(input=c.input, output=c.output, approved=approved, reason=reason))
 
+    # Persist the human's judgments BEFORE the inference call. They are the
+    # expensive part — minutes of a person's attention — and they do not depend on
+    # `learned` at all (apply_learned records them either way). An engine failure
+    # here used to discard the entire session.
+    _require_project(path)  # no junk .lock dir for a typo'd name
+    with project_lock(path, on_wait=_lock_wait_notice):
+        project = _load(path)
+        saved = apply_learned(project, judged, None)
+        save_project(project, path)
+        if project.tests:
+            write_build_bundle(project.spec, project.tests, path)
+
     typer.echo("\nInferring your standards from these judgments …")
     try:
         learned = infer_standards(project.goal, judged, generator)
     except Exception as exc:
         typer.secho(f"Inference failed: {exc}", fg=typer.colors.RED)
+        typer.secho(f"  Your {len(judged)} judgment(s) were saved as examples — nothing was lost. "
+                    "Re-run `calibrate teach` when the engine is available to infer standards.",
+                    fg=typer.colors.YELLOW)
         raise typer.Exit(code=1)
 
-    _require_project(path)  # no junk .lock dir for a typo'd name
     with project_lock(path, on_wait=_lock_wait_notice):  # short critical section: reload → apply → save
         project = _load(path)
         result = apply_learned(project, judged, learned)
         save_project(project, path)
         if project.tests:  # refresh the build bundle if one exists
             write_build_bundle(project.spec, project.tests, path)
+    result.examples_recorded = saved.examples_recorded or result.examples_recorded
 
     typer.secho(
         f"\n✓ Learned {result.standards_added} standard(s) + {result.do_not_added} never-rule(s) "
@@ -1526,10 +1636,20 @@ def merge(
     import yaml as _yaml
 
     from .engines import get_engine
-    from .stakeholders import build_merged_spec, conflict_dict, detect_conflicts, gather
+    from .stakeholders import (build_merged_spec, conflict_dict, detect_conflicts, gather,
+                               scalar_conflicts)
 
     if len(sources) < 2:
         typer.secho("Need at least two --from projects to merge.", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    # Validate the destination up front: project_lock() mkdirs it, which raises a
+    # raw FileExistsError when the path is an existing FILE — and it would do so
+    # AFTER the interactive reconciliation loop, discarding every ruling typed.
+    if out.exists() and not out.is_dir():
+        typer.secho(f"A file named {out} already exists — pick another destination.", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    if (out / "project.yaml").exists():
+        typer.secho(f"A project already exists at {out}/.", fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
     named: dict = {}
@@ -1560,13 +1680,31 @@ def merge(
         typer.secho(f"Conflict detection failed: {exc}", fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
+    # Scalar behavior fields (voice, format, refusal policy) never reach the
+    # engine's conflict detector — it only ever sees standards and never-rules —
+    # so a disagreement there would otherwise be resolved silently and reported as
+    # "no conflicts". Surface it, and record it in the audit file.
+    scalars = scalar_conflicts(named)
+    scalar_audit = [
+        {"field": field, "values": [{"stakeholder": n, "value": v} for n, v in vals],
+         "resolved_to": {"stakeholder": vals[0][0], "value": vals[0][1]}}
+        for field, vals in scalars
+    ]
+
     drops: set[int] = set()
     additions: list[str] = []
     audit: list[dict] = []
-    if conflicts:
-        typer.secho(f"\n{len(conflicts)} conflict(s) found:", bold=True)
+    if conflicts or scalars:
+        typer.secho(f"\n{len(conflicts) + len(scalars)} conflict(s) found:", bold=True)
     else:
         typer.secho("\nNo conflicts found — merging cleanly.", fg=typer.colors.GREEN)
+
+    for field, vals in scalars:
+        typer.secho(f"\n[{field}] stakeholders disagree", fg=typer.colors.RED, bold=True)
+        for n, v in vals:
+            typer.echo(f"  [{n}]: {v}")
+        typer.secho(f"  → keeping {vals[0][0]}'s value (first by stakeholder name); "
+                    f"edit the merged spec to change it.", fg=typer.colors.YELLOW)
 
     for c in conflicts:
         typer.secho(f"\n[{c.id}] ({c.severity})", fg=typer.colors.RED, bold=True)
@@ -1603,16 +1741,24 @@ def merge(
     goal_final = goal or first.goal
     spec = build_merged_spec(named, goal=goal_final, task_type=first.task_type, drops=drops, additions=additions)
     merged = Project(name=out.name, goal=goal_final, task_type=first.task_type, spec=spec)
-    with project_lock(out):
-        if (out / "project.yaml").exists():
-            typer.secho(f"A project already exists at {out}/.", fg=typer.colors.RED)
-            raise typer.Exit(code=1)
-        save_project(merged, out)
-        atomic_write_text(out / "reconciliation.yaml",
-                          _yaml.safe_dump({"stakeholders": list(named), "conflicts": audit}, sort_keys=False, allow_unicode=True))
+    _we_created = not out.exists()
+    try:
+        with project_lock(out):
+            if (out / "project.yaml").exists():
+                typer.secho(f"A project already exists at {out}/.", fg=typer.colors.RED)
+                raise typer.Exit(code=1)
+            save_project(merged, out)
+            atomic_write_text(out / "reconciliation.yaml",
+                              _yaml.safe_dump({"stakeholders": list(named), "conflicts": audit,
+                                               "field_conflicts": scalar_audit},
+                                              sort_keys=False, allow_unicode=True))
+    except typer.Exit:
+        _cleanup_empty_project_dir(out, _we_created)
+        raise
     typer.secho(
         f"\n✓ Merged {len(named)} stakeholder(s) → {out}/  "
-        f"({len(spec.standards)} standard(s), {len(spec.do_not)} never-rule(s); {len(conflicts)} conflict(s) reconciled).",
+        f"({len(spec.standards)} standard(s), {len(spec.do_not)} never-rule(s); "
+        f"{len(conflicts)} rule conflict(s) reconciled, {len(scalars)} field conflict(s) resolved).",
         fg=typer.colors.GREEN,
     )
     typer.echo("  reconciliation audit → reconciliation.yaml")
@@ -1807,7 +1953,7 @@ def serve(
         import uvicorn
         from .api import create_app, default_projects_root
     except (ImportError, RuntimeError):
-        typer.secho("The API needs the `api` extra:  pip install -e '.[api]'", fg=typer.colors.RED)
+        typer.secho("The API needs the `api` extra:  pip install 'ai-calibrator[api]'", fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
     # Resolve to an absolute path so the startup banner is unambiguous from any
@@ -1850,12 +1996,26 @@ def finetune(
         if not (baseline and candidate):
             typer.secho("--gate needs --baseline <run-id> and --candidate <run-id>.", fg=typer.colors.RED)
             raise typer.Exit(code=1)
-        from .finetune import beats_baseline
+        from .finetune import beats_baseline, training_overlap
 
         base_card, cand_card = _scorecard_or_exit(path, baseline), _scorecard_or_exit(path, candidate)
         win = beats_baseline(base_card, cand_card)
         typer.echo(f"baseline [{baseline}]: {pct(base_card.pass_rate)}    "
                    f"candidate [{candidate}]: {pct(cand_card.pass_rate)}")
+
+        # The dataset is built from spec.examples, and examples-to-tests / absorb
+        # turn those same examples into ex_*/fb_* tests — so the gate can grade the
+        # fine-tune on prompts it trained on. That is not a held-out comparison and
+        # a model that merely memorized would pass it. Say so.
+        overlap = training_overlap(project, cand_card)
+        graded = [r for r in cand_card.results if r.criteria]
+        if overlap:
+            typer.secho(f"⚠ NOT held out: {len(overlap)} of {len(graded)} graded test(s) use an "
+                        "input that is also a TRAINING prompt "
+                        f"({', '.join(overlap[:5])}{', …' if len(overlap) > 5 else ''}).",
+                        fg=typer.colors.YELLOW, bold=True)
+            typer.echo("  A fine-tune that memorized the dataset would pass this gate. Add tests "
+                       "whose inputs are not in the dataset before trusting the verdict.")
 
         def _prov(card):
             bits = [f"subject={card.subject}"] if card.subject else []
@@ -1970,13 +2130,23 @@ def train(
         typer.echo(f"Plan: ~{est} optimizer step(s) over {recipe.get('epochs')} epoch(s).")
 
     # 2. ensure the training stack (offered, not forced)
-    need = [m for m in ("torch", "transformers", "trl", "peft", "datasets", "accelerate")
-            if importlib.util.find_spec(m) is None]
+    # Install the REQUIREMENT STRINGS the `train` extra declares, not bare module
+    # names: find_spec only answers "is it importable", so an already-present but
+    # too-old transformers/trl/peft was neither detected nor upgraded — and the
+    # generated trainer then fails on an argument that release doesn't have. pip
+    # decides what is already satisfied.
+    _TRAIN_REQS = {
+        "torch": "torch>=2.2", "transformers": "transformers>=4.46", "trl": "trl>=1.0",
+        "peft": "peft>=0.11", "datasets": "datasets>=2.19", "accelerate": "accelerate>=0.30",
+    }
+    missing = [m for m in _TRAIN_REQS if importlib.util.find_spec(m) is None]
+    need = list(_TRAIN_REQS.values()) if missing else []
     if qlora and importlib.util.find_spec("bitsandbytes") is None:
         need.append("bitsandbytes")
     if need:
-        typer.secho(f"\nTraining needs: {', '.join(need)}  (torch is a large download — several GB).",
-                    fg=typer.colors.YELLOW)
+        typer.secho(f"\nTraining needs: {', '.join(missing) or 'bitsandbytes'}  "
+                    "(torch is a large download — several GB).", fg=typer.colors.YELLOW)
+        typer.echo("  Installing with the version floors the bundle's train.py requires.")
         typer.echo("  (or install once yourself:  pip install 'ai-calibrator[train]')")
         if not yes and not typer.confirm("  Install them now?", default=True):
             raise typer.Exit(code=1)

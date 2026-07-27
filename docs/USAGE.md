@@ -511,9 +511,11 @@ calibrate train my-support-ai --base Qwen/Qwen2.5-3B-Instruct    # a smaller bas
 calibrate train my-support-ai --epochs 1 --max-steps 20          # bound the work (a fast smoke run)
 calibrate train my-support-ai --qlora            # load the base in 4-bit (CUDA + bitsandbytes) so a 7B fits a consumer card
 ```
-`--epochs` / `--max-steps` are baked into the generated `train.py`, so they
-actually change training (editing `recipe.yaml` alone does too). The command
-prints an estimated step count before it starts. (Or install once —
+`--epochs` / `--max-steps` are baked into the generated `train.py`. The other
+hyperparameters (`learning_rate`, `lora_r`, `lora_alpha`, `lora_dropout`,
+`max_seq_len`) are read from `recipe.yaml` at run time, so editing that file
+before `python train.py` genuinely changes the run. The command prints an
+estimated step count before it starts. (Or install once —
 `pip install -e '.[train]'` — and run `python train.py` yourself.)
 
 **Serve it, then gate it.** The adapter is a LoRA delta — `python merge.py`
@@ -522,7 +524,11 @@ writes a merged model to `finetune/merged/`, which you serve either via
 bind as the project's `subject` (the bundle README spells out both). Run the
 **prove-it gate** — keep the fine-tune *only* if it beats your configured
 baseline on the same evals (both scorecards must be full runs graded by the same
-judge; the gate warns otherwise):
+judge; the gate warns otherwise). **The suite is not automatically held out:**
+the dataset is built from `spec.examples`, and `examples-to-tests` / `absorb`
+turn those same examples into `ex_*` / `fb_*` tests, so a fine-tune can be graded
+on prompts it trained on. The gate reports that overlap — add tests whose inputs
+are not in the dataset before you trust the verdict:
 ```bash
 calibrate finetune my-support-ai --gate --baseline <run-id> --candidate <run-id>
 ```

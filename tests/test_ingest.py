@@ -28,7 +28,7 @@ def test_extract_gaps_parses_engine_output():
             ],
         }
     )
-    facts, gaps = extract_gaps("answer questions", "support_assistant",
+    facts, gaps, _analyzed = extract_gaps("answer questions", "support_assistant",
                                [("faq.md", "Q/A text")], engine)
 
     assert facts == ["We sell skincare products."]
@@ -50,7 +50,7 @@ def test_extract_gaps_drops_json_shard_gibberish():
             {"dimension": 'gap_content": "detailed definition"},', "why_it_matters": "y"},
         ],
     })
-    facts, gaps = extract_gaps("g", "assistant", [("f.md", "t")], engine)
+    facts, gaps, _analyzed = extract_gaps("g", "assistant", [("f.md", "t")], engine)
     assert [g.dimension for g in gaps] == ["tone"]          # only the clean gap survives
     assert facts == ["We ship internationally."]            # shard fact dropped too
 
@@ -98,9 +98,9 @@ def test_gap_schema_is_strict_compatible():
 
 def test_ingest_isolates_per_file_failures(tmp_path, monkeypatch):
     """One unparseable file must NOT abort the whole batch — the good files are
-    ingested and the bad one is reported in `skipped` (finding: non-isolated
-    ingest). Dependency-free: the parser is stubbed to raise on one file, so the
-    test exercises the isolation logic without needing the optional docs extra."""
+    ingested and the bad one is reported in `skipped`. Dependency-free: the parser
+    is stubbed to raise on one file, so the test exercises the isolation logic
+    without needing the optional docs extra."""
     import ai_calibrator.ingest as ing
     from ai_calibrator.ingest import parse_materials
 

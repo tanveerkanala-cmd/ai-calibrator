@@ -7,7 +7,7 @@ from ai_calibrator.models import BehaviorSpec, EvalCriterion, Project, Weight
 from ai_calibrator.models import TestCase as CaseModel
 
 
-# #7 — name validator normalizes + enforces the cap on the STORED value
+# name validator normalizes + enforces the cap on the STORED value
 def test_project_name_stripped_and_capped():
     from pydantic import ValidationError
     assert Project(name="  spaced  ", goal="g").name == "spaced"
@@ -18,7 +18,7 @@ def test_project_name_stripped_and_capped():
         Project(name="a" * 121, goal="g")
 
 
-# #8 — safe_token rejects traversal shapes the charset would otherwise allow
+# safe_token rejects traversal shapes the charset would otherwise allow
 def test_safe_token_rejects_traversal():
     from ai_calibrator.coerce import safe_token
     assert safe_token("org/Model-7B.v2", "x") == "org/Model-7B.v2"
@@ -27,7 +27,7 @@ def test_safe_token_rejects_traversal():
             safe_token(bad, "base model")
 
 
-# #9 — config_hash re-earns certification when the JUDGE changes
+# config_hash re-earns certification when the JUDGE changes
 def test_config_hash_includes_judge():
     from ai_calibrator.ci import config_hash
     p = Project(name="p", goal="g")
@@ -37,7 +37,7 @@ def test_config_hash_includes_judge():
     assert config_hash(p) != before
 
 
-# #13 — FileLock is not re-entrant: a double acquire fails fast (no deadlock)
+# FileLock is not re-entrant: a double acquire fails fast (no deadlock)
 def test_filelock_double_acquire_raises(tmp_path):
     from ai_calibrator.locking import FileLock
     lock = FileLock(tmp_path / ".lock")
@@ -49,7 +49,7 @@ def test_filelock_double_acquire_raises(tmp_path):
         lock.release()
 
 
-# #14 — empty project.yaml → friendly ValueError, not a cryptic pydantic wall
+# empty project.yaml → friendly ValueError, not a cryptic pydantic wall
 def test_empty_project_yaml_is_friendly(tmp_path):
     from ai_calibrator.store import load_project
     (tmp_path / "project.yaml").write_text("")
@@ -57,7 +57,7 @@ def test_empty_project_yaml_is_friendly(tmp_path):
         load_project(tmp_path)
 
 
-# #15 — write_project_gitignore never clobbers an existing file (atomic O_EXCL)
+# write_project_gitignore never clobbers an existing file (atomic O_EXCL)
 def test_gitignore_never_clobbers(tmp_path):
     from ai_calibrator.store import write_project_gitignore
     (tmp_path / ".gitignore").write_text("# mine\n")
@@ -65,7 +65,7 @@ def test_gitignore_never_clobbers(tmp_path):
     assert (tmp_path / ".gitignore").read_text(encoding="utf-8") == "# mine\n"
 
 
-# #16 — OpenAI empty choices → friendly RuntimeError, not IndexError
+# OpenAI empty choices → friendly RuntimeError, not IndexError
 def test_openai_empty_choices_is_friendly(monkeypatch):
     pytest.importorskip("openai")
     from ai_calibrator.engines.openai import OpenAIEngine
@@ -95,7 +95,7 @@ def test_openai_empty_choices_is_friendly(monkeypatch):
             eng._chat([{"role": "user", "content": "hi"}])
 
 
-# #17 — human ground truth overrides a logged row even when the log had no system msg
+# human ground truth overrides a logged row even when the log had no system msg
 def test_ground_truth_overrides_systemless_logged_row(tmp_path):
     import json
 
@@ -128,7 +128,7 @@ def test_ground_truth_overrides_systemless_logged_row(tmp_path):
     assert target["results"][0]["passed"] is False                 # the HUMAN verdict
 
 
-# #18 — load_labels drops entries missing the verdict
+# load_labels drops entries missing the verdict
 def test_load_labels_requires_passed(tmp_path):
     import json
 
@@ -142,7 +142,7 @@ def test_load_labels_requires_passed(tmp_path):
     assert load_labels(tmp_path, "run-0001") == [{"test_id": "t1", "criterion_id": "c1", "passed": True}]
 
 
-# #20 — the corpus cap is never exceeded (header now counted against the budget)
+# the corpus cap is never exceeded (header now counted against the budget)
 def test_ingest_cap_is_respected():
     from pathlib import Path
 
@@ -153,7 +153,7 @@ def test_ingest_cap_is_respected():
 
 
 # OpenAI adapter: raw SDK errors (auth/404/rate/timeout) → friendly RuntimeError.
-# Found by a LIVE run against the real API; tested here with a fake SDK (no key).
+# Tested with a fake SDK, so no key is needed.
 def test_openai_sdk_errors_are_friendly(monkeypatch):
     openai = pytest.importorskip("openai")
     from ai_calibrator.engines.openai import OpenAIEngine
