@@ -2,11 +2,12 @@
 
 Opt-in quality upgrade over the local default. Credentials resolve from
 ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, or an `ant auth login` profile — so
-`calibrate login claude` makes this work with no key. Install: pip install 'ai-calibrator[cloud]'
+`calibrate login claude` makes this work with no key. Install: pip install -e '.[cloud]'
 """
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from .base import (
@@ -17,6 +18,23 @@ from .base import (
     call_json,
     missing_credentials_message,
 )
+
+DEFAULT_MAX_TOKENS = 16000
+
+
+def _default_max_tokens() -> int:
+    """Env-overridable: a long compile or a big export can need more than 16k of
+    output, and with no knob the truncation error below is a dead end. Set
+    CALIBRATOR_ANTHROPIC_MAX_TOKENS (tokens)."""
+    raw = os.getenv("CALIBRATOR_ANTHROPIC_MAX_TOKENS")
+    if raw:
+        try:
+            value = int(raw)
+            if value > 0:
+                return value
+        except ValueError:
+            pass  # ignore junk; fall through to the default
+    return DEFAULT_MAX_TOKENS
 
 
 def _friendly_anthropic_error(exc: Exception, name: str) -> EngineError | None:
@@ -52,18 +70,18 @@ def _friendly_anthropic_error(exc: Exception, name: str) -> EngineError | None:
 
 
 class AnthropicEngine(Engine):
-    def __init__(self, model: str, api_key: str | None = None, max_tokens: int = 16000) -> None:
+    def __init__(self, model: str, api_key: str | None = None, max_tokens: int | None = None) -> None:
         try:
             import anthropic
         except ImportError as exc:  # pragma: no cover - optional extra
             raise RuntimeError(
                 "The Anthropic cloud engine needs the `anthropic` package.\n"
-                "  Install it with:  pip install 'ai-calibrator[cloud]'"
+                "  Install it with:  pip install -e '.[cloud]'  (in your ai-calibrator clone)"
             ) from exc
 
         self.name = f"{model}@anthropic"
         self.model = model
-        self.max_tokens = max_tokens
+        self.max_tokens = max_tokens if max_tokens is not None else _default_max_tokens()
         try:
             self._client = (
                 anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
@@ -106,8 +124,9 @@ class AnthropicEngine(Engine):
                 raise EngineError(f"Claude declined the request ({self.name}).")
             if resp.stop_reason == "max_tokens":
                 raise EngineError(
-                    f"Claude response truncated at max_tokens={self.max_tokens} ({self.name}); "
-                    "increase max_tokens for this engine."
+                    f"Claude response truncated at max_tokens={self.max_tokens} ({self.name}).\n"
+                    f"  Try raising the limit:  CALIBRATOR_ANTHROPIC_MAX_TOKENS={self.max_tokens * 2} "
+                    "calibrate <command> …"
                 )
             # content can be None/empty on a malformed or OpenAI-compatible proxy
             # response — don't let that raise a raw TypeError.

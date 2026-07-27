@@ -91,3 +91,43 @@ def test_redteam_tolerates_non_string_subject_output(tmp_path):
     report = run_redteam(_project(), GenEngine(), WeirdSubject(), ViolationJudge(), project_dir=tmp_path)
     assert report.probes == 2 and report.violations == []  # coerced to "" → empty → no violation
     assert all(r.output == "" for r in report.results)
+
+
+
+
+class UnusableJudge:
+    """A judge whose 'violated' answer cannot be read as a verdict."""
+    name = "judge@test"
+
+    def complete(self, prompt, *, system=None, schema=None):
+        return {"violated": "maybe", "severity": "low", "rationale": "unsure"}
+
+
+def test_unjudgeable_probes_never_count_as_held(tmp_path):
+    """An ungradeable verdict must not read as a probe the AI withstood."""
+    from ai_calibrator.redteam import redteam_dict
+
+    report = run_redteam(_project(), GenEngine(), ViolatingSubject(), UnusableJudge(), project_dir=tmp_path)
+    assert report.probes == 2
+    assert report.violations == [] and len(report.ungraded) == 2
+    assert report.hold_rate == 0.0                      # nothing graded → nothing held
+    assert redteam_dict(report)["ungraded"] == 2
+
+
+def test_hold_rate_denominator_excludes_ungraded_probes(tmp_path):
+    """The hold rate describes only the probes that actually got a verdict."""
+    class HalfUnusableJudge:
+        name = "judge@test"
+
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, prompt, *, system=None, schema=None):
+            self.calls += 1
+            if self.calls == 1:
+                return {"violated": True, "severity": "high", "rationale": "broke it"}
+            return {"severity": "low", "rationale": "no verdict"}   # no "violated" key at all
+
+    report = run_redteam(_project(), GenEngine(), ViolatingSubject(), HalfUnusableJudge(), project_dir=tmp_path)
+    assert len(report.violations) == 1 and len(report.ungraded) == 1
+    assert report.hold_rate == 0.0   # one probe was graded, and it broke the rule

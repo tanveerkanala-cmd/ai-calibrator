@@ -131,3 +131,29 @@ def test_malformed_json_import_is_a_friendly_error(tmp_path):
         load_examples_report(f)
 
     assert "not valid JSON" in str(exc.value)
+
+
+
+
+def test_dedup_keeps_the_correction_over_a_later_input_only_row():
+    """"Newest wins" must mean newest RATIFIED: an input-only row imported later
+    (a list of bare questions) carries no answer, so letting it win destroys the
+    correction a human already recorded for that input."""
+    spec = BehaviorSpec(goal="g", examples=[
+        Example(input="q", good_output="corrected"),
+        Example(input="q"),                                  # later import, no output column
+        Example(input="r", good_output="R")])
+    assert dedup_examples(spec) == 1
+    assert [(e.input, e.good_output) for e in spec.examples] == [("q", "corrected"), ("r", "R")]
+
+    # a rejected answer is human judgment too — it outranks a bare input row
+    rejected = BehaviorSpec(goal="g", examples=[
+        Example(input="q", bad_output="never say this"), Example(input="q")])
+    dedup_examples(rejected)
+    assert rejected.examples[0].bad_output == "never say this"
+
+    # with no output anywhere, plain newest-wins still applies
+    bare = BehaviorSpec(goal="g", examples=[
+        Example(input="q", why="older"), Example(input="q", why="newer")])
+    dedup_examples(bare)
+    assert [e.why for e in bare.examples] == ["newer"]

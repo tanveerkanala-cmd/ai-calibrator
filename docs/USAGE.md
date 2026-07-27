@@ -73,6 +73,10 @@ Reasoning roles default to `claude-opus-4-8`; the high-volume judge to
 `claude-sonnet-4-6`. Run `calibrate auth` to see what's configured and
 `calibrate engines` to see each role's binding (§5 shows how to change them).
 
+Claude replies are capped at 16000 output tokens. A long compile or export can
+hit that ceiling — the error says so; raise it with
+`CALIBRATOR_ANTHROPIC_MAX_TOKENS=32000` (tokens) in the environment.
+
 ### Option B — OpenAI
 ```bash
 export OPENAI_API_KEY=sk-...
@@ -543,10 +547,11 @@ Non-technical users never see any of this. Details in
 
 ## 6b. Engine-Trainer — run the tool on your own models (autonomy)
 
-The tool can calibrate *itself*. Turn on local logging and every decision your
-cloud engines make for a role is recorded — that log is a labeled dataset to
-fine-tune a small **local** model that reproduces the role. Localize one role at a
-time until the tool runs privately and free on your own engines.
+The tool can calibrate *itself*. Turn on local logging and the decisions your
+cloud engines make get recorded — today that means the **judge** (during `eval`
+and `ci`) and the **compiler** (during `eval --refine`); those logs are a labeled
+dataset to fine-tune a small **local** model that reproduces the role. Localize
+one role at a time until the tool runs privately and free on your own engines.
 
 ```bash
 calibrate log --on              # opt-in; logs to <project>/logs/<role>.jsonl (stays local)

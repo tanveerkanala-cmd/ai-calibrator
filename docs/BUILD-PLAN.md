@@ -1,9 +1,11 @@
 # v0 Build Plan (historical)
 
-> **Status: completed.** This is the original v0 roadmap, kept as a record of
-> how the project was sequenced and why. Everything below — including the
-> items marked "later" (cloud adapters, the API, the web UI) and the v1
-> Advanced tier — has since shipped. For what the tool does *today*, see
+> **Status: completed, with one exception.** This is the original v0 roadmap,
+> kept as a record of how the project was sequenced and why. Everything below —
+> including the items marked "later" (cloud adapters, the API, the web UI) and
+> the v1 Advanced tier — has since shipped, *except* the Tauri desktop shell in
+> M6: the web UI runs in a browser via `calibrate serve`, and native packaging
+> is still the remaining step. For what the tool does *today*, see
 > [`USAGE.md`](USAGE.md).
 
 Companion to `ARCHITECTURE.md`. This is the *map*: what to build, in what order,
@@ -43,7 +45,7 @@ ai-calibrator/
     pipeline.py      # orchestrates the stages                       [M4]
     cli.py           # `calibrate` entrypoint
   tests/
-  # later: api/ (FastAPI), desktop/ (Tauri + React)
+  # later: api/ (FastAPI), desktop/ (Tauri + React — the desktop shell is unbuilt)
 ```
 
 ## The spine: data contracts (`models.py`)
@@ -77,6 +79,8 @@ is just serializable data on disk:
 - **M5 — Export.** Emit a portable bundle + an Ollama `Modelfile` so the result
   runs in the local-first runtime.
 - **M6 — Local API + Desktop UI.** FastAPI over the Core; Tauri + React shell.
+  *(Shipped as the API + a browser UI served by `calibrate serve`; the Tauri
+  shell is not built yet.)*
 - **v1 — Advanced tier.** The fine-tuning toolchain (§3.1).
 
 ## Build order rationale

@@ -116,7 +116,8 @@ def _readme(name: str, base_model: str, *, has_index: bool) -> str:
         if has_index else
         "> ⚠ No retrieval index was built for this project, so this bundle answers "
         "from the system prompt ONLY — it will NOT use your source documents. To "
-        "enable retrieval: `pip install 'ai-calibrator[rag]'`, re-run `calibrate "
+        "enable retrieval: `pip install -e '.[rag]'` in your ai-calibrator clone, "
+        "re-run `calibrate "
         "ingest`, then re-export."
     )
     return f"""# Calibrated AI — {name}

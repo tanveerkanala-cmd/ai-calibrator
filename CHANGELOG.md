@@ -8,7 +8,7 @@ versions follow [SemVer](https://semver.org/).
 
 ### Added
 - `calibrate --version` / `-V`.
-- `all` package extra (`pip install 'ai-calibrator[all]'`) — every engine, the
+- `all` package extra (`pip install -e '.[all]'`) — every engine, the
   web UI, and document ingestion in one install.
 - Host/Origin guard on the `calibrate run` OpenAI-compatible endpoint (shared
   with `calibrate serve` via `webguard.py`) — blocks browser CSRF and DNS

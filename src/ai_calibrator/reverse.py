@@ -17,7 +17,7 @@ from pathlib import Path
 from .compile import SPEC_SCHEMA, generate_tests, spec_from_dict, write_build_bundle
 from .engines.base import Engine, require_object
 from .models import BehaviorSpec, EngineBinding, Project, TaskType
-from .store import atomic_write_text, save_project
+from .store import atomic_write_text, save_project, write_project_gitignore
 
 _REVERSE_SYSTEM = (
     "You reverse-engineer a behavior specification from an EXISTING AI system "
@@ -72,6 +72,10 @@ def reverse_project(
     project = Project(name=name, goal=goal, task_type=task_type, engines=bindings, spec=spec, tests=tests)
     if project_dir is not None:
         save_project(project, project_dir)
+        # The same .gitignore `init` writes. An imported project is the one most
+        # likely to be committed — it came from a prompt that already lives in a
+        # repo — so its logs/, evals/ and any .env must be ignored from the start.
+        write_project_gitignore(project_dir)
         write_build_bundle(spec, tests, project_dir)
         atomic_write_text(Path(project_dir) / "imported_prompt.txt", prompt_text)  # provenance
     return project

@@ -100,6 +100,10 @@ class JudgeAgreement:
     agreed: int
     by_criterion: dict[str, tuple[int, int]] = field(default_factory=dict)  # id -> (agreed, total)
     disagreements: list[dict] = field(default_factory=list)
+    # Labels there was nothing to compare against (see judge_agreement). They are
+    # neither agreements nor disagreements, so they stay out of both counts — but
+    # they must be reported, or the rate reads as covering every label given.
+    unmatched: int = 0
 
     @property
     def agreement_rate(self) -> float:
@@ -127,10 +131,15 @@ def judge_agreement(card: Scorecard, human_labels: list[dict]) -> JudgeAgreement
     for label in human_labels:
         if not (isinstance(label, dict) and isinstance(label.get("test_id"), str)
                 and isinstance(label.get("criterion_id"), str)):
-            continue  # same scalar-id contract as save_labels — never crash on a bad row
+            ag.unmatched += 1  # same scalar-id contract as save_labels — never crash on a bad row
+            continue
         key = (label["test_id"], label["criterion_id"])
         cr = judge.get(key)
         if cr is None:
+            # The judge never ruled on this (test, criterion), so there is no
+            # verdict to agree with. Counting it either way would make the rate
+            # describe coverage it does not have; report it separately instead.
+            ag.unmatched += 1
             continue
         human_passed = bool(label.get("passed"))
         match = cr.passed == human_passed
@@ -147,7 +156,7 @@ def judge_agreement(card: Scorecard, human_labels: list[dict]) -> JudgeAgreement
 def agreement_dict(ag: JudgeAgreement) -> dict:
     return {
         "agreement_rate": round(ag.agreement_rate, 3),
-        "agreed": ag.agreed, "total": ag.total,
+        "agreed": ag.agreed, "total": ag.total, "unmatched": ag.unmatched,
         "by_criterion": {cid: {"agreed": a, "total": t, "rate": round(a / t, 3) if t else 0.0}
                          for cid, (a, t) in ag.by_criterion.items()},
         "unreliable_criteria": ag.unreliable_criteria(),

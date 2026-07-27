@@ -399,3 +399,30 @@ def test_duplicate_expects_do_not_multiply_weight():
     tr = card.results[0]
     # exactly two criteria recorded (lo once, hi once), not four
     assert [c.criterion_id for c in tr.criteria] == ["lo", "hi"]
+
+
+
+
+def test_non_string_criterion_id_does_not_destroy_the_run():
+    """A judge that returns criterion_id as a list must not abort the eval.
+
+    The verdict map keys on that id, so an unhashable one raised TypeError and
+    threw away every result in a long graded run."""
+    class UnhashableIdJudge:
+        name = "judge@test"
+
+        def complete(self, prompt, *, system=None, schema=None):
+            return {"results": [
+                {"criterion_id": ["c1"], "passed": True, "score": 1.0, "rationale": "junk id"},
+                {"criterion_id": "c1", "passed": True, "score": 1.0, "rationale": "meets it"},
+            ]}
+
+    project = Project(name="p", goal="g")
+    project.spec = BehaviorSpec(goal="g", eval_criteria=[
+        EvalCriterion(id="c1", description="d", weight=Weight.HIGH)])
+    project.tests = [CaseModel(id="t1", input="q", expects=["c1"])]
+
+    card = run_eval(project, GoodSubject(), UnhashableIdJudge())
+    assert len(card.results) == 1
+    assert [c.criterion_id for c in card.results[0].criteria] == ["c1"]
+    assert card.results[0].criteria[0].passed is True

@@ -62,3 +62,45 @@ def test_call_json_does_not_retry_on_api_error():
     with pytest.raises(ConnectionError):
         call_json(call)
     assert calls["n"] == 1  # no retry on a genuine API/connection error
+
+
+
+
+def test_anthropic_max_tokens_is_env_overridable(monkeypatch):
+    """A hard-coded 16k cap with no knob makes the truncation error a dead end —
+    the message tells the user to raise it, so there has to be a way to."""
+    from ai_calibrator.engines.anthropic import DEFAULT_MAX_TOKENS, _default_max_tokens
+    monkeypatch.delenv("CALIBRATOR_ANTHROPIC_MAX_TOKENS", raising=False)
+    assert _default_max_tokens() == DEFAULT_MAX_TOKENS
+    monkeypatch.setenv("CALIBRATOR_ANTHROPIC_MAX_TOKENS", "64000")
+    assert _default_max_tokens() == 64000
+    for junk in ("junk", "0", "-5", "1e999"):
+        monkeypatch.setenv("CALIBRATOR_ANTHROPIC_MAX_TOKENS", junk)
+        assert _default_max_tokens() == DEFAULT_MAX_TOKENS, junk   # junk → default, never crash
+
+
+def test_anthropic_truncation_error_names_the_knob():
+    """The truncation message must name something the reader can actually change;
+    "increase max_tokens for this engine" named nothing."""
+    from ai_calibrator.engines.anthropic import AnthropicEngine
+
+    class Block:
+        type = "text"
+        text = "partial"
+
+    class Resp:
+        stop_reason = "max_tokens"
+        content = [Block()]
+
+    class Messages:
+        def create(self, **kwargs):
+            return Resp()
+
+    # The anthropic SDK is an optional extra, so build the adapter without __init__.
+    eng = AnthropicEngine.__new__(AnthropicEngine)
+    eng.name = "claude-x@anthropic"
+    eng.model = "claude-x"
+    eng.max_tokens = 100
+    eng._client = type("Client", (), {"messages": Messages()})()
+    with pytest.raises(RuntimeError, match="CALIBRATOR_ANTHROPIC_MAX_TOKENS=200"):
+        eng.complete("hi")

@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import functools
 import os
 import shutil
 import subprocess
@@ -33,21 +34,38 @@ def _looks_like_placeholder(key: str) -> bool:
             or len(k.split("-")[-1]) < 8)
 
 
+# The binary has to say one of these about itself before we will run it.
+_ANTHROPIC_MARKERS = ("anthropic", "claude")
+
+
+@functools.lru_cache(maxsize=1)
 def _anthropic_cli() -> str | None:
-    """Path to the Anthropic CLI, or None.
+    """Path to the Anthropic CLI, or None when it can't be positively identified.
 
     `ant` is also the name of Apache Ant, an extremely common Java build tool, so
     a bare `shutil.which("ant")` would report a Claude login as available and then
-    exec a build tool. Verify what the binary actually is before trusting it."""
+    exec a build tool. Recognizing Apache Ant is the wrong way round, though: the
+    binary we know least about is exactly the one we must not hand the user's
+    terminal to. So the only accepted binary is one whose own help text names
+    Anthropic or Claude; a different tool, a non-zero exit, a hang, no output at
+    all — all of it means "no Anthropic CLI here", and the user is pointed at
+    ANTHROPIC_API_KEY instead.
+
+    The probe costs a subprocess and `anthropic_status()` runs on both `calibrate
+    auth` and `GET /api/auth`, so the answer is cached for the life of the process
+    (call `_anthropic_cli.cache_clear()` after installing the CLI)."""
     path = shutil.which("ant")
     if not path:
         return None
     try:
-        out = subprocess.run([path, "--version"], capture_output=True, text=True,
-                             timeout=5).stdout.lower()
+        proc = subprocess.run([path, "--help"], capture_output=True, text=True,
+                              errors="replace", timeout=5, check=False)
     except (OSError, subprocess.SubprocessError):
+        return None  # not executable, or it hung — either way, not usable
+    if proc.returncode != 0:
         return None
-    if "apache ant" in out:  # the Java build tool, not the Anthropic CLI
+    blurb = ((proc.stdout or "") + (proc.stderr or "")).lower()
+    if not any(marker in blurb for marker in _ANTHROPIC_MARKERS):
         return None
     return path
 
@@ -67,7 +85,15 @@ def anthropic_status() -> AuthStatus:
         # not-yet-confirmed rather than a false "configured".
         return AuthStatus(
             "claude", False,
-            "`ant` CLI found, login state unknown — run `calibrate login claude` (or set ANTHROPIC_API_KEY)",
+            "Anthropic CLI found, login state unknown — run `calibrate login claude` (or set ANTHROPIC_API_KEY)",
+        )
+    if shutil.which("ant"):
+        # There is an `ant`, but it didn't identify itself as Anthropic's, so
+        # browser login is not a route we can offer. Say that plainly.
+        return AuthStatus(
+            "claude", False,
+            "the `ant` on your PATH isn't the Anthropic CLI (Apache Ant shares the name) — "
+            "set ANTHROPIC_API_KEY, or install the Anthropic CLI and run `calibrate login claude`",
         )
     return AuthStatus(
         "claude", False,
@@ -99,10 +125,17 @@ def login_anthropic() -> int:
     cli = _anthropic_cli()
     if cli is None:
         raise RuntimeError(
-            "Browser login to Claude uses the Anthropic CLI (`ant`), which isn't installed.\n"
-            "  (If you do have an `ant` on PATH, it is Apache Ant — a different tool.)\n"
+            "Browser login to Claude uses the Anthropic CLI (`ant`), and there is no\n"
+            "  confirmed Anthropic CLI on your PATH — nothing safe to launch.\n"
+            "  (An `ant` that is Apache Ant, the Java build tool, does not count.)\n"
             "  Install it:  brew install anthropics/tap/ant   (or see docs.claude.com)\n"
             "  …then re-run `calibrate login claude`. Or skip login and set ANTHROPIC_API_KEY."
         )
     # Interactive: inherit stdio so the browser/device flow works.
-    return subprocess.call([cli, "auth", "login"])
+    try:
+        return subprocess.call([cli, "auth", "login"])
+    except OSError as exc:  # removed since the probe cached its answer
+        raise RuntimeError(
+            f"Couldn't run the Anthropic CLI at {cli}: {exc}\n"
+            "  Reinstall it, or skip login and set ANTHROPIC_API_KEY."
+        ) from exc

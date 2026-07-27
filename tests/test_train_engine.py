@@ -1,6 +1,7 @@
 """Engine-Trainer — logging, dataset assembly, and the agreement / prove gate."""
 
 import json
+from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
@@ -245,3 +246,57 @@ def test_export_bundle_skips_stale_labels(tmp_path):
     ])
     result = export_engine_bundle(tmp_path, "judge")
     assert result.human_examples == 1  # still just the valid label
+
+
+
+
+def test_agreement_survives_unhashable_criterion_id():
+    """A judge output with a non-string criterion_id must not crash the gate.
+
+    The verdict map keys on that id, so an unhashable one raised TypeError and
+    aborted the whole prove-it comparison."""
+    ref = [{"results": [{"criterion_id": "c1", "passed": True}]}]
+    cand = [{"results": [{"criterion_id": ["c1"], "passed": True},
+                         {"criterion_id": "c1", "passed": True}]}]
+    assert agreement(ref, cand, role="judge") == 1.0
+
+
+
+
+def test_engine_bundle_install_line_matches_the_trainer_it_ships(tmp_path):
+    """Both bundles ship the same train.py, so the Engine-Trainer README has to
+    name the same floors: SFTConfig(max_length=...) needs trl 1.x."""
+    d = tmp_path / "logs"
+    d.mkdir()
+    (d / "judge.jsonl").write_text(json.dumps({"role": "judge", "prompt": "p", "output": "o"}) + "\n")
+    export_engine_bundle(tmp_path, "judge")
+    readme = (tmp_path / "trained-engines" / "judge" / "README.md").read_text(encoding="utf-8")
+    assert '"trl>=1.0"' in readme and '"transformers>=4.46"' in readme
+
+
+
+
+def test_train_engine_names_the_roles_that_actually_have_logs(tmp_path):
+    """extractor/interviewer/predictor are trainable, but nothing wraps them, so
+    "run eval and retry" would send the owner after data that never appears."""
+    from ai_calibrator.train_engine import LOGGED_ROLES
+
+    assert LOGGED_ROLES == {"judge", "compiler"}
+    save_project(Project(name="p", goal="g"), tmp_path)
+    r = runner.invoke(app, ["train-engine", "extractor", str(tmp_path)])
+    assert r.exit_code == 1
+    assert "Nothing records the extractor role" in r.output
+    assert "then retry" not in r.output  # no false promise of data
+
+
+def test_engine_bundle_install_line_matches_the_declared_trl_floor(tmp_path):
+    """The bundle's own install line must not name a trl the emitted train.py
+    rejects: it passes SFTConfig(max_length=...), which needs trl>=1.0."""
+    save_project(Project(name="p", goal="g"), tmp_path)
+    (tmp_path / "logs").mkdir()
+    (tmp_path / "logs" / "judge.jsonl").write_text(
+        json.dumps({"role": "judge", "prompt": "p", "output": "o"}) + "\n", encoding="utf-8")
+    result = export_engine_bundle(tmp_path, "judge")
+    readme = (Path(result.bundle_dir) / "README.md").read_text(encoding="utf-8")
+    assert "trl>=1.0" in readme and "trl>=0.9" not in readme
+    assert "pyyaml" in readme  # train.py reads recipe.yaml at run time

@@ -3,7 +3,7 @@
 Bind any role to ``<model>@openai`` (e.g. ``gpt-4o@openai``). Works with any
 OpenAI-compatible endpoint via ``OPENAI_BASE_URL``. Strict ``json_schema`` is the
 primary structured-output path; if a model doesn't support it, this falls back
-to a plain JSON-instruction call. Install: pip install 'ai-calibrator[cloud]'
+to a plain JSON-instruction call. Install: pip install -e '.[cloud]'
 """
 
 from __future__ import annotations
@@ -65,7 +65,7 @@ class OpenAIEngine(Engine):
         except ImportError as exc:  # pragma: no cover - optional extra
             raise RuntimeError(
                 "The OpenAI cloud engine needs the `openai` package.\n"
-                "  Install it with:  pip install 'ai-calibrator[cloud]'"
+                "  Install it with:  pip install -e '.[cloud]'  (in your ai-calibrator clone)"
             ) from exc
 
         self.name = f"{model}@openai"

@@ -58,3 +58,19 @@ def test_reverse_project_creates_evaluable_project(tmp_path):
 def test_reverse_project_uses_default_binding_without_engine_spec(tmp_path):
     proj = reverse_project("imp2", "g", PROMPT, SpecEngine(), project_dir=tmp_path)
     assert proj.engines.subject == "claude-sonnet-4-6@anthropic"  # default cloud binding
+
+
+
+
+def test_imported_project_gets_the_gitignore_init_writes(tmp_path):
+    """An imported project is the one most likely to be committed, so logs/,
+    evals/ and any .env must be ignored from the first write, as `init` does."""
+    reverse_project("imp3", "g", PROMPT, SpecEngine(), project_dir=tmp_path)
+    body = (tmp_path / ".gitignore").read_text(encoding="utf-8")
+    assert "logs/" in body and "evals/" in body and ".env" in body
+
+
+def test_import_never_clobbers_an_existing_gitignore(tmp_path):
+    (tmp_path / ".gitignore").write_text("mine\n", encoding="utf-8")
+    reverse_project("imp4", "g", PROMPT, SpecEngine(), project_dir=tmp_path)
+    assert (tmp_path / ".gitignore").read_text(encoding="utf-8") == "mine\n"

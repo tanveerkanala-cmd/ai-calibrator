@@ -797,3 +797,246 @@ def test_upload_still_accepts_a_traversal_style_name_as_a_plain_file(tmp_path):
     assert r.status_code == 200 and r.json()["uploaded"] == "evil.txt"
     assert (tmp_path / "p" / "materials" / "evil.txt").exists()
     assert not (tmp_path / "evil.txt").exists()
+
+
+
+
+def test_merge_detect_reports_the_field_resolution_that_ships(tmp_path):
+    """detect's `resolved_to` must name what apply actually ships. persona is
+    resolved PER FIELD (each field independently, first stakeholder by name that
+    supplies one), so no stakeholder's voice or reading level is lost to another's
+    empty one."""
+    from ai_calibrator.models import Persona
+    from ai_calibrator.store import load_project
+
+    for nm, persona in (("alpha", Persona(reading_level="grade 5")),
+                        ("beta", Persona(voice="terse")),
+                        ("gamma", Persona(voice="chatty"))):
+        p = Project(name=nm, goal="g")
+        p.spec = BehaviorSpec(goal="g", persona=persona)
+        save_project(p, tmp_path / nm)
+
+    c = _client(tmp_path, engine_payload={"conflicts": []})
+    sources = ["alpha", "beta", "gamma"]
+    det = c.post("/api/merge/detect", json={"sources": sources})
+    assert det.status_code == 200
+    voice = next(f for f in det.json()["field_conflicts"] if f["field"] == "persona.voice")
+
+    assert c.post("/api/merge/apply", json={"out": "org", "sources": sources}).status_code == 200
+    shipped = load_project(tmp_path / "org").spec.persona.voice
+    # alpha has no voice, so the first name that does (beta) supplies it.
+    assert shipped == "terse"
+    assert voice["resolved_to"]["value"] == shipped     # detect promised what apply did
+
+
+def test_api_refine_persists_each_round_before_the_next_one_is_graded(tmp_path):
+    # A refine round that dies upstream must not leave a scorecard on disk that no
+    # recorded spec produced: the standards the earlier round added are saved as
+    # they are earned, exactly as the CLI's `eval --refine` does.
+    import re as _re
+
+    from ai_calibrator.engines.base import EngineError
+    from ai_calibrator.store import load_project
+
+    class FlakyRoleFake:
+        name = "fake@test"
+        subject_calls = []
+
+        def __init__(self, spec):
+            pass
+
+        def complete(self, prompt, *, system=None, schema=None):
+            props = (schema or {}).get("properties", {})
+            if "new_standards" in props:  # refiner
+                return {"new_standards": ["Cite the policy section you relied on."]}
+            if "results" in props:  # judge → fail everything, so round 1 refines
+                ids = _re.findall(r"^- (\S+):", prompt, _re.M)
+                return {"results": [{"criterion_id": i, "passed": False, "score": 0.0,
+                                     "rationale": "no"} for i in ids]}
+            self.subject_calls.append(1)  # subject
+            if len(self.subject_calls) > 1:  # the provider dies during round 2
+                raise EngineError("upstream is down")
+            return "an answer"
+
+    app = create_app(tmp_path)
+    app.dependency_overrides[_engine_factory] = lambda: (lambda spec: FlakyRoleFake(spec))
+    c = TestClient(app)
+
+    proj = Project(name="p", goal="g")
+    proj.spec = BehaviorSpec(goal="g", eval_criteria=[EvalCriterion(id="c1", description="d", weight=Weight.HIGH)])
+    proj.tests = [CaseModel(id="t1", input="q", expects=["c1"])]
+    save_project(proj, tmp_path / "p")
+
+    r = c.post("/api/projects/p/eval", json={"refine": True, "rounds": 3})
+    assert r.status_code == 502  # upstream failure, surfaced honestly
+    assert (tmp_path / "p" / "evals" / "run-0001" / "scorecard.json").exists()
+    assert "Cite the policy section you relied on." in load_project(tmp_path / "p").spec.standards
+
+
+def test_delete_retry_cannot_destroy_a_project_recreated_in_the_window(tmp_path, monkeypatch):
+    # The second rmtree runs after the lock is released, so a create can win the
+    # lock in between. Simulate the Windows leftover (`.lock` survives the first
+    # pass) plus that concurrent create: the retry must leave the new project alone.
+    import shutil
+    from pathlib import Path
+
+    from ai_calibrator.store import load_project
+
+    c = _client(tmp_path)
+    assert c.post("/api/projects", json={"name": "p", "goal": "old"}).status_code == 200
+
+    real_rmtree = shutil.rmtree
+    seen = []
+
+    def fake_rmtree(path, *a, **kw):
+        p = Path(path)
+        seen.append(p)
+        if len(seen) > 1:
+            real_rmtree(p, *a, **kw)
+            return
+        for child in p.iterdir():
+            if child.name == ".lock":
+                continue  # an open handle: Windows refuses to unlink it
+            real_rmtree(child) if child.is_dir() else child.unlink()
+        save_project(Project(name="p", goal="brand new"), p)  # a concurrent create
+
+    monkeypatch.setattr(shutil, "rmtree", fake_rmtree)
+    r = c.request("DELETE", "/api/projects/p")
+
+    assert load_project(tmp_path / "p").goal == "brand new"  # survived the retry
+    assert r.status_code == 409  # files remain, so the delete never claims success
+
+
+def test_api_snapshot_refuses_to_pin_a_partial_run(tmp_path):
+    from ai_calibrator.eval import save_scorecard
+    from ai_calibrator.models import Scorecard, TestResult
+
+    proj = Project(name="p", goal="g")
+    proj.spec = BehaviorSpec(goal="g", eval_criteria=[EvalCriterion(id="c1", description="d", weight=Weight.HIGH)])
+    proj.tests = [CaseModel(id="t1", input="q", expects=["c1"]), CaseModel(id="t2", input="q2", expects=["c1"])]
+    save_project(proj, tmp_path / "p")
+    save_scorecard(tmp_path / "p", Scorecard(run_id="run-0001", results=[
+        TestResult(test_id="t1", output="one"), TestResult(test_id="t2", output="two")]))
+
+    c = _client(tmp_path)
+    assert c.post("/api/projects/p/snapshot").json()["pinned"] == 2
+
+    # An interrupted run graded half the suite; pinning it would shrink the golden.
+    save_scorecard(tmp_path / "p", Scorecard(run_id="run-0002", partial=True,
+                                             results=[TestResult(test_id="t1", output="one")]))
+    r = c.post("/api/projects/p/snapshot")
+    assert r.status_code == 409 and "PARTIAL" in r.json()["detail"]
+    assert c.get("/api/projects/p/snapshot").json()["removed"] == ["t2"]  # golden still covers both
+
+
+def test_merge_detect_reports_the_persona_apply_really_keeps(tmp_path):
+    from ai_calibrator.models import Persona
+    from ai_calibrator.store import load_project
+
+    class NoConflictFake:
+        name = "fake@test"
+
+        def __init__(self, spec):
+            pass
+
+        def complete(self, prompt, *, system=None, schema=None):
+            return {"conflicts": []}
+
+    for nm, persona in [("alpha", Persona(reading_level="grade 3")),
+                        ("beta", Persona(voice="pirate", reading_level="grade 9")),
+                        ("gamma", Persona(voice="formal", reading_level="grade 12"))]:
+        p = Project(name=nm, goal=f"{nm} goal")
+        p.spec = BehaviorSpec(goal=f"{nm} goal", persona=persona, standards=[f"{nm} rule"])
+        save_project(p, tmp_path / nm)
+
+    app = create_app(tmp_path)
+    app.dependency_overrides[_engine_factory] = lambda: (lambda spec: NoConflictFake(spec))
+    c = TestClient(app)
+
+    det = c.post("/api/merge/detect", json={"sources": ["alpha", "beta", "gamma"]})
+    assert det.status_code == 200
+    reported = {f["field"]: f["resolved_to"] for f in det.json()["field_conflicts"]}
+
+    assert c.post("/api/merge/apply", json={"out": "org", "sources": ["alpha", "beta", "gamma"]}).status_code == 200
+    kept = load_project(tmp_path / "org").spec.persona
+
+    # Per-field: reading_level from alpha (first by name with one), voice from
+    # beta (alpha supplies none). Neither stakeholder's value is lost to the
+    # other's empty field, and detect promises exactly that.
+    assert kept.voice == "pirate" and kept.reading_level == "grade 3"
+    assert reported["persona.voice"] == {"stakeholder": "beta", "value": "pirate"}
+    assert reported["persona.reading_level"] == {"stakeholder": "alpha", "value": "grade 3"}
+
+
+
+
+def test_ingest_after_deleting_every_material_clears_the_corpus(tmp_path):
+    """Parity with the CLI: an empty materials folder on a project that HAS been
+    ingested is a legitimate 'remove everything', not a 400. Refusing it left the
+    facts, gaps and retrieval index of deleted files in every served prompt."""
+    from ai_calibrator.models import Gap, Material
+
+    proj = Project(name="p", goal="g")
+    proj.materials = [Material(path="faq.md", kind="md", summary="old policy")]
+    proj.facts = ["Returns are accepted for 30 days."]
+    proj.gaps = [Gap(dimension="tone")]
+    save_project(proj, tmp_path / "p")
+    (tmp_path / "p" / "knowledge.lancedb").mkdir()
+
+    c = _client(tmp_path, engine_payload={"facts": [], "gaps": []})
+    r = c.post("/api/projects/p/ingest")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["materials"] == 0 and body["facts"] == 0 and body["gaps"] == 0
+    assert body["state"]["materials"] == [] and body["state"]["gaps"] == []
+    assert not (tmp_path / "p" / "knowledge.lancedb").exists()
+
+
+def test_ingest_reports_how_many_files_were_analyzed(tmp_path, monkeypatch):
+    """The web UI can only warn about a truncated corpus if the route says so."""
+    import ai_calibrator.ingest as ing
+
+    monkeypatch.setattr(ing, "MAX_EXTRACT_CHARS", 60)
+    c = _client(tmp_path, engine_payload={"facts": [], "gaps": []})
+    c.post("/api/projects", json={"name": "p", "goal": "g"})
+    c.post("/api/projects/p/materials", files={"file": ("a.md", b"a" * 400, "text/markdown")})
+    c.post("/api/projects/p/materials", files={"file": ("b.md", b"b" * 400, "text/markdown")})
+
+    body = c.post("/api/projects/p/ingest").json()
+    assert body["materials"] == 2
+    assert body["analyzed"] == 1
+
+
+
+
+def test_import_endpoint_writes_the_project_gitignore(tmp_path):
+    """The API import path must ignore logs/, evals/ and .env exactly as `init`
+    does — an imported project is the one most likely to end up in git."""
+    class RoleFake:
+        name = "fake@test"
+
+        def __init__(self, spec):
+            pass
+
+        def complete(self, prompt, *, system=None, schema=None):
+            props = (schema or {}).get("properties", {})
+            if "tests" in props:
+                return {"tests": [{"id": "t1", "input": "q", "expects": ["clarity"], "notes": ""}]}
+            return {"persona": {"voice": "concise"}, "standards": ["Be clear."], "do_not": [], "edge_cases": [],
+                    "format": "", "refusal_policy": "",
+                    "eval_criteria": [{"id": "clarity", "description": "d", "weight": "high"}], "examples": []}
+
+    app = create_app(tmp_path)
+    app.dependency_overrides[_engine_factory] = lambda: (lambda spec: RoleFake(spec))
+    c = TestClient(app)
+    assert c.post("/api/import", json={"name": "imp", "goal": "g", "prompt": "Be clear."}).status_code == 200
+    body = (tmp_path / "imp" / ".gitignore").read_text(encoding="utf-8")
+    assert "logs/" in body and "evals/" in body and ".env" in body
+
+
+def test_train_engine_route_names_the_roles_that_are_logged(tmp_path):
+    """Only the judge and compiler are ever wrapped by the logging engine."""
+    save_project(Project(name="p", goal="g"), tmp_path / "p")
+    r = _client(tmp_path).post("/api/projects/p/train-engine/extractor")
+    assert r.status_code == 400
+    assert "nothing records the extractor role" in r.json()["detail"]

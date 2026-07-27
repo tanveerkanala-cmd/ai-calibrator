@@ -293,3 +293,47 @@ def test_modelfile_marks_a_rewritten_system_prompt():
     out = _modelfile("base", 'say """ here')
     assert "DIFFERS from" in out
     assert re.search(r'"{3,}', out.split("SYSTEM")[1].replace('"""', "", 1)) is None
+
+
+
+
+def test_merge_resolves_persona_fields_independently():
+    """persona.voice and persona.reading_level are reported as two separate field
+    conflicts, so taking one stakeholder's whole persona object ships (and audits)
+    a reading level nobody's report chose."""
+    named = {
+        "alpha": _spec(persona=Persona(voice="warm and direct")),
+        "beta": _spec(persona=Persona(voice="clipped", reading_level="8th grade")),
+    }
+    resolved = {field: vals[0] for field, vals in scalar_conflicts(named)}
+    assert resolved["persona.voice"] == ("alpha", "warm and direct")
+    assert "persona.reading_level" not in resolved      # only beta set one — uncontested
+
+    spec = build_merged_spec(named, goal="g", task_type=TaskType.ASSISTANT)
+    assert spec.persona.voice == "warm and direct"      # as the report promised
+    assert spec.persona.reading_level == "8th grade"    # uncontested, must survive
+
+    # and the other way round: the voice winner does not drag its own blank fields in
+    flipped = {
+        "alpha": _spec(persona=Persona(reading_level="plain English")),
+        "beta": _spec(persona=Persona(voice="clipped")),
+    }
+    merged = build_merged_spec(flipped, goal="g", task_type=TaskType.ASSISTANT)
+    assert (merged.persona.voice, merged.persona.reading_level) == ("clipped", "plain English")
+
+
+
+
+def test_install_hints_name_a_command_a_reader_can_run():
+    """There is no PyPI release, so a printed `pip install 'ai-calibrator[x]'` is
+    an instruction nobody can follow. Every runtime hint has to name the
+    editable, clone-based form README and USAGE.md actually prescribe."""
+    from pathlib import Path
+    src = Path(__file__).resolve().parents[1] / "src" / "ai_calibrator"
+    unrunnable = [
+        f"{p.relative_to(src)}:{n}"
+        for p in sorted(src.rglob("*.py"))
+        for n, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1)
+        if "pip install 'ai-calibrator[" in line
+    ]
+    assert not unrunnable, unrunnable

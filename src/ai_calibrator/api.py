@@ -5,7 +5,7 @@ logic that powers the CLI also drives the web/desktop UI. Engine-dependent
 endpoints build the project's configured engine; an upstream engine failure
 surfaces as 502/504 (see ``_engine_http_error``), a bad request as 400.
 
-Run with `calibrate serve`. Needs the `api` extra:  pip install 'ai-calibrator[api]'
+Run with `calibrate serve`. Needs the `api` extra:  pip install -e '.[api]'
 """
 
 from __future__ import annotations
@@ -26,7 +26,9 @@ try:
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel, Field, ValidationError
 except ImportError as exc:  # pragma: no cover - depends on optional extra
-    raise RuntimeError("The API needs the `api` extra:  pip install 'ai-calibrator[api]'") from exc
+    raise RuntimeError(
+        "The API needs the `api` extra:  pip install -e '.[api]'  (in your ai-calibrator clone)"
+    ) from exc
 
 from .auth import all_status
 from .models import EngineBinding, Project, TaskType
@@ -333,6 +335,8 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         — the delete half of the CRUD surface. Serialized via the project lock so
         it can't race an in-flight operation on the same project."""
         import shutil
+
+        from .store import LOCK_FILE
         d = _dir(name)
         if not (d / "project.yaml").exists():
             raise HTTPException(404, f"no project {name!r}")
@@ -342,8 +346,15 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         # tree and is held open for the duration of the block; Windows refuses to
         # unlink an open file, so `.lock` (and therefore the directory) routinely
         # survives the first rmtree there. Nothing is wrong in that case — retry
-        # now that the handle is closed.
-        if d.exists():
+        # now that the handle is closed. Retry ONLY when that stale lock file (or
+        # nothing) is all that is left: releasing the lock lets a concurrent
+        # create take it and rebuild a project under the same name, and a blind
+        # second rmtree would silently destroy that brand-new project.
+        try:
+            leftovers = {p.name for p in d.iterdir()}
+        except OSError:
+            leftovers = set()  # already gone, or unreadable — d.exists() decides below
+        if d.exists() and leftovers <= {LOCK_FILE}:
             shutil.rmtree(d, ignore_errors=True)
         # ignore_errors swallows every OSError, so verify rather than assume: a
         # delete that removed nothing (or half the tree) must not report success
@@ -415,7 +426,11 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         with _locked(name) as d:
             project = _load(name)
             materials = d / "materials"
-            if not materials.exists() or not any(materials.iterdir()):
+            # An empty folder on a project that HAS ingested materials is a
+            # deliberate "remove everything": let it through so the facts, gaps and
+            # retrieval index built from the deleted files are cleared too. Only a
+            # project that never had any still gets the "add some first" message.
+            if (not materials.exists() or not any(materials.iterdir())) and not project.materials:
                 raise HTTPException(400, f"No materials to ingest — POST files to /api/projects/{name}/materials first.")
             try:
                 engine = make_engine(project.engines.extractor)
@@ -428,6 +443,9 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         return {
             "materials": result.materials, "gaps": result.gaps,
             "facts": result.facts, "indexed": result.indexed,
+            # How many parsed files actually fit the extractor's context window;
+            # fewer than `materials` means the gap list saw only those.
+            "analyzed": result.analyzed,
             "skipped": [{"path": rel, "reason": reason} for rel, reason in result.skipped],
             "state": _state(project, name),
         }
@@ -516,13 +534,23 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
                 subject = make_engine(project.engines.subject)
                 judge = wrap_engine(make_engine(project.engines.judge), "judge", d, enabled=log_on)
                 if body.refine:
+                    from .compile import write_build_bundle
                     from .pipeline import calibrate_loop
                     refiner = wrap_engine(make_engine(project.engines.compiler), "compiler", d, enabled=log_on)
+
+                    def _persist_spec(proj):
+                        # Checkpoint each round's refinement BEFORE the next round is
+                        # graded: scorecards are saved as they are earned, so saving the
+                        # spec only after the loop would let a failed or abandoned
+                        # request leave runs on disk that no recorded spec produced.
+                        save_project(proj, d)
+                        write_build_bundle(proj.spec, proj.tests, d)
+
                     cards = calibrate_loop(project, subject, judge, refiner,
                                            threshold=body.threshold, max_rounds=body.rounds,
-                                           judge_passes=body.judge_passes, project_dir=d)
+                                           judge_passes=body.judge_passes, project_dir=d,
+                                           on_spec_change=_persist_spec)
                     save_project(project, d)
-                    from .compile import write_build_bundle
                     write_build_bundle(project.spec, project.tests, d)  # refresh build/ to match
                 else:
                     card = run_eval(project, subject, judge, run_id=next_run_id(d),
@@ -723,9 +751,16 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         if not rid:
             raise HTTPException(400, f"no scorecard — POST /api/projects/{name}/eval first")
         try:
-            outs = outputs_of(load_scorecard(d, rid))
+            card = load_scorecard(d, rid)
         except (FileNotFoundError, ValueError, ValidationError) as exc:
             raise HTTPException(409, f"scorecard {rid!r} is unreadable: {exc}")
+        # Never PIN from a partial run: the golden is the most reference-y artifact
+        # there is, and an interrupted or truncated run would replace a complete
+        # golden with a strict subset, silently narrowing every future check.
+        if card.partial:
+            raise HTTPException(409, f"{rid} is a PARTIAL run — pinning it would replace the golden "
+                                     "with a subset of the suite. Run a full eval first.")
+        outs = outputs_of(card)
         save_golden(d, outs)
         return {"pinned": len(outs), "run_id": rid}
 
@@ -966,7 +1001,8 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
 
     @app.post("/api/merge/detect")
     def merge_detect(body: MergeDetectBody, make_engine=Depends(_engine_factory)):
-        from .stakeholders import conflict_dict, detect_conflicts, gather, scalar_conflicts
+        from .stakeholders import (build_merged_spec, conflict_dict, detect_conflicts, gather,
+                                   scalar_conflicts)
         named, first = _merge_sources(body.sources)
         statements = gather(named)
         try:
@@ -976,6 +1012,14 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             raise
         except Exception as exc:
             raise _engine_http_error(exc)
+        # Read each resolution back off the spec the merge produces. persona is
+        # resolved as ONE object (the first stakeholder by name with any persona
+        # field), so naming the first stakeholder with a non-empty value would
+        # promise a per-field ruling /api/merge/apply never makes.
+        preview = build_merged_spec(named, goal=first.goal, task_type=first.task_type)
+        resolved = {"persona.voice": preview.persona.voice,
+                    "persona.reading_level": preview.persona.reading_level,
+                    "format": preview.format, "refusal_policy": preview.refusal_policy}
         return {
             "stakeholders": list(named),
             "statements": [{"idx": s.idx, "text": s.text, "kind": s.kind, "stakeholder": s.stakeholder}
@@ -986,7 +1030,8 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             # refusal-policy disagreement instead of it being resolved silently.
             "field_conflicts": [
                 {"field": field, "values": [{"stakeholder": n, "value": v} for n, v in vals],
-                 "resolved_to": {"stakeholder": vals[0][0], "value": vals[0][1]}}
+                 "resolved_to": {"stakeholder": next((n for n, v in vals if v == resolved.get(field)), None),
+                                 "value": resolved.get(field)}}
                 for field, vals in scalar_conflicts(named)
             ],
         }
@@ -1016,14 +1061,17 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
 
     @app.post("/api/projects/{name}/train-engine/{role}")
     def train_engine_(name: str, role: str):
-        from .train_engine import TRAINABLE_ROLES, export_engine_bundle, read_log
+        from .train_engine import LOGGED_ROLES, TRAINABLE_ROLES, export_engine_bundle, read_log
         if role not in TRAINABLE_ROLES:
             raise HTTPException(400, f"role must be one of: {', '.join(sorted(TRAINABLE_ROLES))}")
         d = _dir(name)
         if not (d / "project.yaml").exists():
             raise HTTPException(404, f"no project {name!r}")
         if not read_log(d, role):
-            raise HTTPException(400, f"no logged {role} decisions — enable logging and run eval first")
+            if role in LOGGED_ROLES:
+                raise HTTPException(400, f"no logged {role} decisions — enable logging and run eval first")
+            raise HTTPException(400, f"nothing records the {role} role yet — only judge and compiler "
+                                     "decisions are logged, so there is no data to train on")
         try:
             result = export_engine_bundle(d, role)
         except ValueError as exc:

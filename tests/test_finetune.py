@@ -79,3 +79,31 @@ def test_prove_it_gate():
     assert not beats_baseline(_card([True, True]), _card([True, False]))  # 100% → 50%
     assert not beats_baseline(_card([True, False]), _card([True, False]))  # equal, no margin
     assert not beats_baseline(_card([True, True]), _card([True, True]), margin=0.01)  # tie loses with margin
+
+
+
+
+def test_bundle_install_line_matches_the_trainer_it_ships(tmp_path):
+    """The generated train.py calls SFTConfig(max_length=...), which trl renamed
+    in 1.x — a printed `trl>=0.12` installs a version that raises on the very
+    file the bundle just wrote."""
+    export_finetune(_project_with_examples(), project_dir=tmp_path)
+    ft = tmp_path / "finetune"
+    script = (ft / "train.py").read_text(encoding="utf-8")
+    readme = (ft / "README.md").read_text(encoding="utf-8")
+    assert "max_length=" in script                      # the argument that needs trl 1.x
+    for text in (script, readme):
+        assert '"trl>=1.0"' in text and "0.12" not in text
+
+
+
+
+def test_emitted_install_lines_match_the_declared_trl_floor(tmp_path):
+    """The bundle told the user to install a trl the emitted code rejects:
+    train.py passes SFTConfig(max_length=...), which needs trl>=1.0."""
+    export_finetune(_project_with_examples(), project_dir=tmp_path)
+    ft = tmp_path / "finetune"
+    for fn in ("train.py", "README.md"):
+        body = (ft / fn).read_text(encoding="utf-8")
+        assert "trl>=1.0" in body and "trl>=0.12" not in body
+        assert "pyyaml" in body  # train.py reads recipe.yaml at run time

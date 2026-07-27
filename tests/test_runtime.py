@@ -354,3 +354,19 @@ def test_guard_off_is_reported_as_false(tmp_path):
     _seed(tmp_path, check=Check(kind="contains", value="30-day"))
     r = _client(tmp_path, RecordingEngine(["ok"]), guard=False).get("/")
     assert r.json()["guard"] is False
+
+
+
+
+def test_guard_never_stamps_passed_on_an_empty_answer(tmp_path):
+    """The served guard grades like the harness: an answer that says nothing
+    fails every criterion (not_contains/max_chars are trivially true on "")."""
+    _seed(tmp_path, check=Check(kind="not_contains", value="refund"))
+    eng = RecordingEngine(["", "   "])
+    r = _client(tmp_path, eng, guard=True).post("/v1/chat/completions",
+                                                json={"messages": [{"role": "user", "content": "q"}]})
+    assert r.status_code == 200
+    assert len(eng.calls) == 2  # an empty answer is a violation, so the retry runs
+    assert r.headers["x-calibrate-guard"] == "failed:c1"
+    logged = (tmp_path / "logs" / "guard.jsonl").read_text(encoding="utf-8").splitlines()
+    assert json.loads(logged[-1])["failed"] == ["c1"]

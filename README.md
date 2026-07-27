@@ -44,7 +44,7 @@ gate), and the Advanced tier (fine-tuning + Engine-Trainer with prove-it gates).
 The test suite runs engine-free with fakes; the pipeline is also verified
 end-to-end against a real local model via Ollama.
 
-Roadmap: `docs/BUILD-PLAN.md` · Architecture: `docs/ARCHITECTURE.md` ·
+Build plan: `docs/BUILD-PLAN.md` · Architecture: `docs/ARCHITECTURE.md` ·
 Contributing: [`CONTRIBUTING.md`](CONTRIBUTING.md)
 
 ## Quickstart

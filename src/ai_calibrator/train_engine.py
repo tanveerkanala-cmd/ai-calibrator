@@ -27,6 +27,12 @@ from .store import atomic_write_text
 
 TRAINABLE_ROLES = {"extractor", "interviewer", "predictor", "compiler", "judge"}
 
+# Of those, the roles anything actually logs today: the judge is wrapped during
+# `eval` and `ci`, the compiler during `eval --refine`. Nothing wraps the other
+# three, so pointing their user at "run eval and retry" sends them after data
+# that will never appear.
+LOGGED_ROLES = {"judge", "compiler"}
+
 
 def read_log(project_dir: str | Path, role: str) -> list[dict]:
     """Read ``logs/<role>.jsonl``, skipping any malformed (e.g. interleaved) lines."""
@@ -153,7 +159,7 @@ own private, free model — once it's PROVEN to match the cloud one.
 
 ## 1. Train (GPU — LoRA of a 7B ~16GB VRAM, else a rented cloud GPU)
 ```bash
-pip install "transformers>=4.44" "trl>=0.9" peft datasets accelerate
+pip install "transformers>=4.46" "trl>=1.0" peft datasets accelerate pyyaml
 python train.py        # → ./{recipe["output_dir"]}/
 ```
 
@@ -221,8 +227,11 @@ def _normalize(out: Any) -> str:
 def _judge_verdicts(out: Any) -> dict | None:
     """Extract {criterion_id: passed} from a judge output, or None if not one."""
     if isinstance(out, dict) and isinstance(out.get("results"), list):
-        return {r.get("criterion_id"): bool(r.get("passed"))
-                for r in out["results"] if isinstance(r, dict)}
+        # String ids only: an unhashable criterion_id would raise TypeError and
+        # abort the whole prove-it gate, exactly as in eval._judge.
+        return {r["criterion_id"]: bool(r.get("passed"))
+                for r in out["results"]
+                if isinstance(r, dict) and isinstance(r.get("criterion_id"), str)}
     return None
 
 

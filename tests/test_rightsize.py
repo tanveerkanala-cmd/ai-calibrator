@@ -72,3 +72,29 @@ def test_unknown_model_priced_as_none_but_still_rankable():
     r = report.results[0]
     assert r.in_price is None and r.cost_score is None
     assert report.recommended.model == "mystery"  # passes → recommended despite unknown cost
+
+
+
+
+def test_free_local_candidate_beats_a_paid_one_that_also_met_the_bar():
+    """"Cheapest that meets the bar" has to mean it: a local model bills nothing
+    per token, so no priced cloud model can be the cheaper recommendation."""
+    factory = _factory({"claude-haiku-4-5", "local-7b"})
+    report = rightsize(_project(), ["claude-haiku-4-5@anthropic", "local-7b@ollama"],
+                       PassJudge(), factory, threshold=0.8)
+    assert {r.model for r in report.passing} == {"claude-haiku-4-5", "local-7b"}
+    assert report.recommended.model == "local-7b"
+    assert report.results[0].local is False and report.results[1].local is True
+
+
+
+
+def test_free_local_model_beats_a_paid_one_that_also_passes():
+    """A local candidate has no per-token bill, so nothing on a price list can
+    undercut it — recommending the paid model bills the owner for nothing."""
+    factory = _factory({"claude-haiku-4-5", "llama3"})   # both clear the bar
+    report = rightsize(_project(), ["claude-haiku-4-5@anthropic", "llama3@ollama"],
+                       PassJudge(), factory, threshold=0.8)
+    assert {r.model for r in report.passing} == {"claude-haiku-4-5", "llama3"}
+    assert report.recommended.model == "llama3"
+    assert report.recommended.local is True

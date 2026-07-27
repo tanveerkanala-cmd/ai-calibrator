@@ -95,3 +95,22 @@ def test_load_labels_filters_half_formed_entries(tmp_path):
     ]}))
     labels = load_labels(tmp_path, "run-0001")
     assert labels == [{"test_id": "t1", "criterion_id": "c1", "passed": True}]
+
+
+
+
+def test_unmatched_labels_are_reported_not_silently_dropped():
+    """A label the judge never ruled on is counted as unmatched, not ignored.
+
+    Without that count the reading implies the judge was confirmed on every
+    label supplied, when most of them had no verdict to confirm."""
+    labels = [
+        {"test_id": "t1", "criterion_id": "c1", "passed": True},     # judge ruled → compared
+        {"test_id": "t9", "criterion_id": "c1", "passed": True},     # no such test in the card
+        {"test_id": "t1", "criterion_id": "c9", "passed": False},    # no such criterion
+        {"test_id": "t1", "criterion_id": ["c1"], "passed": True},   # malformed id
+    ]
+    ag = judge_agreement(_card(), labels)
+    assert ag.total == 1 and ag.agreed == 1 and ag.unmatched == 3
+    assert ag.agreement_rate == 1.0            # honest about what it compared
+    assert agreement_dict(ag)["unmatched"] == 3

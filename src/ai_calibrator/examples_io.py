@@ -181,10 +181,18 @@ def dedup_examples(spec: BehaviorSpec) -> int:
     stable). Later is better here: examples accumulate over time, and the newest
     one for an input is the most recently ratified — a correction absorbed from
     live feedback, or a `teach` judgment. First-wins would delete the correction
-    and keep the answer a human already rejected."""
+    and keep the answer a human already rejected. But a later occurrence can be an
+    input-only row (a list of bare questions imported afterwards), which carries no
+    ratified answer at all — so the newest occurrence WITH an output wins, and a
+    bare input only survives when no occurrence of that input has one."""
+    def _has_output(ex: Example) -> bool:
+        return is_str(ex.good_output) or is_str(ex.bad_output)
+
     last: dict[str, Example] = {}
     for ex in spec.examples:
-        last[ex.input] = ex
+        prior = last.get(ex.input)
+        if prior is None or _has_output(ex) or not _has_output(prior):
+            last[ex.input] = ex
     seen: set[str] = set()
     kept: list[Example] = []
     for ex in spec.examples:

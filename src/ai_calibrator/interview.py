@@ -83,17 +83,23 @@ def generate_questions(
     it protects the one artifact in a project that cannot be recomputed. Answered
     items whose dimension is no longer among the gaps (the materials changed since)
     are kept too, appended after the gap-driven ones: a stale question is a small
-    cost, a discarded answer is the user's work.
+    cost, a discarded answer is the user's work. Answered items that share a
+    dimension are matched to that dimension's gaps in order, and any surplus is
+    appended the same way — every answer survives, exactly once.
     """
-    answered: dict[str, InterviewItem] = {}
+    # Several items can share a dimension (a gap list can name one twice, and a
+    # hand-edited project.yaml can too), so bucket them: keying on the dimension
+    # alone kept only the first and quietly re-asked the rest.
+    answered: dict[str, list[InterviewItem]] = {}
     for it in project.interview:
-        if it.answer and it.dimension not in answered:
-            answered[it.dimension] = it
+        if it.answer:
+            answered.setdefault(it.dimension, []).append(it)
 
     items: list[InterviewItem] = []
     total = len(project.gaps)
     for i, gap in enumerate(project.gaps, start=1):
-        kept = answered.pop(gap.dimension, None)
+        bucket = answered.get(gap.dimension)
+        kept = bucket.pop(0) if bucket else None
         item = kept.model_copy(deep=True) if kept is not None else _one_question(project, gap, engine)
         if item is not None:
             item.id = f"q{len(items) + 1}"
@@ -101,7 +107,7 @@ def generate_questions(
         if on_progress is not None:
             on_progress(items, i, total)
 
-    for leftover in answered.values():  # answered, but its gap is gone
+    for leftover in [it for bucket in answered.values() for it in bucket]:  # gap is gone
         clone = leftover.model_copy(deep=True)
         clone.id = f"q{len(items) + 1}"
         items.append(clone)

@@ -90,10 +90,14 @@ def _judge(
 ) -> list[CriterionResult]:
     prompt = judge_prompt(test_input, output, criteria)
     out = require_object(judge.complete(prompt, system=_JUDGE_SYSTEM, schema=JUDGE_SCHEMA), "judge")
+    # Key only on string ids. A non-compliant judge can return criterion_id as a
+    # list or dict, and an unhashable key raises TypeError here — destroying a
+    # whole graded run over one bad row. Dropping the row instead leaves that
+    # criterion ungraded, which the loop below already records as a fail.
     by_id = {
-        r.get("criterion_id"): r
+        r["criterion_id"]: r
         for r in as_list(out.get("results"))
-        if isinstance(r, dict)
+        if isinstance(r, dict) and is_str(r.get("criterion_id"))
     }
     results = []
     for cid, _ in criteria:

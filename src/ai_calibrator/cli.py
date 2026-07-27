@@ -447,7 +447,7 @@ def ingest(
 ) -> None:
     """Parse materials, extract the gap list, and build the retrieval index."""
     from .engines import get_engine
-    from .ingest import ingest_project
+    from .ingest import MAX_EXTRACT_CHARS, ingest_project
 
     # Hold the project lock across load→mutate→save so a concurrent calibrate
     # process can't lose this run's results.
@@ -460,11 +460,22 @@ def ingest(
                         fg=typer.colors.RED)
             raise typer.Exit(code=1)
         if not src.exists() or not any(src.iterdir()):
+            if not project.materials:
+                typer.secho(
+                    f"No materials found in {src}/. Add files there, then re-run.",
+                    fg=typer.colors.YELLOW,
+                )
+                raise typer.Exit(code=1)
+            # An empty folder on a project that HAS ingested materials is a
+            # deliberate "remove everything". Refusing here left the facts, gaps and
+            # retrieval index built from the deleted files in place, still feeding
+            # every graded and served prompt.
             typer.secho(
-                f"No materials found in {src}/. Add files there, then re-run.",
+                f"{src}/ is empty — clearing the {len(project.materials)} previously "
+                "ingested file(s) and their extracted facts"
+                + ("." if no_index else ", and dropping the retrieval index."),
                 fg=typer.colors.YELLOW,
             )
-            raise typer.Exit(code=1)
 
         try:
             engine = get_engine(project.engines.extractor)
@@ -488,6 +499,14 @@ def ingest(
         f"{result.facts} fact(s).",
         fg=typer.colors.GREEN,
     )
+    if result.analyzed < result.materials:
+        typer.secho(
+            f"  ⚠ only {result.analyzed} of {result.materials} file(s) fit the "
+            f"{MAX_EXTRACT_CHARS:,}-character analysis window — the facts and the gap "
+            "list below come from those files alone. Move the rest into their own "
+            "project (or trim them) if they need to inform the interview.",
+            fg=typer.colors.YELLOW,
+        )
     if result.skipped:
         typer.secho(f"  ⚠ skipped {len(result.skipped)} file(s) that couldn't be parsed:",
                     fg=typer.colors.YELLOW)
@@ -503,8 +522,8 @@ def ingest(
             typer.secho(
                 "  ⚠ retrieval index NOT built — the `rag` extra isn't installed, so your\n"
                 "    exported AI will answer from the system prompt ONLY and will NOT be able\n"
-                "    to use these documents. To fix:  pip install 'ai-calibrator[rag]'  then re-run\n"
-                "    `calibrate ingest`.",
+                "    to use these documents. To fix, in your ai-calibrator clone run\n"
+                "    pip install -e '.[rag]'  then re-run  `calibrate ingest`.",
                 fg=typer.colors.YELLOW,
             )
         else:
@@ -686,6 +705,24 @@ def compile(path: Path = typer.Argument(Path("."), help="Project directory.")) -
     typer.echo("\nNext:  calibrate eval")
 
 
+def _retrieval_off_reason(project_dir: Path) -> str:
+    """Why retrieval is OFF for this project, or '' when it actually works.
+
+    Two failures with two different fixes: the `rag` extra isn't installed at
+    all, and an index that exists but cannot be queried (embedder model absent,
+    corrupt table, version skew). Reporting the first as the second sends the
+    owner hunting for a broken index they never built."""
+    from . import rag
+    if not rag.index_available():
+        return "the `rag` extra is not installed — pip install -e '.[rag]' in your clone"
+    why = rag.probe(project_dir)
+    if not why:
+        return ""
+    if why == "no index":
+        return "your documents are NOT in play"
+    return f"index present but unusable — {why}"
+
+
 @app.command(name="eval")
 def eval_(
     path: Path = typer.Argument(Path("."), help="Project directory."),
@@ -748,16 +785,12 @@ def eval_(
         )
         # If the project has documents but no usable retrieval index, we're grading
         # a prompt-only bot — say so, so a high pass rate isn't read as "it can use
-        # my docs" when it can't (the exported bot would answer blind).
-        from . import rag
+        # my docs" when it can't (the exported bot would answer blind). A project
+        # with no materials has nothing to retrieve, so it says nothing at all.
+        # The probe is for real: an index directory that exists proves nothing.
         if project.materials:
-            # Probe for real: an index directory that exists proves nothing — a
-            # missing embedder model or a corrupt table degrades retrieval to
-            # nothing while every path-based check still reports it as on.
-            why = rag.probe(path) if rag.index_available() else "the `rag` extra is not installed"
-            if why:
-                detail = ("your documents are NOT in play" if why == "no index"
-                          else f"index present but unusable — {why}")
+            detail = _retrieval_off_reason(path)
+            if detail:
                 typer.secho(f"  retrieval: OFF — grading a prompt-only bot ({detail}).",
                             fg=typer.colors.YELLOW)
 
@@ -961,7 +994,8 @@ def run(
         typer.secho(str(exc), fg=typer.colors.RED)
         raise typer.Exit(code=1)
     except ImportError:
-        typer.secho("Serving needs the `api` extra:  pip install 'ai-calibrator[api]'", fg=typer.colors.RED)
+        typer.secho("Serving needs the `api` extra:  pip install -e '.[api]'  (in your ai-calibrator clone)",
+                    fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
     if not is_local:
@@ -1071,6 +1105,14 @@ def add_check(
             except ValueError:
                 typer.secho(f"{kind} needs a non-negative integer, got {value!r}.", fg=typer.colors.RED)
                 raise typer.Exit(code=1)
+        if kind in ("contains", "not_contains", "regex") and not value.strip():
+            # An empty needle is inside every string, so `contains` with the value
+            # omitted is a check that can never fail — a criterion that reports
+            # PASS on output nothing actually graded.
+            typer.secho(f"{kind} needs a value to check for — e.g. "
+                        f"`calibrate add-check <project> {criterion} {kind} '30-day'`.",
+                        fg=typer.colors.RED)
+            raise typer.Exit(code=1)
         try:
             crit.check = Check(kind=kind, value=value)
         except ValidationError:
@@ -1124,6 +1166,9 @@ def judge_check(
     rate = ag.agreement_rate
     typer.secho(f"\nJudge agreement with you: {pct(rate)} ({ag.agreed}/{ag.total})",
                 fg=typer.colors.GREEN if rate >= 0.8 else typer.colors.YELLOW, bold=True)
+    if ag.unmatched:
+        typer.secho(f"  ⚠ {ag.unmatched} label(s) had no matching judge verdict in {rid} and are "
+                    "not part of that rate.", fg=typer.colors.YELLOW)
     for cid in ag.unreliable_criteria():
         a, t = ag.by_criterion[cid]
         typer.secho(f"  ⚠ {cid}: judge agreed only {a}/{t} — make this criterion more objective.",
@@ -1258,11 +1303,25 @@ def redteam(
         typer.echo("  or a refusal policy), and the generator must return usable probes. Re-run after")
         typer.echo("  adding rules, or try again if the generator returned nothing usable.")
     else:
-        color = typer.colors.GREEN if not report.violations else typer.colors.RED
+        ungraded = len(report.ungraded)
+        if report.violations:
+            color = typer.colors.RED
+        elif ungraded:
+            color = typer.colors.YELLOW  # unjudged probes are not a clean hold
+        else:
+            color = typer.colors.GREEN
         typer.secho(
             f"\nHeld {pct(report.hold_rate)} — {len(report.violations)}/{report.probes} probe(s) caused a violation.",
             fg=color, bold=True,
         )
+        if ungraded:
+            # A probe the judge could not grade never withstood anything, so it is
+            # left out of the hold rate rather than quietly counted as a pass.
+            typer.secho(
+                f"  ⚠ {ungraded}/{report.probes} probe(s) could not be judged and are not counted "
+                "as held. Re-run, or grade with a stronger judge engine.",
+                fg=typer.colors.YELLOW,
+            )
     for r in report.violations:
         typer.secho(f"  ✗ [{r.severity}] {r.target}", fg=typer.colors.RED)
         typer.echo(f"     probe ({r.tactic}): {r.input[:100]}")
@@ -1311,7 +1370,8 @@ def rightsize(
         if r.error:
             typer.secho(f"  {r.spec:<28}{'—':>6}  {'—':>10}  error: {r.error[:48]}", fg=typer.colors.YELLOW)
             continue
-        price = f"{r.in_price}/{r.out_price}" if r.in_price is not None else "unknown"
+        price = ("local" if r.local else
+                 f"{r.in_price}/{r.out_price}" if r.in_price is not None else "unknown")
         meets = r.pass_rate >= threshold
         note = "✓ meets bar" if meets else "below bar"
         typer.secho(f"  {r.spec:<28}{pct(r.pass_rate):>5}  {price:>10}  {note}",
@@ -1364,6 +1424,10 @@ def diff(
     _section("Standards", d.standards_added, d.standards_removed)
     _section("Never-rules", d.do_not_added, d.do_not_removed)
     _section("Edge cases", d.edge_cases_added, d.edge_cases_removed)
+    # Knowledge sources count as a behavior change (the system prompt gains or
+    # loses its grounding paragraph), so a knowledge-only diff must print
+    # something rather than an empty report under a "changed" verdict.
+    _section("Knowledge sources", d.knowledge_added, d.knowledge_removed)
     if d.criteria_added or d.criteria_removed or d.criteria_changed:
         typer.secho("\nCriteria:", bold=True)
         for x in d.criteria_added:
@@ -1609,11 +1673,15 @@ def teach(
 
     with project_lock(path, on_wait=_lock_wait_notice):  # short critical section: reload → apply → save
         project = _load(path)
-        result = apply_learned(project, judged, learned)
+        # No judgments here: phase 1 already recorded every one of them as an
+        # example. Passing them again appends a SECOND copy of each, doubling the
+        # examples every session and training each pair at double weight in the
+        # fine-tune dataset.
+        result = apply_learned(project, [], learned)
         save_project(project, path)
         if project.tests:  # refresh the build bundle if one exists
             write_build_bundle(project.spec, project.tests, path)
-    result.examples_recorded = saved.examples_recorded or result.examples_recorded
+    result.examples_recorded = saved.examples_recorded  # what phase 1 actually wrote
 
     typer.secho(
         f"\n✓ Learned {result.standards_added} standard(s) + {result.do_not_added} never-rule(s) "
@@ -1647,12 +1715,16 @@ def merge(
     # Validate the destination up front: project_lock() mkdirs it, which raises a
     # raw FileExistsError when the path is an existing FILE — and it would do so
     # AFTER the interactive reconciliation loop, discarding every ruling typed.
-    if out.exists() and not out.is_dir():
-        typer.secho(f"A file named {out} already exists — pick another destination.", fg=typer.colors.RED)
-        raise typer.Exit(code=1)
-    if (out / "project.yaml").exists():
-        typer.secho(f"A project already exists at {out}/.", fg=typer.colors.RED)
-        raise typer.Exit(code=1)
+    # --report-only writes nothing, so the destination is none of its business:
+    # checking it there makes a read-only conflict report impossible the moment
+    # the merged project exists, which is exactly when you want to re-read it.
+    if not report_only:
+        if out.exists() and not out.is_dir():
+            typer.secho(f"A file named {out} already exists — pick another destination.", fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+        if (out / "project.yaml").exists():
+            typer.secho(f"A project already exists at {out}/.", fg=typer.colors.RED)
+            raise typer.Exit(code=1)
 
     named: dict = {}
     first = None
@@ -1687,11 +1759,6 @@ def merge(
     # so a disagreement there would otherwise be resolved silently and reported as
     # "no conflicts". Surface it, and record it in the audit file.
     scalars = scalar_conflicts(named)
-    scalar_audit = [
-        {"field": field, "values": [{"stakeholder": n, "value": v} for n, v in vals],
-         "resolved_to": {"stakeholder": vals[0][0], "value": vals[0][1]}}
-        for field, vals in scalars
-    ]
 
     drops: set[int] = set()
     additions: list[str] = []
@@ -1742,6 +1809,18 @@ def merge(
 
     goal_final = goal or first.goal
     spec = build_merged_spec(named, goal=goal_final, task_type=first.task_type, drops=drops, additions=additions)
+    # Read the resolution back off the merged spec instead of naming the first
+    # stakeholder with a non-empty value: persona is resolved as one object, so
+    # that guess would record a per-field ruling the merge never made. A field
+    # whose winning value belongs to nobody in the list resolves to (none).
+    resolved = {"persona.voice": spec.persona.voice, "persona.reading_level": spec.persona.reading_level,
+                "format": spec.format, "refusal_policy": spec.refusal_policy}
+    scalar_audit = [
+        {"field": field, "values": [{"stakeholder": n, "value": v} for n, v in vals],
+         "resolved_to": {"stakeholder": next((n for n, v in vals if v == resolved.get(field)), None),
+                         "value": resolved.get(field)}}
+        for field, vals in scalars
+    ]
     merged = Project(name=out.name, goal=goal_final, task_type=first.task_type, spec=spec)
     _we_created = not out.exists()
     try:
@@ -1800,7 +1879,7 @@ def train_engine_cmd(
     threshold: float = typer.Option(0.9, "--threshold", help="Min agreement to trust the local engine (0-1)."),
 ) -> None:
     """Localize a cloud role onto your own model from logged decisions — the autonomy loop. (Advanced tier)"""
-    from .train_engine import TRAINABLE_ROLES, export_engine_bundle, prove_engine, read_log
+    from .train_engine import LOGGED_ROLES, TRAINABLE_ROLES, export_engine_bundle, prove_engine, read_log
 
     role = role.strip().lower()
     if role not in TRAINABLE_ROLES:
@@ -1828,8 +1907,10 @@ def train_engine_cmd(
             typer.secho(f"Prove failed: {exc}", fg=typer.colors.RED)
             raise typer.Exit(code=1)
         if proof.samples == 0:
-            typer.secho(f"No logged {role} decisions. Run `calibrate log --on`, then `calibrate eval`, then retry.",
-                        fg=typer.colors.YELLOW)
+            hint = ("Run `calibrate log --on`, then `calibrate eval`, then retry."
+                    if role in LOGGED_ROLES else
+                    "Only judge and compiler decisions are logged today, so there is nothing to replay.")
+            typer.secho(f"No logged {role} decisions. {hint}", fg=typer.colors.YELLOW)
             raise typer.Exit(code=1)
         typer.secho(
             f"agreement: {pct(proof.agreement)} over {proof.samples} sample(s) (threshold {threshold:.0%})",
@@ -1843,10 +1924,17 @@ def train_engine_cmd(
         raise typer.Exit(code=0 if proof.passes else 1)
 
     if not read_log(path, role):
-        typer.secho(
-            f"No logged {role} decisions yet. Turn on logging (`calibrate log --on`), run `calibrate eval`, then retry.",
-            fg=typer.colors.YELLOW,
-        )
+        if role in LOGGED_ROLES:
+            typer.secho(
+                f"No logged {role} decisions yet. Turn on logging (`calibrate log --on`), run `calibrate eval`, then retry.",
+                fg=typer.colors.YELLOW,
+            )
+        else:
+            typer.secho(
+                f"Nothing records the {role} role yet — only the judge (`calibrate eval`, `calibrate ci`) and the "
+                "compiler (`calibrate eval --refine`) are logged, so there is no data to train on.",
+                fg=typer.colors.YELLOW,
+            )
         raise typer.Exit(code=1)
     try:
         result = export_engine_bundle(path, role, base_model=base)
@@ -1955,7 +2043,8 @@ def serve(
         import uvicorn
         from .api import create_app, default_projects_root
     except (ImportError, RuntimeError):
-        typer.secho("The API needs the `api` extra:  pip install 'ai-calibrator[api]'", fg=typer.colors.RED)
+        typer.secho("The API needs the `api` extra:  pip install -e '.[api]'  (in your ai-calibrator clone)",
+                    fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
     # Resolve to an absolute path so the startup banner is unambiguous from any
@@ -2073,6 +2162,44 @@ def finetune(
     )
 
 
+def _version_tuple(v: str) -> tuple[int, int, int]:
+    """Leading (major, minor, patch) of a version string, for a floor comparison.
+
+    Deliberately tolerant — '2.2.0+cu121' and '1.0.0rc1' have to compare, and a
+    component it cannot read counts as 0 rather than derailing an install."""
+    parts = []
+    for chunk in (v.split(".") + ["0", "0", "0"])[:3]:
+        digits = ""
+        for ch in chunk:
+            if not ch.isdigit():
+                break
+            digits += ch
+        parts.append(int(digits or 0))
+    return (parts[0], parts[1], parts[2])
+
+
+def _dep_satisfied(module: str, requirement: str) -> bool:
+    """True when ``module`` is importable AND meets the >= floor in ``requirement``.
+
+    find_spec only answers "is it importable", so on its own an already-present
+    but too-old transformers or trl is neither reported nor upgraded, and the
+    generated trainer then fails on an argument that release doesn't have. A
+    version that can't be read counts as satisfied: trusting what is installed
+    beats forcing a reinstall on a guess."""
+    import importlib.metadata
+    import importlib.util
+    if importlib.util.find_spec(module) is None:
+        return False
+    floor = requirement.partition(">=")[2].strip()
+    if not floor:
+        return True
+    try:
+        have = importlib.metadata.version(module)
+    except Exception:
+        return True
+    return _version_tuple(have) >= _version_tuple(floor)
+
+
 @app.command()
 def train(
     path: Path = typer.Argument(Path("."), help="Project directory."),
@@ -2135,21 +2262,22 @@ def train(
     # Install the REQUIREMENT STRINGS the `train` extra declares, not bare module
     # names: find_spec only answers "is it importable", so an already-present but
     # too-old transformers/trl/peft was neither detected nor upgraded — and the
-    # generated trainer then fails on an argument that release doesn't have. pip
-    # decides what is already satisfied.
+    # generated trainer then fails on an argument that release doesn't have.
+    # _dep_satisfied compares the INSTALLED version against each floor, so an
+    # outdated module is upgraded and not just an absent one.
     _TRAIN_REQS = {
         "torch": "torch>=2.2", "transformers": "transformers>=4.46", "trl": "trl>=1.0",
         "peft": "peft>=0.11", "datasets": "datasets>=2.19", "accelerate": "accelerate>=0.30",
     }
-    missing = [m for m in _TRAIN_REQS if importlib.util.find_spec(m) is None]
-    need = list(_TRAIN_REQS.values()) if missing else []
+    stale = [m for m, req in _TRAIN_REQS.items() if not _dep_satisfied(m, req)]
+    need = [_TRAIN_REQS[m] for m in stale]
     if qlora and importlib.util.find_spec("bitsandbytes") is None:
         need.append("bitsandbytes")
     if need:
-        typer.secho(f"\nTraining needs: {', '.join(missing) or 'bitsandbytes'}  "
+        typer.secho(f"\nTraining needs: {', '.join(stale) or 'bitsandbytes'}  "
                     "(torch is a large download — several GB).", fg=typer.colors.YELLOW)
         typer.echo("  Installing with the version floors the bundle's train.py requires.")
-        typer.echo("  (or install once yourself:  pip install 'ai-calibrator[train]')")
+        typer.echo("  (or install once yourself, in your ai-calibrator clone:  pip install -e '.[train]')")
         if not yes and not typer.confirm("  Install them now?", default=True):
             raise typer.Exit(code=1)
         if subprocess.run([sys.executable, "-m", "pip", "install", *need]).returncode != 0:

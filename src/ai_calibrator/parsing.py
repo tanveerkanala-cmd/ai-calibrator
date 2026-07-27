@@ -1,7 +1,7 @@
 """Parse uploaded materials into plain text, and chunk them for retrieval.
 
 Text/markdown work with the stdlib. PDF and DOCX need the `docs` extra
-(`pip install 'ai-calibrator[docs]'`) and are imported lazily so the rest of the tool
+(`pip install -e '.[docs]'`) and are imported lazily so the rest of the tool
 runs without them.
 """
 
@@ -73,7 +73,8 @@ def _read_pdf(p: Path) -> str:
         from pypdf import PdfReader
     except ImportError as exc:  # pragma: no cover - optional extra
         raise RuntimeError(
-            "PDF parsing needs the `docs` extra:  pip install 'ai-calibrator[docs]'"
+            "PDF parsing needs the `docs` extra:  pip install -e '.[docs]'"
+            "  (in your ai-calibrator clone)"
         ) from exc
     reader = PdfReader(str(p))
     # Page-by-page with an immediate per-page + running truncation, so a bomb
@@ -123,7 +124,8 @@ def _read_docx(p: Path) -> str:
         import docx  # python-docx
     except ImportError as exc:  # pragma: no cover - optional extra
         raise RuntimeError(
-            "DOCX parsing needs the `docs` extra:  pip install 'ai-calibrator[docs]'"
+            "DOCX parsing needs the `docs` extra:  pip install -e '.[docs]'"
+            "  (in your ai-calibrator clone)"
         ) from exc
     import zipfile
     # Bound the REAL decompression first; only then hand a verified-safe file to

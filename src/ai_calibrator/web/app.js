@@ -171,12 +171,45 @@ function renderInterview(p, s, name) {
 }
 
 async function run(path) {
-  await api("POST", path);
-  selectProject(current);
+  const data = await api("POST", path);
+  // Reload FIRST — selectProject's own action() clears the banner, so the
+  // summary has to be announced after the panel has been rebuilt.
+  await selectProject(current);
+  const note = runSummary(data);
+  if (note) banner(note);
+  return data;
+}
+
+// Every step route says in its body what actually happened — documents that
+// could not be read, gaps that got no question, where the export landed. run()
+// used to throw all of it away, so a rejected document never reached the owner.
+function runSummary(d) {
+  if (!d || typeof d !== "object") return "";
+  const parts = [];
+  if (Array.isArray(d.skipped) && d.skipped.length) {
+    parts.push(`⚠ ${d.skipped.length} file(s) could NOT be read and were left out: ` +
+      d.skipped.map((s) => `${s.path} (${s.reason})`).join("; "));
+  }
+  if (typeof d.analyzed === "number" && typeof d.materials === "number" && d.analyzed < d.materials) {
+    parts.push(`⚠ only ${d.analyzed} of ${d.materials} file(s) fit the analysis window — ` +
+      `the facts and gaps come from those alone.`);
+  }
+  if (Array.isArray(d.uncovered_gaps) && d.uncovered_gaps.length) {
+    parts.push(`⚠ ${d.uncovered_gaps.length} gap(s) got no question: ${d.uncovered_gaps.join(", ")}`);
+  }
+  if (typeof d.criteria === "number") {
+    parts.push(`Compiled ${d.criteria} criteria and ${d.tests} test(s).`);
+  }
+  if (d.bundle_dir) parts.push(`Exported to ${d.bundle_dir}`);
+  return parts.join("   ");
 }
 
 async function runEval(name, refine) {
   const res = await api("POST", `/projects/${name}/eval`, { refine, rounds: 3, threshold: 0.8 });
+  // Refining rewrote the spec, so the certification pill and the pipeline counts
+  // on screen now describe a config that no longer exists. Re-render before
+  // appending the result — a stale "certified" badge must never sit above it.
+  if (refine) await selectProject(current);
   const p = $("#panel");
   const last = res.rounds[res.rounds.length - 1];
   const width = Math.round(last.pass_rate * 100);  // bar width only — the NUMBER is honest
@@ -240,6 +273,12 @@ async function showRedteam(name) {
   card.insertAdjacentHTML("beforeend", `<p class="muted">probing…</p>`);
   const d = await api("POST", `/projects/${name}/redteam`, { max_probes: 8, add_tests: false });
   card.innerHTML = `<strong>Red-team</strong><p>Held ${pctText(d.hold_rate)} — ${d.violations}/${d.probes} probe(s) caused a violation.</p>`;
+  if (d.ungraded) {
+    // Probes the judge could not grade sit outside the hold rate, so say so here
+    // too — otherwise the number reads as covering every probe that ran.
+    card.insertAdjacentHTML("beforeend",
+      `<p class="muted">${d.ungraded}/${d.probes} probe(s) could not be judged — not counted as held.</p>`);
+  }
   for (const r of d.results.filter((x) => x.violated)) {
     card.insertAdjacentHTML("beforeend",
       `<div class="q"><div class="dim">[${escapeHtml(r.severity)}] ${escapeHtml(r.target)}</div>` +
@@ -253,7 +292,9 @@ async function showRightsize(name) {
   const d = await api("POST", `/projects/${name}/rightsize`, { threshold: 0.8 });
   const rows = d.results.map((r) => r.error
     ? `<tr><td>${escapeHtml(r.spec)}</td><td>—</td><td>error</td></tr>`
-    : `<tr><td>${escapeHtml(r.spec)}</td><td>${pctText(r.pass_rate)}</td><td>${r.in_price != null ? "$" + r.in_price + "/" + r.out_price : "?"}</td></tr>`
+    // A local candidate is free, and `recommended` now prefers it — showing "?"
+    // for its price left the table unable to explain the recommendation.
+    : `<tr><td>${escapeHtml(r.spec)}</td><td>${pctText(r.pass_rate)}</td><td>${r.local ? "local" : r.in_price != null ? "$" + r.in_price + "/" + r.out_price : "?"}</td></tr>`
   ).join("");
   card.innerHTML = `<strong>Rightsize</strong>` +
     `<table><tr><th align="left">model</th><th>pass</th><th>$ in/out</th></tr>${rows}</table>` +

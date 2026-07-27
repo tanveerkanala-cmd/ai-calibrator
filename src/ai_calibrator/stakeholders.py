@@ -248,8 +248,17 @@ def build_merged_spec(
     # Resolve deterministically by stakeholder name (never insertion order) and let
     # the caller report the values that lost. See scalar_conflicts().
     by_name = sorted(named_specs.items())
-    persona = next((sp.persona for _, sp in by_name
-                    if sp.persona and (sp.persona.voice or sp.persona.reading_level)), Persona())
+    # voice and reading_level are two independently reported fields, so resolve
+    # them independently: taking one stakeholder's whole persona object ships a
+    # reading level the audit file says lost, and drops an uncontested one. The
+    # base copy keeps any extra persona keys a hand-edited spec carried.
+    base = next((sp.persona for _, sp in by_name
+                 if sp.persona and (sp.persona.voice or sp.persona.reading_level)), None)
+    persona = base.model_copy(deep=True) if base is not None else Persona()
+    persona.voice = next((sp.persona.voice for _, sp in by_name
+                          if sp.persona and sp.persona.voice), None)
+    persona.reading_level = next((sp.persona.reading_level for _, sp in by_name
+                                  if sp.persona and sp.persona.reading_level), None)
     fmt = next((sp.format for _, sp in by_name if sp.format), None)
     refusal = next((sp.refusal_policy for _, sp in by_name if sp.refusal_policy), None)
 

@@ -51,6 +51,7 @@ class ModelResult:
     in_price: float | None
     out_price: float | None
     error: str | None = None
+    local: bool = False  # runs on the owner's own hardware — no per-token bill
 
     @property
     def cost_score(self) -> float | None:
@@ -73,13 +74,21 @@ class RightsizeReport:
     def recommended(self) -> ModelResult | None:
         """Cheapest candidate that meets the bar.
 
-        Prefer the lowest known cost (ties broken by higher pass rate). If no
-        passing candidate has known pricing, fall back to the best pass rate. If
-        nothing meets the bar, there is no recommendation.
+        A local candidate wins outright — it has no per-token bill, so nothing on
+        a price list can undercut it (best pass rate breaks ties among locals).
+        Otherwise prefer the lowest known cost, ties broken by higher pass rate;
+        if no passing candidate has known pricing, fall back to the best pass
+        rate. If nothing meets the bar, there is no recommendation.
         """
         passing = self.passing
         if not passing:
             return None
+        # Without this a paid model gets called "the cheapest that meets the bar"
+        # while a free local candidate on the same ladder also met it — sometimes
+        # with a higher pass rate.
+        local = [r for r in passing if r.local]
+        if local:
+            return max(local, key=lambda r: r.pass_rate)
         priced = [r for r in passing if r.cost_score is not None]
         if priced:
             return min(priced, key=lambda r: (r.cost_score, -r.pass_rate))
@@ -107,8 +116,9 @@ def rightsize(
 
     results: list[ModelResult] = []
     for i, ms in enumerate(model_specs, start=1):
-        model, _provider = parse_engine_spec(ms)
+        model, provider = parse_engine_spec(ms)
         in_price, out_price = PRICING.get(model, (None, None))
+        local = provider == "ollama"  # served from the owner's machine: no per-token cost
         try:
             subject = make_engine(ms)
             # Pass project_dir so each candidate is graded WITH RAG retrieval when
@@ -117,13 +127,14 @@ def rightsize(
             card = run_eval(project, subject, judge, run_id=f"rightsize-{i:02d}", project_dir=project_dir)
         except Exception as exc:
             results.append(ModelResult(spec=ms, model=model, pass_rate=0.0, passed=0, graded=0,
-                                       in_price=in_price, out_price=out_price, error=str(exc)))
+                                       in_price=in_price, out_price=out_price, error=str(exc),
+                                       local=local))
             continue
         graded = [r for r in card.results if r.criteria]
         passed = sum(1 for r in graded if r.passed)
         results.append(ModelResult(spec=ms, model=model, pass_rate=card.pass_rate,
                                     passed=passed, graded=len(graded),
-                                    in_price=in_price, out_price=out_price))
+                                    in_price=in_price, out_price=out_price, local=local))
 
     report = RightsizeReport(results=results, threshold=threshold)
     if project_dir is not None:
@@ -140,7 +151,7 @@ def rightsize_dict(report: RightsizeReport) -> dict:
             {"spec": r.spec, "model": r.model, "pass_rate": r.pass_rate,
              "passed": r.passed, "graded": r.graded,
              "in_price": r.in_price, "out_price": r.out_price,
-             "cost_score": r.cost_score, "error": r.error}
+             "cost_score": r.cost_score, "local": r.local, "error": r.error}
             for r in report.results
         ],
     }

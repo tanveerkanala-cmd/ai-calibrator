@@ -110,6 +110,19 @@ def _guard_checks(project: Project) -> list[tuple[str, object]]:
     return [(c.id, c.check) for c in project.spec.eval_criteria if c.check is not None]
 
 
+def _guard_failures(checks: list[tuple[str, object]], text: str) -> list[str]:
+    """Criterion ids the answer fails — graded exactly as the eval harness grades.
+
+    An answer that says NOTHING fails everything: the negative-form checks
+    (not_contains, max_chars) are all trivially satisfied by "", so an empty
+    answer would otherwise be served with `x-calibrate-guard: passed` while eval
+    fails every criterion on the same output.
+    """
+    if not text.strip():
+        return [cid for cid, _ in checks]
+    return [cid for cid, chk in checks if not run_check(chk, text)[0]]
+
+
 def _log_guard(project_dir: Path, record: dict) -> None:
     from .store import open_private_append
     try:
@@ -132,7 +145,9 @@ def create_ai_app(project_dir: str | Path, *, engine: Engine | None = None, guar
         from fastapi.responses import StreamingResponse
         from starlette.concurrency import run_in_threadpool
     except ImportError as exc:  # pragma: no cover - depends on optional extra
-        raise RuntimeError("Serving needs the `api` extra:  pip install 'ai-calibrator[api]'") from exc
+        raise RuntimeError(
+            "Serving needs the `api` extra:  pip install -e '.[api]'  (in your ai-calibrator clone)"
+        ) from exc
 
     directory = Path(project_dir)
     project = load_project(directory)
@@ -195,10 +210,10 @@ def create_ai_app(project_dir: str | Path, *, engine: Engine | None = None, guar
         content = as_str(engine.complete(prompt, system=eff_system)).strip()
         guard_state: dict = {}
         if checks:
-            failed = [cid for cid, chk in checks if not run_check(chk, content)[0]]
+            failed = _guard_failures(checks, content)
             if failed:  # one retry — models are stochastic; then flag, never block
                 content = as_str(engine.complete(prompt, system=eff_system)).strip()
-                still = [cid for cid, chk in checks if not run_check(chk, content)[0]]
+                still = _guard_failures(checks, content)
                 if still:
                     guard_state = {"guard": "failed", "criteria": still}
                     _log_guard(directory, {

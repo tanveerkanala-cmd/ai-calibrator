@@ -131,3 +131,45 @@ def test_unanswered_items_are_regenerated_not_kept():
     items = generate_questions(project, engine)
 
     assert items[0].question == "Fresh question?"
+
+
+
+
+def test_answered_items_sharing_a_dimension_all_survive():
+    """The carry-forward map was keyed on dimension alone, so the second answered
+    item for a dimension was dropped and replaced by a freshly drafted, unanswered
+    question — the exact loss the docstring promises never happens."""
+    from ai_calibrator.models import InterviewItem
+
+    project = Project(name="p", goal="g", task_type=TaskType.ASSISTANT)
+    project.gaps = [Gap(dimension="tone"), Gap(dimension="tone")]
+    project.interview = [
+        InterviewItem(id="q1", dimension="tone", question="Tone with VIPs?", answer="warmer"),
+        InterviewItem(id="q2", dimension="tone", question="Tone on refunds?", answer="firm"),
+    ]
+    engine = FakeEngine([])          # any engine call here means an answer was discarded
+
+    items = generate_questions(project, engine)
+
+    assert engine.calls == [], "an already-answered item was re-asked"
+    assert [it.answer for it in items] == ["warmer", "firm"]
+    assert [it.id for it in items] == ["q1", "q2"]
+
+
+def test_surplus_answered_items_are_appended_not_dropped():
+    """More answered items than gaps on that dimension: the extras are still the
+    user's work, so they are appended like any other answer whose gap is gone."""
+    from ai_calibrator.models import InterviewItem
+
+    project = Project(name="p", goal="g", task_type=TaskType.ASSISTANT)
+    project.gaps = [Gap(dimension="tone")]
+    project.interview = [
+        InterviewItem(id="q1", dimension="tone", question="Tone with VIPs?", answer="warmer"),
+        InterviewItem(id="q2", dimension="tone", question="Tone on refunds?", answer="firm"),
+    ]
+    engine = FakeEngine([])
+
+    items = generate_questions(project, engine)
+
+    assert [it.answer for it in items] == ["warmer", "firm"]
+    assert [it.id for it in items] == ["q1", "q2"]
