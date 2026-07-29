@@ -459,6 +459,15 @@ def ingest(
             typer.secho(f"--source {src} must be a directory of materials, not a file.",
                         fg=typer.colors.RED)
             raise typer.Exit(code=1)
+        # A --source that isn't there is a typo (or the wrong working directory) —
+        # not the deliberate "I deleted every material" that an existing-but-empty
+        # folder means. Treating the two alike wiped the facts, gaps and index of a
+        # healthy project and reported success. The default materials/ can't be
+        # missing: save_project recreates it on every save.
+        if source is not None and not src.exists():
+            typer.secho(f"--source {src} does not exist — check the path (and your working "
+                        "directory). Nothing was changed.", fg=typer.colors.RED)
+            raise typer.Exit(code=1)
         if not src.exists() or not any(src.iterdir()):
             if not project.materials:
                 typer.secho(
@@ -516,6 +525,16 @@ def ingest(
         typer.echo(f"  retrieval index: {result.indexed} chunk(s) embedded")
     elif no_index:
         typer.echo("  retrieval index: skipped (--no-index)")
+        # Skipping the build is not the same as retrieving nothing: an index from
+        # an earlier ingest is still on disk and still consulted, so it can serve
+        # text from files this ingest just replaced or removed.
+        if (Path(path) / "knowledge.lancedb").exists():
+            typer.secho(
+                "  ⚠ the index from an earlier ingest is still in place and still feeds every "
+                "eval and run — it may hold text from files you just changed or deleted. "
+                "Re-run without --no-index to rebuild it from the current materials.",
+                fg=typer.colors.YELLOW,
+            )
     else:
         from . import rag
         if not rag.index_available():
@@ -568,7 +587,11 @@ def interview(
 
             # Persist after each gap so an engine timeout mid-interview keeps the
             # questions already drafted instead of discarding the whole run.
+            drafted = 0
+
             def _progress(items, done, total):
+                nonlocal drafted
+                drafted = done  # gaps reached, not items held: a snapshot also carries the answers
                 project.interview = list(items)
                 save_project(project, path)
                 typer.echo(f"  · drafted {done}/{total} gap(s) …")
@@ -576,9 +599,10 @@ def interview(
             try:
                 project.interview = generate_questions(project, engine, on_progress=_progress)
             except Exception as exc:
-                typer.secho(f"Question generation stopped after {len(project.interview)} "
+                typer.secho(f"Question generation stopped after {drafted} "
                             f"of {len(project.gaps)} gap(s): {exc}", fg=typer.colors.RED)
-                typer.echo("  Progress was saved — re-run `calibrate interview --regenerate` to finish.")
+                typer.echo("  Progress was saved and your answers were kept — re-run "
+                           "`calibrate interview --regenerate` to finish.")
                 raise typer.Exit(code=1)
             save_project(project, path)
 
@@ -841,7 +865,9 @@ def eval_(
     for i, card in enumerate(cards, 1):
         graded = [r for r in card.results if r.criteria]
         passed = sum(1 for r in graded if r.passed)
-        typer.echo(f"  round {i} [{card.run_id}]: {pct(card.pass_rate)} ({passed}/{len(graded)} passed)")
+        ungraded = len(card.results) - len(graded)
+        typer.echo(f"  round {i} [{card.run_id}]: {pct(card.pass_rate)} ({passed}/{len(graded)} passed"
+                   + (f", {ungraded} of {len(card.results)} not graded)" if ungraded else ")"))
 
     final = cards[-1]
     ok = final.pass_rate >= threshold
@@ -849,6 +875,19 @@ def eval_(
         f"\nFinal pass rate: {pct(final.pass_rate)}   (weighted score: {pct(final.weighted_score)})",
         fg=typer.colors.GREEN if ok else typer.colors.YELLOW,
     )
+    # An ungraded test is excluded from the rate above (it was never actually
+    # graded, so counting it as a failure would be a lie) — but so is reporting
+    # 100% on a suite where a third of the tests expect criteria the spec doesn't
+    # have. Name the shortfall and where the fix is.
+    skipped = [r.test_id for r in final.results if not r.criteria]
+    if skipped:
+        typer.secho(
+            f"  ⚠ {len(skipped)} of {len(final.results)} test(s) were NOT graded — their "
+            f"`expects` name criterion id(s) the spec doesn't define "
+            f"({', '.join(skipped[:5])}{', …' if len(skipped) > 5 else ''}). The rate above "
+            "covers the graded tests only; run `calibrate lint` to fix them.",
+            fg=typer.colors.YELLOW,
+        )
     # Triage order: tests whose HIGH-weight criteria failed come first.
     from .models import Weight
 
@@ -1046,13 +1085,14 @@ def absorb(path: Path = typer.Argument(Path("."), help="Project directory.")) ->
     _require_project(path)  # no junk .lock dir for a typo'd name
     with project_lock(path, on_wait=_lock_wait_notice):
         project = _load(path)
-        result = absorb_feedback(project, path)
+        # The save runs as absorb's commit step, while the records are still in
+        # the inbox: a save that fails leaves them there to absorb again.
+        result = absorb_feedback(project, path, commit=lambda: save_project(project, path))
         if result.ups + result.downs + result.skipped == 0:
             typer.secho("No live feedback to absorb yet.", fg=typer.colors.YELLOW)
             typer.echo("  `calibrate run` records it: POST /v1/feedback "
                        '{"completion_id": "...", "verdict": "down", "correction": "..."}')
             raise typer.Exit(code=0)
-        save_project(project, path)
         if project.spec is not None and project.tests:
             write_build_bundle(project.spec, project.tests, path)
 
@@ -1695,6 +1735,14 @@ def teach(
     typer.echo("\nNext:  calibrate compile  (regenerate tests/rubric)  or  calibrate eval")
 
 
+def _merged_name(out: Path) -> str:
+    """Name the merged project after its destination directory.
+
+    `.` and `..` are this CLI's own idiom for "here", and `Path.name` is empty or
+    unusable for both — so resolve first, exactly as `import` does."""
+    return out.resolve().name or "project"
+
+
 @app.command()
 def merge(
     out: Path = typer.Argument(..., help="Path of the merged project to create."),
@@ -1724,6 +1772,14 @@ def merge(
             raise typer.Exit(code=1)
         if (out / "project.yaml").exists():
             typer.secho(f"A project already exists at {out}/.", fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+        # The merged project is NAMED after the destination, and that name is
+        # validated when the Project is built — after the loop. Check it here.
+        from .models import validate_project_name
+        try:
+            validate_project_name(_merged_name(out))
+        except ValueError as exc:
+            typer.secho(f"Can't name the merged project after {out} — {exc}.", fg=typer.colors.RED)
             raise typer.Exit(code=1)
 
     named: dict = {}
@@ -1821,7 +1877,7 @@ def merge(
                          "value": resolved.get(field)}}
         for field, vals in scalars
     ]
-    merged = Project(name=out.name, goal=goal_final, task_type=first.task_type, spec=spec)
+    merged = Project(name=_merged_name(out), goal=goal_final, task_type=first.task_type, spec=spec)
     _we_created = not out.exists()
     try:
         with project_lock(out):
@@ -2102,7 +2158,7 @@ def finetune(
         if overlap:
             excl = set(overlap)
             cand_held, n_held = held_out_rate(cand_card, excl)
-            base_held, _ = held_out_rate(base_card, excl)
+            base_held, n_base = held_out_rate(base_card, excl)
             typer.secho(f"⚠ {len(overlap)} of {len(graded)} graded test(s) use an input that is "
                         "also a TRAINING prompt "
                         f"({', '.join(overlap[:5])}{', …' if len(overlap) > 5 else ''}).",
@@ -2115,6 +2171,22 @@ def finetune(
                            "(`calibrate redteam --add-tests`, or write them by hand), re-run both "
                            "evals, and gate again.")
                 raise typer.Exit(code=2)
+            # held_out_rate reports 0.0 for "nothing to score" — reading that as a
+            # measured baseline rate hands the candidate an automatic win off a
+            # comparison that never happened (a baseline run that predates these
+            # tests never graded one of them).
+            if n_base == 0:
+                typer.secho("✗ CANNOT JUDGE — the baseline run graded none of the held-out "
+                            "test(s), so there is nothing to compare the candidate against.",
+                            fg=typer.colors.RED, bold=True)
+                typer.echo(f"  Re-run the baseline eval ({baseline}) on the CURRENT test suite, "
+                           "then gate again.")
+                raise typer.Exit(code=2)
+            if n_base != n_held:
+                typer.secho(f"⚠ The two runs graded different held-out tests ({n_base} in the "
+                            f"baseline, {n_held} in the candidate) — the rates below aren't over "
+                            "the same tests. Re-run the baseline eval on the CURRENT suite.",
+                            fg=typer.colors.YELLOW)
             typer.echo(f"  gating on the {n_held} held-out test(s): "
                        f"baseline {pct(base_held)} → candidate {pct(cand_held)}")
             win = cand_held > base_held

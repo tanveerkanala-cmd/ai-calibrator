@@ -40,7 +40,8 @@ _INTERVIEW_SYSTEM = (
 
 # Called after each gap's question is drafted: (items_so_far, done, total). Lets
 # the caller persist incrementally so an engine timeout mid-interview keeps the
-# questions already drafted instead of discarding the whole run.
+# questions already drafted instead of discarding the whole run. Every payload
+# carries every ratified answer, so writing one over the stored interview is safe.
 ProgressFn = Callable[[list[InterviewItem], int, int], None]
 
 
@@ -66,6 +67,25 @@ def _one_question(project: Project, gap: Gap, engine: Engine) -> Optional[Interv
         draft_answer=as_opt_str(q.get("draft_answer")),
         rationale=as_opt_str(q.get("rationale")),
     )
+
+
+def _with_carried_answers(
+    items: list[InterviewItem], answered: dict[str, list[InterviewItem]]
+) -> list[InterviewItem]:
+    """``items`` plus every answer not folded into it yet, renumbered contiguously.
+
+    Answered items are folded in lazily, as each one's own gap comes up, so a
+    partial list is a strict prefix of the interview — and a caller that persists
+    it (the CLI and the API both do, after every gap) would write that prefix over
+    the stored interview, deleting the answers whose gaps hadn't been reached. A
+    payload is only safe to persist if it holds every answer.
+    """
+    out = list(items)
+    for leftover in [it for bucket in answered.values() for it in bucket]:
+        clone = leftover.model_copy(deep=True)
+        clone.id = f"q{len(out) + 1}"
+        out.append(clone)
+    return out
 
 
 def generate_questions(
@@ -105,13 +125,9 @@ def generate_questions(
             item.id = f"q{len(items) + 1}"
             items.append(item)
         if on_progress is not None:
-            on_progress(items, i, total)
+            on_progress(_with_carried_answers(items, answered), i, total)
 
-    for leftover in [it for bucket in answered.values() for it in bucket]:  # gap is gone
-        clone = leftover.model_copy(deep=True)
-        clone.id = f"q{len(items) + 1}"
-        items.append(clone)
-    return items
+    return _with_carried_answers(items, answered)  # the tail: answers whose gap is gone
 
 
 def uncovered_gaps(project: Project, items: list[InterviewItem]) -> list[str]:
