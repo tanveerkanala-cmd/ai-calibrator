@@ -16,6 +16,7 @@ other's changes.
 from __future__ import annotations
 
 import os
+import stat
 import tempfile
 import time
 from pathlib import Path
@@ -113,7 +114,13 @@ def atomic_write_text(path: str | Path, text: str) -> Path:
     """Write ``text`` to ``path`` atomically (unique temp + fsync + replace).
 
     Reusable for artifact files written under a fixed name (e.g. the rightsize
-    summary), so concurrent writers can't corrupt or half-write them."""
+    summary), so concurrent writers can't corrupt or half-write them.
+
+    A rewrite keeps the mode the file already had. Writing through a temp file
+    means the replacement carries mkstemp's private 0600 rather than the target's
+    permissions, so without this a `chmod` the owner made deliberately — to serve
+    a calibration report, or to let a CI user read a scorecard — was silently
+    undone by the next command that rewrote it. New files stay private."""
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=str(target.parent), prefix=target.name + ".", suffix=".tmp")
@@ -129,6 +136,10 @@ def atomic_write_text(path: str | Path, text: str) -> Path:
             fh.write(text)
             fh.flush()
             os.fsync(fh.fileno())
+        try:
+            os.chmod(tmp, stat.S_IMODE(target.stat().st_mode))
+        except OSError:
+            pass  # no existing target (the common case), or a platform that refuses
         _atomic_replace(tmp, target)
         tmp = None
     finally:

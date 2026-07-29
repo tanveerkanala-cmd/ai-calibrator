@@ -378,3 +378,38 @@ def test_no_index_leaves_a_live_index_alone_when_materials_remain(tmp_path, monk
 
     assert dropped == [] and built == []
     assert result.indexed is None
+
+
+# --- rewriting an artifact keeps the mode its owner chose -------------------
+
+def test_a_rewrite_keeps_the_mode_the_owner_set(tmp_path):
+    """Reports and scorecards get shared — served over HTTP, read by a CI user.
+    Writing through a temp file must not silently revert that `chmod`."""
+    import os
+    import stat as stat_mod
+
+    if os.name == "nt":
+        pytest.skip("POSIX permissions")
+    from ai_calibrator.store import atomic_write_text
+
+    target = tmp_path / "calibration-report.md"
+    atomic_write_text(target, "first")
+    os.chmod(target, 0o644)
+
+    atomic_write_text(target, "second")
+
+    assert target.read_text(encoding="utf-8") == "second"
+    assert stat_mod.S_IMODE(target.stat().st_mode) == 0o644
+
+
+def test_a_new_artifact_is_still_created_private(tmp_path):
+    """The default stays closed: only an explicit chmod widens a file."""
+    import os
+    import stat as stat_mod
+
+    if os.name == "nt":
+        pytest.skip("POSIX permissions")
+    from ai_calibrator.store import atomic_write_text
+
+    target = atomic_write_text(tmp_path / "scorecard.json", "{}")
+    assert stat_mod.S_IMODE(target.stat().st_mode) == 0o600
