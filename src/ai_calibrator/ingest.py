@@ -259,14 +259,17 @@ def ingest_project(
         facts, gaps, analyzed = extract_gaps(project.goal, project.task_type.value, docs, engine)
 
     indexed: int | None = None
-    if build_index and project_dir is not None:
+    if project_dir is not None:
         if chunks:
-            indexed = rag.build_index(project_dir, chunks)
+            if build_index:
+                indexed = rag.build_index(project_dir, chunks)
         else:
             # No chunks means the corpus is now EMPTY (every material removed, or
             # none of them indexable). Leaving the previous table in place would
             # keep injecting documents the owner has deleted into every graded and
-            # served prompt — the index must never outlive its source.
+            # served prompt — the index must never outlive its source. `--no-index`
+            # asks to skip the REBUILD, which is expensive; it cannot mean "keep
+            # serving text whose source is gone", so the drop runs either way.
             indexed = 0 if rag.drop_index(project_dir) else None
 
     project.materials = materials

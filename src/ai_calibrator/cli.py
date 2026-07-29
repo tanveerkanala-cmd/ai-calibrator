@@ -521,7 +521,11 @@ def ingest(
                     fg=typer.colors.YELLOW)
         for rel, reason in result.skipped:
             typer.echo(f"    · {rel} — {reason}")
-    if result.indexed is not None:
+    if result.indexed is not None and not result.chunks:
+        # Reporting "0 chunk(s) embedded" for a drop reads as a build that found
+        # nothing, when what happened is that an index was deleted.
+        typer.echo("  retrieval index: dropped (no material text left to index)")
+    elif result.indexed is not None:
         typer.echo(f"  retrieval index: {result.indexed} chunk(s) embedded")
     elif no_index:
         typer.echo("  retrieval index: skipped (--no-index)")

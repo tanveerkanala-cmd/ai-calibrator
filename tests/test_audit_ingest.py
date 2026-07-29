@@ -328,3 +328,53 @@ def test_safe_token_rejects_a_leading_dash():
         with pytest.raises(ValueError, match="must not start with"):
             safe_token(bad, "base model")
     assert safe_token("Qwen/Qwen2.5-7B-Instruct", "base model") == "Qwen/Qwen2.5-7B-Instruct"
+
+
+# --- the retrieval index never outlives its source --------------------------
+
+class _NoEngine:
+    """extract_gaps is never reached on an empty corpus; fail loudly if it is."""
+
+    def complete(self, prompt, system=None, schema=None):  # pragma: no cover - guard
+        raise AssertionError("the engine must not be called for an empty corpus")
+
+
+def test_no_index_still_drops_an_index_whose_materials_are_gone(tmp_path, monkeypatch):
+    """`--no-index` skips the expensive rebuild. It cannot mean "keep serving text
+    whose source file was deleted" — that index feeds every eval and run."""
+    from ai_calibrator import ingest as ingest_mod
+
+    dropped, built = [], []
+    monkeypatch.setattr(ingest_mod.rag, "drop_index", lambda d: dropped.append(d) or True)
+    monkeypatch.setattr(ingest_mod.rag, "build_index", lambda d, c: built.append(d) or len(c))
+
+    empty = tmp_path / "materials"
+    empty.mkdir()
+    project = Project(name="p", goal="g")
+    result = ingest_mod.ingest_project(project, empty, _NoEngine(),
+                                       project_dir=tmp_path, build_index=False)
+
+    assert dropped == [tmp_path]
+    assert built == []
+    assert result.indexed == 0
+
+
+def test_no_index_leaves_a_live_index_alone_when_materials_remain(tmp_path, monkeypatch):
+    """The other half of the contract: with materials still there, --no-index
+    rebuilds nothing and destroys nothing."""
+    from ai_calibrator import ingest as ingest_mod
+
+    dropped, built = [], []
+    monkeypatch.setattr(ingest_mod.rag, "drop_index", lambda d: dropped.append(d) or True)
+    monkeypatch.setattr(ingest_mod.rag, "build_index", lambda d, c: built.append(d) or len(c))
+    monkeypatch.setattr(ingest_mod, "extract_gaps", lambda *a, **k: ([], [], 1))
+
+    mats = tmp_path / "materials"
+    mats.mkdir()
+    (mats / "faq.txt").write_text("Refunds are issued within 30 days.", encoding="utf-8")
+    project = Project(name="p", goal="g")
+    result = ingest_mod.ingest_project(project, mats, _NoEngine(),
+                                       project_dir=tmp_path, build_index=False)
+
+    assert dropped == [] and built == []
+    assert result.indexed is None

@@ -20,6 +20,10 @@ aside h2, #panel h2 { font-size: 0.8rem; text-transform: uppercase; letter-spaci
 #projects li { padding: 0.4rem 0.6rem; border-radius: 6px; cursor: pointer; }
 #projects li:hover { background: var(--panel); }
 #projects li.active { background: var(--panel); color: var(--accent); }
+/* Not a project but an explanation of why the list is empty, so it must not
+   look clickable or invite a hover it can't answer. */
+#projects li.empty { cursor: default; color: var(--muted); font-size: 0.85rem; line-height: 1.45; }
+#projects li.empty:hover { background: none; }
 form { display: flex; flex-direction: column; gap: 0.4rem; }
 input, textarea, select {
   background: var(--panel); border: 1px solid var(--line); color: var(--text);

@@ -142,6 +142,22 @@ jobs:
               assert p.is_file(), f"{asset} missing from the installed package"
           print("installed package serves its own web assets")
           PY
+      - name: Sdist ships the docs a user needs, not the one we built against
+        run: |
+          python - <<'PY'
+          import glob, sys, tarfile
+          sdist = glob.glob("dist/*.tar.gz")[0]
+          names = [n.split("/", 1)[-1] for n in tarfile.open(sdist).getnames()]
+          # The internal roadmap is stale the day it ships, and to someone who
+          # unpacks the release it reads as documentation of the tool.
+          leaked = [n for n in names if n == "docs/BUILD-PLAN.md"]
+          missing = [n for n in ("README.md", "LICENSE", "docs/USAGE.md") if n not in names]
+          if leaked or missing:
+              print("LEAKED:", leaked)
+              print("MISSING:", missing)
+              sys.exit(1)
+          print(f"{sdist}: {len(names)} files, roadmap excluded")
+          PY
       - name: Install the SDIST into a clean venv
         run: |
           python -m venv /tmp/sdistenv
