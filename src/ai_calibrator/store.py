@@ -110,6 +110,23 @@ def open_private_append(path: str | Path):
     return fh
 
 
+def _preserve_mode(tmp: Path, target: Path) -> None:
+    """Carry ``target``'s permissions onto the temp file that will replace it.
+
+    Only a REGULAR file has a mode worth preserving. lstat rather than stat
+    because ``os.replace`` swaps out a symlink rather than following it — but a
+    symlink's own mode is 0o777 on Linux, so copying it would publish the
+    replacement world-writable. Anything that is not a regular file (a symlink, a
+    directory, a fifo) keeps mkstemp's private 0600.
+    """
+    try:
+        st = target.lstat()
+        if stat.S_ISREG(st.st_mode):
+            os.chmod(tmp, stat.S_IMODE(st.st_mode))
+    except OSError:
+        pass  # no existing target (the common case), or a platform that refuses
+
+
 def atomic_write_text(path: str | Path, text: str) -> Path:
     """Write ``text`` to ``path`` atomically (unique temp + fsync + replace).
 
@@ -136,13 +153,7 @@ def atomic_write_text(path: str | Path, text: str) -> Path:
             fh.write(text)
             fh.flush()
             os.fsync(fh.fileno())
-        try:
-            # lstat, not stat: os.replace swaps out the SYMLINK, so following it
-            # would copy the mode of a file this write never touches onto the new
-            # regular file that takes its place.
-            os.chmod(tmp, stat.S_IMODE(target.lstat().st_mode))
-        except OSError:
-            pass  # no existing target (the common case), or a platform that refuses
+        _preserve_mode(tmp, target)
         _atomic_replace(tmp, target)
         tmp = None
     finally:
@@ -195,14 +206,9 @@ def save_project(project: Project, path: str | Path) -> Path:
             fh.write(data)
             fh.flush()
             os.fsync(fh.fileno())  # durability: bytes hit disk before the rename
-        try:
-            # Keep the mode the file already has, for the same reason
-            # atomic_write_text does: the temp file carries mkstemp's private
-            # 0600, so without this every save silently reverts a chmod the owner
-            # made deliberately.
-            os.chmod(tmp, stat.S_IMODE(target.lstat().st_mode))
-        except OSError:
-            pass  # first save (the common case), or a platform that refuses
+        # Same reason as atomic_write_text: without this, every save silently
+        # reverts a chmod the owner made deliberately.
+        _preserve_mode(tmp, target)
         _atomic_replace(tmp, target)  # atomic on the same filesystem (retries on Windows)
         tmp = None  # ownership transferred to `target`; nothing to clean up
     finally:

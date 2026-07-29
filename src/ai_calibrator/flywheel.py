@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -33,15 +34,52 @@ FEEDBACK_FILE = "feedback.jsonl"            # under <project>/logs/
 ABSORBED_FILE = "feedback-absorbed.jsonl"   # consumed records (audit trail)
 
 
-def append_feedback(project_dir: str | Path, record: dict) -> None:
+@contextmanager
+def _feedback_lock(project_dir: str | Path, wait_seconds: float | None):
+    """The project lock, held indefinitely (CLI) or up to ``wait_seconds`` (HTTP)."""
+    if wait_seconds is None:
+        with project_lock(project_dir):
+            yield
+        return
+
+    import time
+
+    from .locking import LockBusy
+    lock = project_lock(project_dir, blocking=False)
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        try:
+            lock.acquire()
+            break
+        except LockBusy:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.05)
+    try:
+        yield
+    finally:
+        lock.release()
+
+
+def append_feedback(project_dir: str | Path, record: dict, *,
+                    wait_seconds: float | None = None) -> None:
     """Durably append one live-feedback record (called by the runtime).
 
     Takes the project lock: `absorb_feedback` empties the inbox after reading
     it (under the same lock, via the CLI/API), so an unserialized append landing
     in that read→truncate window would be silently DESTROYED. The lock closes
-    the window; appends simply wait out an in-flight absorb (milliseconds)."""
+    the window.
+
+    ``wait_seconds`` bounds that wait, and every HTTP caller passes it. The claim
+    that an append "waits out an in-flight absorb (milliseconds)" was wrong: the
+    same lock is held across whole engine runs by `calibrate eval` / `calibrate
+    ci`, so the wait is minutes — and since the routes run in a threadpool, every
+    waiter holds one of the worker slots the whole process shares. Park enough of
+    them and the server stops answering anything, including the served AI itself.
+    A bounded wait raises :class:`~.locking.LockBusy`, which the routes turn into
+    the same 423 every other busy-project route already returns."""
     from .store import open_private_append
-    with project_lock(project_dir):
+    with _feedback_lock(project_dir, wait_seconds):
         d = Path(project_dir) / "logs"
         d.mkdir(parents=True, exist_ok=True, mode=0o700)
         with open_private_append(d / FEEDBACK_FILE) as fh:  # 0600 — holds user queries

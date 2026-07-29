@@ -420,9 +420,9 @@ def test_gate_scores_only_the_held_out_tests_both_runs_graded(tmp_path):
 
     result = runner.invoke(app, ["finetune", str(tmp_path), "--gate",
                                  "--baseline", "run-0001", "--candidate", "run-0002"])
-    assert "gating on the 1 held-out test(s) both runs graded" in result.output
+    assert "gating on the 1 test(s) both runs graded and held out of training" in result.output
     assert "baseline 0% → candidate 100%" in result.output
-    assert "graded different held-out tests" in result.output   # and says so
+    assert "graded different tests" in result.output   # and says so
     assert _has_no_traceback(result.output)
 
 
@@ -469,4 +469,25 @@ def test_import_refuses_a_destination_that_cannot_name_a_project(tmp_path):
 
     assert result.exit_code == 1, result.output
     assert "Can't name a project after" in result.output
+    assert _has_no_traceback(result.output)
+
+
+def test_gate_refuses_non_comparable_runs_even_with_no_training_overlap(tmp_path):
+    """Comparability is not an overlap question. With nothing memorized, the gate
+    used to take an unguarded path and could accept off two runs that graded
+    entirely different tests — the exact failure the overlap path refuses."""
+    _gate_project_pair(tmp_path,
+                       baseline_outcomes=[("rt_1", False)],
+                       candidate_outcomes=[("rt_2", True)])
+    # Remove the examples so nothing is a training prompt: no overlap at all.
+    from ai_calibrator.store import load_project, save_project
+    project = load_project(tmp_path)
+    project.spec.examples = []
+    save_project(project, tmp_path)
+
+    result = runner.invoke(app, ["finetune", str(tmp_path), "--gate",
+                                 "--baseline", "run-0001", "--candidate", "run-0002"])
+
+    assert result.exit_code == 2, result.output
+    assert "CANNOT JUDGE" in result.output and "ACCEPT" not in result.output
     assert _has_no_traceback(result.output)

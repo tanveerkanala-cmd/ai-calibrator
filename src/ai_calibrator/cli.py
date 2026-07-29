@@ -512,17 +512,19 @@ def ingest(
             typer.secho(f"Ingest failed: {exc}", fg=typer.colors.RED)
             raise typer.Exit(code=1)
 
-        save_project(project, path)
+        if not result.unreadable:  # nothing changed; don't rewrite the file to say so
+            save_project(project, path)
 
-    # A populated materials/ that yields nothing is a failure, not a success: the
-    # corpus, the facts, the gaps and the index have all just been replaced with
-    # emptiness, and a green ✓ with exit 0 would report that as work done.
-    if result.skipped and not result.materials:
-        typer.secho(f"✗ None of the {len(result.skipped)} file(s) in {src}/ could be read, so the "
-                    "project now has no materials, facts or gaps.", fg=typer.colors.RED, bold=True)
+    # A populated materials/ that yields nothing is a failure, not a success.
+    # ingest_project leaves the project untouched in that case, so this reports a
+    # refusal rather than a wipe already committed to disk.
+    if result.unreadable:
+        typer.secho(f"✗ None of the {len(result.skipped)} file(s) in {src}/ could be read.",
+                    fg=typer.colors.RED, bold=True)
         for rel, reason in result.skipped:
             typer.echo(f"    · {rel} — {reason}")
-        typer.echo("  Convert them to text (or fix the errors above) and ingest again.")
+        typer.echo("  The project is unchanged. Convert them to text (or fix the errors above) "
+                   "and ingest again.")
         raise typer.Exit(code=1)
 
     typer.secho(
@@ -2178,7 +2180,7 @@ def finetune(
         if not (baseline and candidate):
             typer.secho("--gate needs --baseline <run-id> and --candidate <run-id>.", fg=typer.colors.RED)
             raise typer.Exit(code=1)
-        from .finetune import beats_baseline, graded_held_out, rate_over, training_overlap
+        from .finetune import graded_held_out, rate_over, training_overlap
 
         base_card, cand_card = _scorecard_or_exit(path, baseline), _scorecard_or_exit(path, candidate)
         typer.echo(f"baseline [{baseline}]: {pct(base_card.pass_rate)}    "
@@ -2190,58 +2192,64 @@ def finetune(
         # by construction. Decide the gate on the HELD-OUT tests only.
         overlap = training_overlap(project, cand_card)
         graded = [r for r in cand_card.results if r.criteria]
+        # Comparability is not an overlap question. Every check below — did either
+        # run grade anything, do they share any test — is about whether these two
+        # scorecards can be subtracted at all, and it applies just as much when
+        # nothing was memorized. Gating it on `overlap` meant a project with no
+        # training overlap took an unguarded path and could ACCEPT off two runs
+        # that graded entirely different tests.
+        excl = set(overlap)
+        cand_ids = graded_held_out(cand_card, excl)
+        base_ids = graded_held_out(base_card, excl)
+        n_held, n_base = len(cand_ids), len(base_ids)
         if overlap:
-            excl = set(overlap)
-            cand_ids = graded_held_out(cand_card, excl)
-            base_ids = graded_held_out(base_card, excl)
-            n_held, n_base = len(cand_ids), len(base_ids)
             typer.secho(f"⚠ {len(overlap)} of {len(graded)} graded test(s) use an input that is "
                         "also a TRAINING prompt "
                         f"({', '.join(overlap[:5])}{', …' if len(overlap) > 5 else ''}).",
                         fg=typer.colors.YELLOW, bold=True)
-            if n_held == 0:
-                typer.secho("✗ CANNOT JUDGE — every graded test is a training prompt, so this "
-                            "comparison cannot distinguish learning from memorization.",
-                            fg=typer.colors.RED, bold=True)
-                typer.echo("  Add tests whose inputs are NOT in the dataset "
-                           "(`calibrate redteam --add-tests`, or write them by hand), re-run both "
-                           "evals, and gate again.")
-                raise typer.Exit(code=2)
-            # held_out_rate reports 0.0 for "nothing to score" — reading that as a
-            # measured baseline rate hands the candidate an automatic win off a
-            # comparison that never happened (a baseline run that predates these
-            # tests never graded one of them).
-            if n_base == 0:
-                typer.secho("✗ CANNOT JUDGE — the baseline run graded none of the held-out "
-                            "test(s), so there is nothing to compare the candidate against.",
-                            fg=typer.colors.RED, bold=True)
-                typer.echo(f"  Re-run the baseline eval ({baseline}) on the CURRENT test suite, "
-                           "then gate again.")
-                raise typer.Exit(code=2)
-            # Compare over the tests BOTH runs graded. Comparing each run's own
-            # held-out set scores two different exams and subtracts the results:
-            # two runs that graded the same NUMBER of different tests passed the
-            # old count check silently, and the gate accepted on the difference.
-            common = cand_ids & base_ids
-            if not common:
-                typer.secho("✗ CANNOT JUDGE — the baseline and candidate runs share no held-out "
-                            "test, so there is no common ground to compare them on.",
-                            fg=typer.colors.RED, bold=True)
-                typer.echo(f"  Re-run the baseline eval ({baseline}) on the CURRENT test suite, "
-                           "then gate again.")
-                raise typer.Exit(code=2)
-            cand_held, _ = rate_over(cand_card, common)
-            base_held, n_common = rate_over(base_card, common)
-            if len(common) != n_held or len(common) != n_base:
-                typer.secho(f"⚠ The two runs graded different held-out tests ({n_base} in the "
-                            f"baseline, {n_held} in the candidate); gating on the "
-                            f"{n_common} they share. Re-run the baseline eval on the CURRENT "
-                            "suite to compare over all of them.", fg=typer.colors.YELLOW)
-            typer.echo(f"  gating on the {n_common} held-out test(s) both runs graded: "
-                       f"baseline {pct(base_held)} → candidate {pct(cand_held)}")
-            win = cand_held > base_held
-        else:
-            win = beats_baseline(base_card, cand_card)
+        if n_held == 0:
+            typer.secho("✗ CANNOT JUDGE — " + ("every graded test is a training prompt, so this "
+                        "comparison cannot distinguish learning from memorization."
+                        if overlap else "the candidate run graded no tests, so there is nothing "
+                        "to judge it on."), fg=typer.colors.RED, bold=True)
+            typer.echo("  Add tests whose inputs are NOT in the dataset "
+                       "(`calibrate redteam --add-tests`, or write them by hand), re-run both "
+                       "evals, and gate again." if overlap else
+                       "  Run `calibrate eval` on the current suite, then gate again.")
+            raise typer.Exit(code=2)
+        # A rate of 0.0 for "nothing to score" would hand the candidate an
+        # automatic win off a comparison that never happened (a baseline run that
+        # predates these tests never graded one of them).
+        if n_base == 0:
+            typer.secho("✗ CANNOT JUDGE — the baseline run graded none of the held-out "
+                        "test(s), so there is nothing to compare the candidate against.",
+                        fg=typer.colors.RED, bold=True)
+            typer.echo(f"  Re-run the baseline eval ({baseline}) on the CURRENT test suite, "
+                       "then gate again.")
+            raise typer.Exit(code=2)
+        # Compare over the tests BOTH runs graded. Comparing each run's own set
+        # scores two different exams and subtracts the results: two runs that
+        # graded the same NUMBER of different tests passed the old count check
+        # silently, and the gate accepted on the difference.
+        common = cand_ids & base_ids
+        if not common:
+            typer.secho("✗ CANNOT JUDGE — the baseline and candidate runs share no "
+                        "test, so there is no common ground to compare them on.",
+                        fg=typer.colors.RED, bold=True)
+            typer.echo(f"  Re-run the baseline eval ({baseline}) on the CURRENT test suite, "
+                       "then gate again.")
+            raise typer.Exit(code=2)
+        cand_held, _ = rate_over(cand_card, common)
+        base_held, n_common = rate_over(base_card, common)
+        if len(common) != n_held or len(common) != n_base:
+            typer.secho(f"⚠ The two runs graded different tests ({n_base} in the "
+                        f"baseline, {n_held} in the candidate); gating on the "
+                        f"{n_common} they share. Re-run the baseline eval on the CURRENT "
+                        "suite to compare over all of them.", fg=typer.colors.YELLOW)
+        typer.echo(f"  gating on the {n_common} test(s) both runs graded"
+                   + (" and held out of training" if overlap else "") + ": "
+                   f"baseline {pct(base_held)} → candidate {pct(cand_held)}")
+        win = cand_held > base_held
 
         def _prov(card):
             bits = [f"subject={card.subject}"] if card.subject else []

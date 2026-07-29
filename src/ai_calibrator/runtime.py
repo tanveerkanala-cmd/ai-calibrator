@@ -45,6 +45,9 @@ from .store import load_project
 from .webguard import install_guard
 
 MAX_CHAT_CHARS = 200_000   # total message content cap — protects the engine
+# How long a feedback POST waits for the project lock before answering 423 —
+# the same bound `calibrate serve` applies to every other mutating route.
+FEEDBACK_LOCK_WAIT = 10.0
 RECENT_COMPLETIONS = 512   # how many completions stay addressable by id for /v1/feedback
 
 
@@ -351,14 +354,23 @@ def create_ai_app(project_dir: str | Path, *, engine: Engine | None = None, guar
             raise HTTPException(400, f"feedback too large (>{MAX_CHAT_CHARS} characters)")
 
         correction, reason = body.get("correction"), body.get("reason")
-        # append_feedback takes the blocking project lock — off the event loop so
-        # a concurrent `calibrate absorb` holding the lock can't freeze the server.
-        await run_in_threadpool(append_feedback, directory, {
+        from .locking import LockBusy
+        record = {
             "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "turns": turns, "output": output, "verdict": verdict,
             "correction": correction if is_str(correction) else None,
             "reason": reason if is_str(reason) else None,
-        })
+        }
+        # Off the event loop, and on a DEADLINE. The project lock is held across
+        # whole engine runs by `calibrate eval` / `calibrate ci`, and each waiting
+        # request holds one of the threadpool slots the whole process shares — so
+        # an unbounded wait here can stop the served AI answering at all.
+        try:
+            await run_in_threadpool(
+                lambda: append_feedback(directory, record, wait_seconds=FEEDBACK_LOCK_WAIT))
+        except LockBusy:
+            raise HTTPException(423, "an operation is already in progress on this project — "
+                                     "retry shortly (the answer you flagged is not lost)")
         return {"recorded": True, "next": "run `calibrate absorb` to pin this into the spec + tests"}
 
     return app

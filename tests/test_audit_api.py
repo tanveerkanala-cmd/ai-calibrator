@@ -314,3 +314,43 @@ def test_a_declared_oversize_body_is_refused_on_a_route_that_reads_no_body(tmp_p
                                             "content-type": "application/json"},
                       content=b"{}")
         assert r.status_code == 413, (method, url, r.text)
+
+
+def test_feedback_answers_423_instead_of_parking_a_worker_thread(tmp_path, monkeypatch):
+    """The project lock is held across whole engine runs by `calibrate eval` and
+    `calibrate ci`, and each waiting request holds one of the threadpool slots the
+    whole process shares. Enough parked feedback POSTs and the server answers
+    nothing at all — including, on `calibrate run`, the served AI itself."""
+    monkeypatch.setattr(api, "_LOCK_WAIT_SECONDS", 0.2)
+    c = TestClient(create_app(tmp_path))
+    assert c.post("/api/projects", json={"name": "p", "goal": "g"}).status_code == 200
+
+    body = {"turns": ["why?"], "output": "because", "verdict": "down"}
+    with _held(tmp_path / "p"):
+        started = time.monotonic()
+        r = c.post("/api/projects/p/feedback", json=body)
+        assert r.status_code == 423, r.text
+        assert time.monotonic() - started < 2
+
+    # Uncontended, it still records.
+    assert c.post("/api/projects/p/feedback", json=body).status_code == 200
+
+
+def test_the_served_ai_feedback_route_is_bounded_too(tmp_path, monkeypatch):
+    from ai_calibrator import runtime as runtime_mod
+
+    monkeypatch.setattr(runtime_mod, "FEEDBACK_LOCK_WAIT", 0.2)
+
+    class _Answerer:
+        name = "e@test"
+
+        def complete(self, prompt, *, system=None, schema=None):
+            return "an answer"
+
+    c = _served(tmp_path, _Answerer())
+    body = {"turns": ["why?"], "output": "because", "verdict": "down"}
+    with _held(tmp_path):
+        started = time.monotonic()
+        r = c.post("/v1/feedback", json=body)
+        assert r.status_code == 423, r.text
+        assert time.monotonic() - started < 2

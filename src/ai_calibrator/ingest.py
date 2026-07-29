@@ -69,6 +69,10 @@ class IngestResult:
     # ``materials`` means the corpus hit MAX_EXTRACT_CHARS and the tail files did
     # not inform the facts or the gap list.
     analyzed: int = 0
+    # True when the source held files but none could be read. The project is left
+    # EXACTLY as it was — nothing parsed, nothing replaced, no index dropped — so
+    # the caller must report a failure rather than a successful empty ingest.
+    unreadable: bool = False
 
 
 def _excerpt(text: str, n: int = 240) -> str:
@@ -257,6 +261,19 @@ def ingest_project(
     analyzed = 0
     if docs:  # don't call the engine on an empty corpus
         facts, gaps, analyzed = extract_gaps(project.goal, project.task_type.value, docs, engine)
+
+    # A populated source directory from which NOTHING could be read is a failure,
+    # not an emptying: the owner did not delete their materials, the parser could
+    # not read them. Destroying the corpus, the facts, the gaps and the index on
+    # that basis discards work in response to a transient problem (a missing
+    # `docs` extra, a permissions change), and leaves nothing to retry from. Make
+    # it a no-op and let the caller report it — a veto has to come before the
+    # destruction, not after.
+    unreadable = bool(skipped) and not docs
+    if unreadable:
+        return IngestResult(materials=len(project.materials), chunks=0, facts=len(project.facts),
+                            gaps=len(project.gaps), indexed=None, skipped=skipped, analyzed=0,
+                            unreadable=True)
 
     indexed: int | None = None
     if project_dir is not None:

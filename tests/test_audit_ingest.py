@@ -499,3 +499,49 @@ def test_genuinely_binary_files_are_still_refused(tmp_path, blob):
     f.write_bytes(blob)
     with pytest.raises(ValueError):
         read_document(f)
+
+
+def test_an_unreadable_source_leaves_the_project_exactly_as_it_was(tmp_path):
+    """The owner did not delete their materials — the parser could not read them.
+    Destroying the corpus, facts, gaps and index on that basis discards work in
+    response to a transient problem (a missing `docs` extra, a permissions
+    change) and leaves nothing to retry from."""
+    from ai_calibrator.ingest import ingest_project
+    from ai_calibrator.models import Gap, Material
+
+    project = Project(name="p", goal="g")
+    project.materials = [Material(path="faq.md", kind="md", summary="old policy")]
+    project.facts = ["Refunds within 30 days."]
+    project.gaps = [Gap(dimension="tone")]
+
+    mats = tmp_path / "materials"
+    mats.mkdir()
+    (mats / "prices.xlsx").write_bytes(b"PK\x03\x04" + bytes(range(256)) * 10)
+
+    result = ingest_project(project, mats, FakeEngine({"facts": [], "gaps": []}),
+                            project_dir=tmp_path, build_index=False)
+
+    assert result.unreadable and result.skipped
+    assert [m.path for m in project.materials] == ["faq.md"]
+    assert project.facts == ["Refunds within 30 days."]
+    assert [g.dimension for g in project.gaps] == ["tone"]
+
+
+def test_a_deliberately_emptied_source_still_clears_the_corpus(tmp_path):
+    """The other direction must keep working: an EMPTY directory is the owner
+    saying "I removed these", and the corpus has to follow."""
+    from ai_calibrator.ingest import ingest_project
+    from ai_calibrator.models import Material
+
+    project = Project(name="p", goal="g")
+    project.materials = [Material(path="faq.md", kind="md", summary="old policy")]
+    project.facts = ["Refunds within 30 days."]
+
+    mats = tmp_path / "materials"
+    mats.mkdir()
+
+    result = ingest_project(project, mats, FakeEngine({"facts": [], "gaps": []}),
+                            project_dir=tmp_path, build_index=False)
+
+    assert not result.unreadable
+    assert project.materials == [] and project.facts == []

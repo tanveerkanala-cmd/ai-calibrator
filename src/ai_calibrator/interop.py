@@ -109,10 +109,18 @@ def to_promptfoo(project: Project) -> str:
     # a rendering bug: it can read the operator's API keys into a prompt that is
     # then sent to a third-party model. Escaped delimiters have no terminator and
     # render back to the spec text byte for byte.
+    #
+    # `#}` needs escaping too, and must be replaced LAST. Nunjucks' lexer throws
+    # "unexpected end of comment" on a `#}` found in template text — a spec that
+    # merely mentions one would make promptfoo refuse to lex the prompt at all.
+    # Last, because the three openers above emit `}}`, never `#}`, so escaping it
+    # first would leave the openers' output untouched but escaping it after is
+    # safe; reordering breaks that.
     body = (render_system_prompt(spec)
             .replace("{{", "{{ '{{' }}")
             .replace("{%", "{{ '{%' }}")
-            .replace("{#", "{{ '{#' }}"))
+            .replace("{#", "{{ '{#' }}")
+            .replace("#}", "{{ '#}' }}"))
 
     config = {
         "description": project.goal,

@@ -685,11 +685,18 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         if sum(len(t) for t in turns) + len(body.output) + len(body.correction or "") > MAX_CHAT_CHARS:
             raise HTTPException(400, f"feedback too large (>{MAX_CHAT_CHARS} characters)")
         d = _dir(name)
-        append_feedback(d, {
-            "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "turns": turns, "output": body.output, "verdict": body.verdict,
-            "correction": body.correction, "reason": body.reason,
-        })
+        from .locking import LockBusy
+        try:
+            # Bounded, like every other mutating route: the lock is held across
+            # whole engine runs, and a waiting request holds a threadpool slot.
+            append_feedback(d, {
+                "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "turns": turns, "output": body.output, "verdict": body.verdict,
+                "correction": body.correction, "reason": body.reason,
+            }, wait_seconds=_LOCK_WAIT_SECONDS)
+        except LockBusy:
+            raise HTTPException(
+                423, f"an operation is already in progress on project {name!r} — retry shortly")
         return {"recorded": True, "pending": len(read_feedback(d))}
 
     @app.get("/api/projects/{name}/feedback")
