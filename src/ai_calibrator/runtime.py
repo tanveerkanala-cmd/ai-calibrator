@@ -349,8 +349,10 @@ def create_ai_app(project_dir: str | Path, *, engine: Engine | None = None, guar
         # Same cap as the chat route. An absorbed record becomes a permanent test
         # input sent to BOTH the subject and the judge on every future eval, so an
         # unbounded payload here is a one-request, permanent cost amplifier.
-        correction_len = len(body.get("correction") or "") if is_str(body.get("correction")) else 0
-        if sum(len(t) for t in turns) + len(output) + correction_len > MAX_CHAT_CHARS:
+        # Every field that lands in the record, `reason` included — anything left
+        # out of this sum is an uncapped permanent cost.
+        extra = sum(len(body.get(k) or "") for k in ("correction", "reason") if is_str(body.get(k)))
+        if sum(len(t) for t in turns) + len(output) + extra > MAX_CHAT_CHARS:
             raise HTTPException(400, f"feedback too large (>{MAX_CHAT_CHARS} characters)")
 
         correction, reason = body.get("correction"), body.get("reason")

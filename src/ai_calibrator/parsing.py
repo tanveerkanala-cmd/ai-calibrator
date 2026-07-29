@@ -99,13 +99,26 @@ def _decode_text(name: str, raw: bytes) -> str:
     if _nul_dense(raw):
         # Either BOM-less UTF-16/32 (iconv -t UTF-16LE, bcp, some CRM exports) or
         # an actual binary file. Only the former decodes to readable text.
+        # Score every candidate rather than taking the first that decodes: the
+        # WRONG endianness of ASCII-dominant text is valid CJK, which is
+        # printable, so a first-match loop reads a UTF-16-BE document as
+        # Mandarin. The right endianness of ordinary prose is dominated by
+        # low code points; the wrong one is not.
+        # -1.0, not 0.0: a genuinely CJK document scores zero on this metric and
+        # must still be accepted — the score ranks candidates, it does not gate them.
+        best, best_score = None, -1.0
         for encoding in ("utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be"):
             try:
                 text = raw.decode(encoding)
             except UnicodeDecodeError:
                 continue
-            if _mostly_readable(text):
-                return text
+            if not _mostly_readable(text):
+                continue
+            score = sum(1 for ch in text if ord(ch) < 0x250) / len(text)
+            if score > best_score:
+                best, best_score = text, score
+        if best is not None:
+            return best
         raise ValueError(f"{name}: looks like a binary file (image, spreadsheet, archive), not text")
     try:
         # Sparse NULs are damage in an otherwise-good document, not a reason to

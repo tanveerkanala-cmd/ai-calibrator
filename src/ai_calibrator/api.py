@@ -682,7 +682,11 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         # absorbed record becomes a permanent test input sent to BOTH the subject
         # and the judge on every future eval, so an unbounded payload here is a
         # one-request, permanent cost amplifier.
-        if sum(len(t) for t in turns) + len(body.output) + len(body.correction or "") > MAX_CHAT_CHARS:
+        # Every field that lands in the record, `reason` included: an absorbed
+        # record becomes a permanent test input, so anything uncounted here is an
+        # uncapped permanent cost.
+        if (sum(len(t) for t in turns) + len(body.output) + len(body.correction or "")
+                + len(body.reason or "")) > MAX_CHAT_CHARS:
             raise HTTPException(400, f"feedback too large (>{MAX_CHAT_CHARS} characters)")
         d = _dir(name)
         from .locking import LockBusy

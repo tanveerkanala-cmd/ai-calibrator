@@ -96,10 +96,28 @@ def test_ground_truth_for_an_unlogged_question_becomes_its_own_row(tmp_path):
     assert "- c2: cites a policy" in rows[0]["messages"][-2]["content"]
 
 
-def test_ground_truth_skips_code_checked_criteria(tmp_path):
-    """A criterion with a deterministic check is graded by code — the judge never
-    sees it, so a label on it is not judge training data."""
+def test_a_code_checked_criterion_gets_no_new_row_but_still_corrects_its_logged_one(tmp_path):
+    """A criterion with a deterministic check is graded by code, so the judge is
+    never asked it again and no standalone row should teach it.
+
+    The logged call from BEFORE the check was attached still exists in the
+    dataset, though, and the human overturned it — dropping the label outright
+    would let attaching a check silently restore the judgment they overruled."""
     _seed_two_criterion_project(tmp_path, check=Check(kind="contains", value="policy"))
+    save_labels(tmp_path, "run-0001", [{"test_id": "t1", "criterion_id": "c2", "passed": False}])
+
+    assert human_judge_rows(tmp_path) == []          # nothing new invented
+
+    result = export_engine_bundle(tmp_path, "judge")
+    assert result.human_examples == 1                # the logged row was corrected
+    rows = _dataset(tmp_path)
+    assert _verdicts(rows[0]) == {"c1": True, "c2": False}   # c1 untouched, c2 overturned
+
+
+def test_a_code_checked_criterion_with_no_logged_call_adds_nothing(tmp_path):
+    """With nothing to correct, the label produces no training data at all."""
+    _seed_two_criterion_project(tmp_path, check=Check(kind="contains", value="policy"),
+                                with_log=False)
     save_labels(tmp_path, "run-0001", [{"test_id": "t1", "criterion_id": "c2", "passed": False}])
 
     assert human_judge_rows(tmp_path) == []

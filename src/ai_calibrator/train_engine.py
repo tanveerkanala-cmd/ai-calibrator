@@ -155,10 +155,15 @@ def _ground_truth(project_dir: str | Path) -> list[tuple[str, str, bool, dict]]:
         return []
     if project.spec is None:
         return []
-    # A criterion carrying a deterministic check is graded by code and never
-    # reaches the judge (eval.run_eval), so a label on one is a truthful verdict
-    # about the criterion but not a question this role is ever asked.
-    desc_by_id = {c.id: c.description for c in project.spec.eval_criteria if c.check is None}
+    # Every criterion the spec defines, plus which ones the judge is still asked
+    # about. A criterion carrying a deterministic check is graded by code and
+    # never reaches the judge (eval.run_eval), so no NEW standalone row should be
+    # invented for it — but a logged judge call from before the check was attached
+    # still exists in the dataset, and a human verdict must still correct it.
+    # Dropping the label outright let attaching a check silently restore the very
+    # judgment the human overturned.
+    desc_by_id = {c.id: c.description for c in project.spec.eval_criteria}
+    judged_ids = {c.id for c in project.spec.eval_criteria if c.check is None}
     input_by_test = {t.id: t.input for t in project.tests}
 
     truth: list[tuple[str, str, bool, dict]] = []
@@ -179,18 +184,22 @@ def _ground_truth(project_dir: str | Path) -> list[tuple[str, str, bool, dict]]:
             if key in seen:
                 continue
             seen.add(key)
-            truth.append((_graded_item(input_by_test[tid], outputs[tid]), cid, passed, {
-                "messages": [
-                    {"role": "system", "content": JUDGE_SYSTEM},
-                    {"role": "user", "content": prompt},
-                    {"role": "assistant", "content": target},
-                ]}))
+            # A standalone row teaches the judge to answer this question. Only
+            # mint one for a criterion the judge is actually asked — a code-graded
+            # one gets the correction applied to its logged row (below) and
+            # nothing new invented for it.
+            row = {"messages": [
+                {"role": "system", "content": JUDGE_SYSTEM},
+                {"role": "user", "content": prompt},
+                {"role": "assistant", "content": target},
+            ]} if cid in judged_ids else None
+            truth.append((_graded_item(input_by_test[tid], outputs[tid]), cid, passed, row))
     return truth
 
 
 def human_judge_rows(project_dir: str | Path) -> list[dict]:
     """Ground-truth judge rows from saved judge-check labels — see ``_ground_truth``."""
-    return [row for _, _, _, row in _ground_truth(project_dir)]
+    return [row for _, _, _, row in _ground_truth(project_dir) if row is not None]
 
 
 def _apply_ground_truth(row: dict, verdicts: dict[str, bool]) -> tuple[dict, set[str]]:
@@ -292,7 +301,8 @@ def export_engine_bundle(project_dir: str | Path, role: str, *, base_model: str 
                 row, applied = _apply_ground_truth(row, verdicts[item])
                 corrected |= {(item, cid) for cid in applied}
             patched.append(row)
-        unanswered = [row for item, cid, _, row in truth if (item, cid) not in corrected]
+        unanswered = [row for item, cid, _, row in truth
+                      if row is not None and (item, cid) not in corrected]
         rows = _dedup_rows(patched + unanswered)
         # Count the rows that ended up carrying a human verdict, after dedup —
         # counting patches instead reported one human decision as several

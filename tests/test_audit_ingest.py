@@ -545,3 +545,13 @@ def test_a_deliberately_emptied_source_still_clears_the_corpus(tmp_path):
 
     assert not result.unreadable
     assert project.materials == [] and project.facts == []
+
+
+@pytest.mark.parametrize("encoding", ["utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be"])
+def test_bom_less_wide_encodings_pick_the_right_endianness(tmp_path, encoding):
+    """The WRONG endianness of ASCII-dominant text decodes to valid CJK, which is
+    printable — so taking the first candidate that decodes read a UTF-16-BE
+    document as Mandarin and ingested it as the corpus."""
+    f = tmp_path / "notes.txt"
+    f.write_bytes("Refunds are issued within 30 days.".encode(encoding))
+    assert read_document(f) == "Refunds are issued within 30 days."

@@ -354,3 +354,19 @@ def test_the_served_ai_feedback_route_is_bounded_too(tmp_path, monkeypatch):
         r = c.post("/v1/feedback", json=body)
         assert r.status_code == 423, r.text
         assert time.monotonic() - started < 2
+
+
+@pytest.mark.parametrize("field", ["correction", "reason"])
+def test_the_feedback_cap_counts_every_field_that_lands_in_the_record(tmp_path, field):
+    """An absorbed record becomes a permanent test input sent to both the subject
+    and the judge on every future eval, so a field left out of the cap is an
+    uncapped permanent cost."""
+    from ai_calibrator.runtime import MAX_CHAT_CHARS
+
+    c = TestClient(create_app(tmp_path))
+    assert c.post("/api/projects", json={"name": "p", "goal": "g"}).status_code == 200
+
+    body = {"turns": ["why?"], "output": "because", "verdict": "down",
+            field: "x" * (MAX_CHAT_CHARS + 1)}
+    r = c.post("/api/projects/p/feedback", json=body)
+    assert r.status_code == 400 and "too large" in r.text
