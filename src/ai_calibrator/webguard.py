@@ -24,12 +24,87 @@ from urllib.parse import urlsplit
 
 LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
+# Ceiling on a single request body, for both servers. Neither is authenticated,
+# and `--host` makes either reachable from the LAN, so an unbounded body is a
+# one-request memory exhaust. Generous enough for the largest material upload.
+MAX_BODY_BYTES = 25 * 1024 * 1024
 
-def install_guard(app, allowed_hosts: list[str] | None = None) -> None:
-    """Attach the Host-allowlist + anti-CSRF middleware to a FastAPI app."""
+
+def _too_large(limit: int):
+    """The 413 to raise, built lazily.
+
+    An HTTPException specifically: it is raised from inside the body read, and
+    FastAPI turns every OTHER exception raised there into a generic 400 "error
+    parsing the body" — which would hide the real reason the request was refused.
+    Imported here rather than at module scope so this module keeps importing
+    without the ``api`` extra."""
+    from fastapi import HTTPException
+
+    return HTTPException(413, f"request body too large (max {limit // 1024 // 1024} MB)")
+
+
+class _BodyLimit:
+    """Spend the size budget as the body arrives, not once it has all landed.
+
+    An endpoint cannot enforce it: FastAPI parses the whole multipart body — a
+    file part rolls out of memory into the OS temp dir past 1 MB — *before* the
+    endpoint that measures it is entered, so a cap applied there bounds only what
+    reaches disk, never what the server accepts. Counting at the ASGI boundary is
+    the only place the budget is real, and it covers a chunked body (no
+    Content-Length to pre-check) and the JSON routes alike.
+
+    Raising rather than replying lets the app's own error handling answer, so the
+    413 comes back through the normal response path."""
+
+    def __init__(self, app, max_bytes: int = MAX_BODY_BYTES) -> None:
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        declared = 0
+        for key, value in scope.get("headers", ()):
+            if key == b"content-length":
+                try:
+                    declared = int(value)
+                except ValueError:
+                    declared = 0
+                break
+        seen = 0
+        limit = self.max_bytes
+
+        async def _measured_receive():
+            nonlocal seen
+            if declared > limit:
+                raise _too_large(limit)  # refuse an announced oversize body unread
+            message = await receive()
+            if message["type"] == "http.request":
+                seen += len(message.get("body", b""))
+                if seen > limit:
+                    raise _too_large(limit)
+            return message
+
+        await self.app(scope, _measured_receive, send)
+
+
+def install_guard(app, allowed_hosts: list[str] | None = None, *,
+                  max_body_bytes: int = MAX_BODY_BYTES) -> None:
+    """Attach the body cap + Host-allowlist + anti-CSRF middleware to a FastAPI app.
+
+    One call installs all three. The cap used to be the caller's job, and the
+    server that forgot it (`calibrate run`) accepted unbounded bodies for as long
+    as it existed — so it belongs to whatever installs the guard, not to whoever
+    remembers."""
     from fastapi.responses import JSONResponse
 
     allowed = set(LOOPBACK_HOSTS) | {h.lower() for h in (allowed_hosts or [])}
+
+    # Added first, so the Host guard below wraps it: a foreign Host is rejected
+    # before a single body byte is read, and the 413 still surfaces as a 413
+    # (raising inside receive() under the guard's own wrapper degrades it to a
+    # misleading 400 — anyio's task-group wrapping defeats FastAPI's re-raise).
+    app.add_middleware(_BodyLimit, max_bytes=max_body_bytes)
 
     @app.middleware("http")
     async def _guard(request, call_next):

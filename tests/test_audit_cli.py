@@ -360,3 +360,67 @@ def test_gate_still_rejects_a_candidate_that_loses_on_the_held_out_tests(tmp_pat
     assert "REJECT" in result.output
     assert "baseline 100% → candidate 50%" in result.output
     assert _has_no_traceback(result.output)
+
+
+def _gate_project_pair(tmp_path, baseline_outcomes, candidate_outcomes):
+    """Same shape as ``_gate_project``, but both runs' graded sets are explicit."""
+    from ai_calibrator.eval import save_scorecard
+    from ai_calibrator.models import (BehaviorSpec, CriterionResult, EvalCriterion, Example,
+                                      Project, Scorecard, TestResult)
+    from ai_calibrator.models import TestCase as CaseModel
+    from ai_calibrator.store import save_project
+
+    project = Project(name="p", goal="g")
+    project.spec = BehaviorSpec(
+        goal="g",
+        eval_criteria=[EvalCriterion(id="c1", description="d")],
+        examples=[Example(input="memorized 1", good_output="a", source="human")],
+    )
+    project.tests = [CaseModel(id="ex_1", input="memorized 1", expects=["c1"]),
+                     CaseModel(id="rt_1", input="unseen 1", expects=["c1"]),
+                     CaseModel(id="rt_2", input="unseen 2", expects=["c1"])]
+    save_project(project, tmp_path)
+
+    def _card(run_id, outcomes):
+        return Scorecard(run_id=run_id, subject="subject@test", judge="judge@test", results=[
+            TestResult(test_id=tid, output="o",
+                       criteria=[CriterionResult(criterion_id="c1", passed=ok,
+                                                 score=1.0 if ok else 0.0)])
+            for tid, ok in outcomes])
+
+    save_scorecard(tmp_path, _card("run-0001", baseline_outcomes))
+    save_scorecard(tmp_path, _card("run-0002", candidate_outcomes))
+
+
+def test_gate_refuses_two_runs_whose_held_out_tests_do_not_overlap(tmp_path):
+    """Equal counts, different tests. The baseline graded rt_1 (failed) and the
+    candidate graded rt_2 (passed) — one held-out test each, so a check on the
+    COUNT sees a matched pair and says nothing, and the gate reads
+    "baseline 0% → candidate 100%" as a win off two different exams."""
+    _gate_project_pair(tmp_path,
+                       baseline_outcomes=[("ex_1", True), ("rt_1", False)],
+                       candidate_outcomes=[("ex_1", True), ("rt_2", True)])
+
+    result = runner.invoke(app, ["finetune", str(tmp_path), "--gate",
+                                 "--baseline", "run-0001", "--candidate", "run-0002"])
+    assert result.exit_code == 2, result.output
+    assert "CANNOT JUDGE" in result.output
+    assert "ACCEPT" not in result.output
+    assert _has_no_traceback(result.output)
+
+
+def test_gate_scores_only_the_held_out_tests_both_runs_graded(tmp_path):
+    """A partial overlap is still judgeable — on the shared tests alone. Baseline
+    and candidate share rt_1 (baseline failed it, candidate passed it); the
+    candidate additionally graded rt_2, which the baseline never saw and which
+    therefore cannot count toward either rate."""
+    _gate_project_pair(tmp_path,
+                       baseline_outcomes=[("ex_1", True), ("rt_1", False)],
+                       candidate_outcomes=[("ex_1", True), ("rt_1", True), ("rt_2", False)])
+
+    result = runner.invoke(app, ["finetune", str(tmp_path), "--gate",
+                                 "--baseline", "run-0001", "--candidate", "run-0002"])
+    assert "gating on the 1 held-out test(s) both runs graded" in result.output
+    assert "baseline 0% → candidate 100%" in result.output
+    assert "graded different held-out tests" in result.output   # and says so
+    assert _has_no_traceback(result.output)

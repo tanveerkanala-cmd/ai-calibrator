@@ -300,8 +300,11 @@ def _judge_verdicts(out: Any) -> dict | None:
     """Extract {criterion_id: passed} from a judge output, or None if not one."""
     if isinstance(out, dict) and isinstance(out.get("results"), list):
         # String ids only: an unhashable criterion_id would raise TypeError and
-        # abort the whole prove-it gate, exactly as in eval._judge.
-        return {r["criterion_id"]: bool(r.get("passed"))
+        # abort the whole prove-it gate, exactly as in eval._judge. as_bool, not
+        # bool: a local candidate judge that emits the STRING "false" would
+        # otherwise have every verdict read as a pass, and this is the gate that
+        # decides whether that judge is trustworthy enough to replace the cloud one.
+        return {r["criterion_id"]: as_bool(r.get("passed"))
                 for r in out["results"]
                 if isinstance(r, dict) and isinstance(r.get("criterion_id"), str)}
     return None

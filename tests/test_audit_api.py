@@ -198,3 +198,53 @@ def test_workbench_feedback_still_records_an_ordinary_record(tmp_path):
         "turns": ["can I return after 40 days?"], "output": "sure!", "verdict": "down",
         "correction": "no — the window is 30 days."})
     assert r.status_code == 200 and r.json() == {"recorded": True, "pending": 1}
+
+
+# --- both servers refuse an oversize body, not just one --------------------
+
+def _served(tmp_path, engine):
+    """The `calibrate run` server, seeded with a minimal project."""
+    p = Project(name="my-ai", goal="be helpful")
+    p.spec = BehaviorSpec(goal="be helpful", eval_criteria=[
+        EvalCriterion(id="c1", description="stays helpful", weight=Weight.HIGH)])
+    save_project(p, tmp_path)
+    return TestClient(create_ai_app(tmp_path, engine=engine, guard=False))
+
+
+def test_the_served_ai_refuses_an_oversize_body(tmp_path):
+    """`calibrate run` is the other server: same guard, same `--host` exposure,
+    no authentication. It had no body cap at all, so one request could take the
+    process' memory with it. The cap belongs to install_guard, so it cannot be
+    installed on one server and forgotten on the other."""
+    from ai_calibrator.webguard import MAX_BODY_BYTES
+
+    class _Refuser:
+        name = "e@test"
+
+        def complete(self, prompt, *, system=None, schema=None):  # pragma: no cover - never reached
+            raise AssertionError("the engine must not be reached for a refused body")
+
+    c = _served(tmp_path, _Refuser())
+
+    oversize = "x" * (MAX_BODY_BYTES + 1)
+    r = c.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": oversize}]})
+    assert r.status_code == 413, r.text
+
+    # An announced oversize body is refused without reading it at all.
+    r = c.post("/v1/chat/completions",
+               headers={"content-length": str(MAX_BODY_BYTES + 1), "content-type": "application/json"},
+               content=b'{"messages": []}')
+    assert r.status_code == 413, r.text
+
+
+def test_the_served_ai_still_answers_an_ordinary_request(tmp_path):
+    """The cap must not narrow the normal path."""
+    class _Answerer:
+        name = "e@test"
+
+        def complete(self, prompt, *, system=None, schema=None):
+            return "an answer"
+
+    c = _served(tmp_path, _Answerer())
+    r = c.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "hi"}]})
+    assert r.status_code == 200, r.text

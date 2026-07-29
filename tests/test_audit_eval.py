@@ -295,3 +295,54 @@ def test_a_fully_graded_run_certifies(tmp_path):
 
     stage = next(s for s in result.stages if s.name == "eval")
     assert stage.status == "pass" and result.ok and result.pass_rate == 1.0
+
+
+# --- a score that goes up is a claim, and needs a receipt ------------------
+
+def _report_project(test_ids):
+    from ai_calibrator.models import BehaviorSpec, EvalCriterion, Project, Weight
+    from ai_calibrator.models import TestCase as CaseModel
+
+    p = Project(name="p", goal="g")
+    p.spec = BehaviorSpec(goal="g", eval_criteria=[
+        EvalCriterion(id="c1", description="answers from the documented policy", weight=Weight.HIGH)])
+    p.tests = [CaseModel(id=t, input=f"q {t}", expects=["c1"]) for t in test_ids]
+    return p
+
+
+def _card(outcomes):
+    from ai_calibrator.models import CriterionResult, Scorecard, TestResult
+
+    return Scorecard(run_id="run-0001", results=[
+        TestResult(test_id=tid, output="o",
+                   criteria=[CriterionResult(criterion_id="c1", passed=ok, score=1.0 if ok else 0.0)])
+        for tid, ok in outcomes])
+
+
+def test_deleting_a_failing_test_raises_the_score_and_the_report_says_so():
+    """The confidence divides by the CURRENT suite, so dropping a test the run
+    failed lifts the headline with no new evidence. That can be a legitimate edit,
+    but it cannot be silent."""
+    card = _card([("t1", True), ("t2", False)])
+    before = _report_project(["t1", "t2"])
+    after = _report_project(["t1"])                       # t2 deleted
+
+    cov_before = analyze_coverage(before.spec, before.tests)
+    cov_after = analyze_coverage(after.spec, after.tests)
+    d_before = report_dict(before, cov_before, card)
+    d_after = report_dict(after, cov_after, card)
+
+    assert d_after["confidence"] > d_before["confidence"]  # the number really does move
+    assert d_after["dropped_tests"] == ["t2"] and d_before["dropped_tests"] == []
+
+    text = render_report(after, cov_after, card)
+    assert "no longer in the" in text and "`t2`" in text and "FAILED" in text
+
+
+def test_an_unchanged_suite_reports_nothing_dropped():
+    card = _card([("t1", True), ("t2", False)])
+    project = _report_project(["t1", "t2"])
+    cov = analyze_coverage(project.spec, project.tests)
+
+    assert report_dict(project, cov, card)["dropped_tests"] == []
+    assert "no longer in the" not in render_report(project, cov, card)

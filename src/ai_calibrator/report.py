@@ -43,6 +43,21 @@ def _ungraded_tests(project: Project, latest: Scorecard | None) -> list[str]:
     return sorted({t.id for t in project.tests} - graded)
 
 
+def _dropped_tests(project: Project, latest: Scorecard | None) -> list[str]:
+    """Ids ``latest`` graded that are no longer in the suite — failures first.
+
+    The mirror image of :func:`_ungraded_tests`, and the reason it matters: the
+    confidence divides by the CURRENT suite, so removing a test the run failed
+    raises the headline number without the AI having changed. That can be an
+    honest edit (a test that encoded the wrong rule), but it must never be
+    invisible — a score that goes up is a claim, and this is the receipt for it."""
+    if latest is None:
+        return []
+    current = {t.id for t in project.tests}
+    graded = [r for r in latest.results if r.criteria and r.test_id not in current]
+    return [r.test_id for r in graded if not r.passed] + [r.test_id for r in graded if r.passed]
+
+
 def _suite_pass_rate(project: Project, latest: Scorecard | None) -> float:
     """Pass rate recomputed over the CURRENT suite — the confidence's second factor.
 
@@ -64,6 +79,9 @@ def report_dict(project: Project, coverage: CoverageReport, latest: Scorecard | 
                                              _suite_pass_rate(project, latest), latest is not None),
         "coverage_rate": coverage.coverage_rate,
         "pass_rate": pass_rate if latest else None,
+        # The confidence's second factor, published so every surface shows the
+        # number the headline was actually built from rather than recomputing one.
+        "suite_pass_rate": _suite_pass_rate(project, latest) if latest else None,
         "weighted_score": latest.weighted_score if latest else None,
         "latest_run": latest.run_id if latest else None,
         "standards": len(spec.standards) if spec else 0,
@@ -73,6 +91,7 @@ def report_dict(project: Project, coverage: CoverageReport, latest: Scorecard | 
         "tests": len(project.tests),
         "uncovered_criteria": [c.id for c in coverage.uncovered_criteria],
         "ungraded_tests": _ungraded_tests(project, latest),
+        "dropped_tests": _dropped_tests(project, latest),
         "warnings": coverage.warnings,
     }
 
@@ -83,6 +102,11 @@ def render_report(project: Project, coverage: CoverageReport, latest: Scorecard 
     pass_rate = latest.pass_rate if latest else 0.0
     suite_rate = _suite_pass_rate(project, latest)
     ungraded = _ungraded_tests(project, latest)
+    dropped = _dropped_tests(project, latest)
+    # _dropped_tests puts the failures first; keep that split so the note can name
+    # them — a removed failure is the case that moves the number.
+    failed_dropped = ({r.test_id for r in latest.results if r.criteria and not r.passed}
+                      if latest else set())
     conf = calibration_confidence(coverage.coverage_rate, suite_rate, latest is not None)
     L: list[str] = []
 
@@ -99,6 +123,14 @@ def render_report(project: Project, coverage: CoverageReport, latest: Scorecard 
         if ungraded:
             L += [f"- ⚠ **{len(ungraded)} of {len(project.tests)}** current test(s) have never been "
                   f"graded — `{latest.run_id}` predates them; re-run `calibrate eval`."]
+        if dropped:
+            failed = [t for t in dropped if t in failed_dropped]
+            L += [f"- ⚠ **{len(dropped)}** test(s) `{latest.run_id}` graded are no longer in the "
+                  + (f"suite, **{len(failed)}** of which it FAILED "
+                     f"({', '.join(f'`{t}`' for t in failed[:5])}"
+                     + (", …" if len(failed) > 5 else "") + "). Removing a failing test raises the "
+                     "confidence above without the AI having changed."
+                     if failed else "suite. The rate above is over the tests that remain.")]
         if suite_rate == pass_rate:
             L += ["- Confidence = coverage × pass rate."]
         else:

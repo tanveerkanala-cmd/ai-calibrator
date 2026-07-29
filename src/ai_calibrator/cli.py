@@ -1612,7 +1612,7 @@ def report(
     from .coverage import analyze_coverage
     from .drift import load_scorecard
     from .eval import latest_run_id
-    from .report import calibration_confidence, render_report, save_report
+    from .report import render_report, report_dict, save_report
 
     project = _load(path)
     if project.spec is None:
@@ -1632,10 +1632,19 @@ def report(
 
     markdown = render_report(project, cov, latest)
     out = save_report(path, markdown)
-    conf = calibration_confidence(cov.coverage_rate, latest.pass_rate if latest else 0.0, latest is not None)
-    typer.secho(f"Calibration Confidence: {pct(conf)}", bold=True)
+    # Take the headline from the same place the report and certificate take it.
+    # Recomputing it here published a THIRD number under one name whenever the
+    # suite had grown past the latest run.
+    summary = report_dict(project, cov, latest)
+    typer.secho(f"Calibration Confidence: {pct(summary['confidence'])}", bold=True)
     typer.echo(f"  coverage {pct(cov.coverage_rate)}"
-               + (f" × pass rate {pct(latest.pass_rate)}" if latest else "  (no eval yet — run `calibrate eval`)"))
+               + (f" × pass rate {pct(summary['suite_pass_rate'])}" if latest
+                  else "  (no eval yet — run `calibrate eval`)"))
+    if summary["ungraded_tests"]:
+        n = len(summary["ungraded_tests"])
+        typer.secho(f"  ⚠ {n} of {len(project.tests)} test(s) have never been graded — "
+                    f"`{summary['latest_run']}` predates them; re-run `calibrate eval`.",
+                    fg=typer.colors.YELLOW)
     typer.secho(f"✓ Report → {out}", fg=typer.colors.GREEN)
     if html:
         from .report import render_html_report, save_html_report
@@ -2147,7 +2156,7 @@ def finetune(
         if not (baseline and candidate):
             typer.secho("--gate needs --baseline <run-id> and --candidate <run-id>.", fg=typer.colors.RED)
             raise typer.Exit(code=1)
-        from .finetune import beats_baseline, held_out_rate, training_overlap
+        from .finetune import beats_baseline, graded_held_out, rate_over, training_overlap
 
         base_card, cand_card = _scorecard_or_exit(path, baseline), _scorecard_or_exit(path, candidate)
         typer.echo(f"baseline [{baseline}]: {pct(base_card.pass_rate)}    "
@@ -2161,8 +2170,9 @@ def finetune(
         graded = [r for r in cand_card.results if r.criteria]
         if overlap:
             excl = set(overlap)
-            cand_held, n_held = held_out_rate(cand_card, excl)
-            base_held, n_base = held_out_rate(base_card, excl)
+            cand_ids = graded_held_out(cand_card, excl)
+            base_ids = graded_held_out(base_card, excl)
+            n_held, n_base = len(cand_ids), len(base_ids)
             typer.secho(f"⚠ {len(overlap)} of {len(graded)} graded test(s) use an input that is "
                         "also a TRAINING prompt "
                         f"({', '.join(overlap[:5])}{', …' if len(overlap) > 5 else ''}).",
@@ -2186,12 +2196,26 @@ def finetune(
                 typer.echo(f"  Re-run the baseline eval ({baseline}) on the CURRENT test suite, "
                            "then gate again.")
                 raise typer.Exit(code=2)
-            if n_base != n_held:
+            # Compare over the tests BOTH runs graded. Comparing each run's own
+            # held-out set scores two different exams and subtracts the results:
+            # two runs that graded the same NUMBER of different tests passed the
+            # old count check silently, and the gate accepted on the difference.
+            common = cand_ids & base_ids
+            if not common:
+                typer.secho("✗ CANNOT JUDGE — the baseline and candidate runs share no held-out "
+                            "test, so there is no common ground to compare them on.",
+                            fg=typer.colors.RED, bold=True)
+                typer.echo(f"  Re-run the baseline eval ({baseline}) on the CURRENT test suite, "
+                           "then gate again.")
+                raise typer.Exit(code=2)
+            cand_held, _ = rate_over(cand_card, common)
+            base_held, n_common = rate_over(base_card, common)
+            if len(common) != n_held or len(common) != n_base:
                 typer.secho(f"⚠ The two runs graded different held-out tests ({n_base} in the "
-                            f"baseline, {n_held} in the candidate) — the rates below aren't over "
-                            "the same tests. Re-run the baseline eval on the CURRENT suite.",
-                            fg=typer.colors.YELLOW)
-            typer.echo(f"  gating on the {n_held} held-out test(s): "
+                            f"baseline, {n_held} in the candidate); gating on the "
+                            f"{n_common} they share. Re-run the baseline eval on the CURRENT "
+                            "suite to compare over all of them.", fg=typer.colors.YELLOW)
+            typer.echo(f"  gating on the {n_common} held-out test(s) both runs graded: "
                        f"baseline {pct(base_held)} → candidate {pct(cand_held)}")
             win = cand_held > base_held
         else:

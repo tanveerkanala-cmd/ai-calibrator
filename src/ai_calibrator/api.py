@@ -33,7 +33,7 @@ except ImportError as exc:  # pragma: no cover - depends on optional extra
 from .auth import all_status
 from .models import EngineBinding, Project, TaskType
 from .store import load_project, project_lock, save_project, write_project_gitignore
-from .webguard import install_guard
+from .webguard import MAX_BODY_BYTES, install_guard
 
 WEB_DIR = Path(__file__).parent / "web"
 
@@ -178,66 +178,14 @@ def _engine_http_error(exc: Exception) -> "HTTPException":
     return HTTPException(400, str(exc))
 
 
-MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB cap on material uploads
+# The material-upload ceiling IS the request-body ceiling: an upload is a request
+# body, and one number is easier to reason about than two that must agree.
+MAX_UPLOAD_BYTES = MAX_BODY_BYTES
 
 # How long a request waits for a contended project lock before returning 423.
 # Long enough that quick concurrent writes serialize cleanly; short enough that a
 # request behind a minutes-long engine op fails fast instead of hanging.
 _LOCK_WAIT_SECONDS = 10.0
-
-
-class _BodyTooLarge(HTTPException):
-    """A request body ran past MAX_UPLOAD_BYTES while it was still arriving.
-
-    An HTTPException specifically: it is raised from inside the body read, and
-    FastAPI turns every OTHER exception raised there into a generic 400 "error
-    parsing the body" — which would hide the real reason the upload was refused."""
-
-    def __init__(self) -> None:
-        super().__init__(413, f"request body too large (max {MAX_UPLOAD_BYTES // 1024 // 1024} MB)")
-
-
-class _BodyLimit:
-    """Spend the size budget as the body arrives, not once it has all landed.
-
-    An endpoint cannot enforce it: FastAPI parses the whole multipart body — a
-    file part rolls out of memory into the OS temp dir past 1 MB — *before* the
-    endpoint that measures it is entered, so a cap applied there bounds only what
-    reaches materials/, never what the server accepts. Counting at the ASGI
-    boundary is the only place the budget is real, and it covers a chunked body
-    (no Content-Length to pre-check) and the JSON routes alike.
-
-    Raising rather than replying lets the app's own error handling answer, so the
-    413 comes back through the normal response path."""
-
-    def __init__(self, app) -> None:
-        self.app = app
-
-    async def __call__(self, scope, receive, send):
-        if scope["type"] != "http":
-            return await self.app(scope, receive, send)
-        declared = 0
-        for key, value in scope.get("headers", ()):
-            if key == b"content-length":
-                try:
-                    declared = int(value)
-                except ValueError:
-                    declared = 0
-                break
-        seen = 0
-
-        async def _measured_receive():
-            nonlocal seen
-            if declared > MAX_UPLOAD_BYTES:
-                raise _BodyTooLarge  # refuse an announced oversize body unread
-            message = await receive()
-            if message["type"] == "http.request":
-                seen += len(message.get("body", b""))
-                if seen > MAX_UPLOAD_BYTES:
-                    raise _BodyTooLarge
-            return message
-
-        await self.app(scope, _measured_receive, send)
 
 
 def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | None = None) -> "FastAPI":
@@ -248,11 +196,10 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
     from . import __version__
     app = FastAPI(title="AI Calibrator", version=__version__)
 
-    app.add_middleware(_BodyLimit)
-    # Always enforced — never fully disabled. Shared with `calibrate run`
-    # (runtime.py); see webguard.py for the threat model. Added last, so it wraps
-    # the body limit and a foreign Host is still rejected first.
-    install_guard(app, allowed_hosts)
+    # Always enforced — never fully disabled. Installs the body cap as well as
+    # the Host/Origin guard, and is shared with `calibrate run` (runtime.py) so
+    # neither server can end up with one and not the other. See webguard.py.
+    install_guard(app, allowed_hosts, max_body_bytes=MAX_UPLOAD_BYTES)
 
     @app.exception_handler(RequestValidationError)
     async def _on_validation_error(request, exc: RequestValidationError):

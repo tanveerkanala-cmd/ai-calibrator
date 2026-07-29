@@ -264,6 +264,24 @@ def held_out_rate(card: Scorecard, exclude_ids: set[str]) -> tuple[float, int]:
     return round(sum(1 for r in graded if r.passed) / len(graded), 4), len(graded)
 
 
+def graded_held_out(card: Scorecard, exclude_ids: set[str]) -> set[str]:
+    """Ids of the tests ``card`` actually graded, minus the training prompts."""
+    return {r.test_id for r in card.results if r.criteria and r.test_id not in exclude_ids}
+
+
+def rate_over(card: Scorecard, test_ids: set[str]) -> tuple[float, int]:
+    """(pass_rate, n) over exactly ``test_ids``.
+
+    Two runs are comparable only over the tests they BOTH graded. Scoring each
+    over its own held-out set compares two different exams: when the suite
+    changed between the runs, the rates cannot be subtracted, yet their
+    difference still reads as a result."""
+    graded = [r for r in card.results if r.criteria and r.test_id in test_ids]
+    if not graded:
+        return 0.0, 0
+    return round(sum(1 for r in graded if r.passed) / len(graded), 4), len(graded)
+
+
 def training_overlap(project: Project, card: Scorecard) -> list[str]:
     """Test ids in ``card`` whose input was also a TRAINING prompt.
 
