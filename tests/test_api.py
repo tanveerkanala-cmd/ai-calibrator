@@ -156,7 +156,7 @@ def test_cross_origin_post_is_blocked(tmp_path):
 
 def test_foreign_host_is_blocked(tmp_path):
     c = _client(tmp_path)
-    assert c.get("/api/health").status_code == 200  # default Host "testserver" allowed
+    assert c.get("/api/health").status_code == 200  # loopback Host allowed
     assert c.get("/api/health", headers={"Host": "evil.example"}).status_code == 400
 
 

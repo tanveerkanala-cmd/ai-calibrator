@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from urllib.parse import urlsplit
 
-LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1", "testserver"}
+LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
 
 def install_guard(app, allowed_hosts: list[str] | None = None) -> None:

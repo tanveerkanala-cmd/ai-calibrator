@@ -294,7 +294,7 @@ def test_cross_origin_post_is_blocked(tmp_path):
     # no Origin (scripts/SDKs/TestClient) and same-origin Origin are allowed
     assert c.post("/v1/chat/completions", json=payload).status_code == 200
     assert c.post("/v1/chat/completions", json=payload,
-                  headers={"Origin": "http://testserver"}).status_code == 200
+                  headers={"Origin": "http://localhost"}).status_code == 200
     # cross-origin Origin on a mutating request is rejected (CSRF guard)
     assert c.post("/v1/chat/completions", json=payload,
                   headers={"Origin": "https://evil.example"}).status_code == 403
@@ -304,7 +304,7 @@ def test_foreign_host_is_blocked(tmp_path):
     """DNS rebinding: a Host outside the allowlist is rejected outright."""
     _seed(tmp_path)
     c = _client(tmp_path, RecordingEngine(["ok"]))
-    assert c.get("/").status_code == 200  # default Host "testserver" allowed
+    assert c.get("/").status_code == 200  # loopback Host allowed
     assert c.get("/", headers={"Host": "evil.example"}).status_code == 400
 
 

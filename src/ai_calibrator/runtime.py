@@ -227,8 +227,16 @@ def create_ai_app(project_dir: str | Path, *, engine: Engine | None = None, guar
 
     def _guard_header(response: Response, guard_state: dict) -> None:
         if guard_state:
-            response.headers["x-calibrate-guard"] = guard_state["guard"] + (
+            value = guard_state["guard"] + (
                 ":" + ",".join(guard_state["criteria"]) if guard_state["criteria"] else "")
+            # Criterion ids come from the compiler LLM verbatim, so they can hold
+            # anything a header value cannot: a non-latin-1 character raises on the
+            # way to the wire (killing the very response the flag describes) and a
+            # CR/LF would split the header. Escape to printable ASCII — the full
+            # ids are already in logs/guard.jsonl, and flagging must never take the
+            # endpoint down.
+            escaped = value.encode("ascii", "backslashreplace").decode("ascii")
+            response.headers["x-calibrate-guard"] = "".join(c for c in escaped if 32 <= ord(c) < 127)
 
     @app.post("/v1/chat/completions")
     async def chat(request: Request, response: Response):

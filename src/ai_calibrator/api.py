@@ -186,6 +186,60 @@ MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB cap on material uploads
 _LOCK_WAIT_SECONDS = 10.0
 
 
+class _BodyTooLarge(HTTPException):
+    """A request body ran past MAX_UPLOAD_BYTES while it was still arriving.
+
+    An HTTPException specifically: it is raised from inside the body read, and
+    FastAPI turns every OTHER exception raised there into a generic 400 "error
+    parsing the body" — which would hide the real reason the upload was refused."""
+
+    def __init__(self) -> None:
+        super().__init__(413, f"request body too large (max {MAX_UPLOAD_BYTES // 1024 // 1024} MB)")
+
+
+class _BodyLimit:
+    """Spend the size budget as the body arrives, not once it has all landed.
+
+    An endpoint cannot enforce it: FastAPI parses the whole multipart body — a
+    file part rolls out of memory into the OS temp dir past 1 MB — *before* the
+    endpoint that measures it is entered, so a cap applied there bounds only what
+    reaches materials/, never what the server accepts. Counting at the ASGI
+    boundary is the only place the budget is real, and it covers a chunked body
+    (no Content-Length to pre-check) and the JSON routes alike.
+
+    Raising rather than replying lets the app's own error handling answer, so the
+    413 comes back through the normal response path."""
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        declared = 0
+        for key, value in scope.get("headers", ()):
+            if key == b"content-length":
+                try:
+                    declared = int(value)
+                except ValueError:
+                    declared = 0
+                break
+        seen = 0
+
+        async def _measured_receive():
+            nonlocal seen
+            if declared > MAX_UPLOAD_BYTES:
+                raise _BodyTooLarge  # refuse an announced oversize body unread
+            message = await receive()
+            if message["type"] == "http.request":
+                seen += len(message.get("body", b""))
+                if seen > MAX_UPLOAD_BYTES:
+                    raise _BodyTooLarge
+            return message
+
+        await self.app(scope, _measured_receive, send)
+
+
 def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | None = None) -> "FastAPI":
     # Resolve to an absolute path so the banner / health endpoint are unambiguous
     # from any working directory (a bare relative "projects" reads as a mystery).
@@ -194,8 +248,10 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
     from . import __version__
     app = FastAPI(title="AI Calibrator", version=__version__)
 
+    app.add_middleware(_BodyLimit)
     # Always enforced — never fully disabled. Shared with `calibrate run`
-    # (runtime.py); see webguard.py for the threat model.
+    # (runtime.py); see webguard.py for the threat model. Added last, so it wraps
+    # the body limit and a foreign Host is still rejected first.
     install_guard(app, allowed_hosts)
 
     @app.exception_handler(RequestValidationError)
@@ -238,24 +294,22 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             raise HTTPException(400, f"project {name!r} is invalid or corrupted")
 
     @contextmanager
-    def _locked(name: str):
-        """Serialize a project's read-modify-write across concurrent requests.
+    def _held(d: Path, name: str):
+        """Hold a project's exclusive lock, or give up with 423.
 
-        Yields the project directory with its exclusive lock held, so the
-        enclosed ``load → mutate → save`` can't interleave with another request
-        on the same project (which would lose updates or collide on run ids).
-        404s before locking, so it never creates a stray dir for a missing
-        project."""
+        Poll the lock briefly rather than blocking indefinitely: quick concurrent
+        writes (answers, engine rebinds) serialize within the window and don't
+        lose updates, but a request stuck behind a multi-minute engine op fails
+        fast with 423 instead of hanging the connection — and, with it, one of
+        the threadpool slots the whole server shares.
+
+        Takes the directory rather than the routing key so the routes that must
+        run BEFORE a project exists (create, import, merge) get the same bounded
+        wait as the rest; ``_locked`` layers the 404 on top for the routes that
+        require an existing project."""
         import time
 
         from .locking import LockBusy
-        d = _dir(name)
-        if not (d / "project.yaml").exists():
-            raise HTTPException(404, f"no project {name!r}")
-        # Poll the lock briefly rather than blocking indefinitely: quick concurrent
-        # writes (answers, engine rebinds) serialize within the window and don't
-        # lose updates, but a request stuck behind a multi-minute engine op fails
-        # fast with 423 instead of hanging the connection for minutes.
         lock = project_lock(d, blocking=False)
         deadline = time.monotonic() + _LOCK_WAIT_SECONDS
         while True:
@@ -271,6 +325,21 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             yield d
         finally:
             lock.release()
+
+    @contextmanager
+    def _locked(name: str):
+        """Serialize a project's read-modify-write across concurrent requests.
+
+        Yields the project directory with its exclusive lock held, so the
+        enclosed ``load → mutate → save`` can't interleave with another request
+        on the same project (which would lose updates or collide on run ids).
+        404s before locking, so it never creates a stray dir for a missing
+        project."""
+        d = _dir(name)
+        if not (d / "project.yaml").exists():
+            raise HTTPException(404, f"no project {name!r}")
+        with _held(d, name):
+            yield d
 
     def _state(p: Project, key: str | None = None) -> dict:
         """Project state for the web UI.
@@ -318,7 +387,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         # two concurrent POSTs for the same name can't both pass the check (one
         # wins with 200, the other deterministically gets 409 — never a partial
         # write or a 500).
-        with project_lock(d):
+        with _held(d, name):
             if (d / "project.yaml").exists():
                 raise HTTPException(409, "project already exists")
             save_project(project, d)
@@ -340,7 +409,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         d = _dir(name)
         if not (d / "project.yaml").exists():
             raise HTTPException(404, f"no project {name!r}")
-        with project_lock(d):
+        with _held(d, name):
             shutil.rmtree(d, ignore_errors=True)
         # Second pass AFTER the lock is released. The lock file lives inside the
         # tree and is held open for the duration of the block; Windows refuses to
@@ -374,7 +443,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         target = d / "materials" / Path(filename).name
         if not target.is_file():
             raise HTTPException(404, f"no material {filename!r}")
-        with project_lock(d):
+        with _held(d, name):
             target.unlink(missing_ok=True)
         return {"deleted": filename}
 
@@ -394,21 +463,18 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             raise HTTPException(400, "invalid filename — give the file a plain name under 200 bytes")
         target = mats / base
         # Stream to a unique temp file, then atomically rename into place. A
-        # cap-exceed / disconnect mid-upload leaves no partial file, and two
-        # concurrent uploads of the same name can't interleave bytes — the last
-        # complete one wins cleanly instead of corrupting the target.
+        # disconnect mid-upload leaves no partial file, and two concurrent uploads
+        # of the same name can't interleave bytes — the last complete one wins
+        # cleanly instead of corrupting the target. The size cap is _BodyLimit's:
+        # by the time this runs the body has already been received in full.
         fd, tmp_name = tempfile.mkstemp(dir=str(mats), prefix=".upload-", suffix=".tmp")
         tmp: Path | None = Path(tmp_name)
-        size = 0
         try:
             with os.fdopen(fd, "wb") as out:
                 while True:
                     chunk = await file.read(1024 * 1024)
                     if not chunk:
                         break
-                    size += len(chunk)
-                    if size > MAX_UPLOAD_BYTES:
-                        raise HTTPException(413, "file too large (max 25 MB)")
                     out.write(chunk)
             try:
                 os.replace(tmp, target)
@@ -649,12 +715,19 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         from datetime import datetime, timezone
 
         from .flywheel import append_feedback, read_feedback
+        from .runtime import MAX_CHAT_CHARS
         _load(name)
         if body.verdict not in ("up", "down"):
             raise HTTPException(400, "verdict must be 'up' or 'down'")
         turns = [t for t in body.turns if isinstance(t, str) and t.strip()]
         if not turns or not body.output.strip():
             raise HTTPException(400, "turns and output must be non-empty")
+        # Same cap as the runtime's /v1/feedback, which feeds this same inbox: an
+        # absorbed record becomes a permanent test input sent to BOTH the subject
+        # and the judge on every future eval, so an unbounded payload here is a
+        # one-request, permanent cost amplifier.
+        if sum(len(t) for t in turns) + len(body.output) + len(body.correction or "") > MAX_CHAT_CHARS:
+            raise HTTPException(400, f"feedback too large (>{MAX_CHAT_CHARS} characters)")
         d = _dir(name)
         append_feedback(d, {
             "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -676,8 +749,9 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         from .flywheel import absorb_dict, absorb_feedback
         with _locked(name) as d:
             project = _load(name)
-            result = absorb_feedback(project, d)
-            save_project(project, d)
+            # Save as absorb's commit step, while the records are still in the
+            # inbox: a save that fails leaves them there to absorb again.
+            result = absorb_feedback(project, d, commit=lambda: save_project(project, d))
             if project.spec is not None and project.tests:
                 write_build_bundle(project.spec, project.tests, d)
         out = absorb_dict(result)
@@ -985,7 +1059,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             raise HTTPException(400, "prompt is empty")
         name = _safe(body.name)
         d = root / name
-        with project_lock(d):
+        with _held(d, name):
             if (d / "project.yaml").exists():
                 raise HTTPException(409, "project already exists")
             try:
@@ -1050,7 +1124,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         out_name = _safe(body.out)
         out_dir = root / out_name
         goal = body.goal or first.goal
-        with project_lock(out_dir):
+        with _held(out_dir, out_name):
             if (out_dir / "project.yaml").exists():
                 raise HTTPException(409, "merged project already exists")
             proj = merged_project(out_name, named, goal=goal, task_type=first.task_type,
