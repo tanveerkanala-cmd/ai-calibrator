@@ -137,7 +137,10 @@ def atomic_write_text(path: str | Path, text: str) -> Path:
             fh.flush()
             os.fsync(fh.fileno())
         try:
-            os.chmod(tmp, stat.S_IMODE(target.stat().st_mode))
+            # lstat, not stat: os.replace swaps out the SYMLINK, so following it
+            # would copy the mode of a file this write never touches onto the new
+            # regular file that takes its place.
+            os.chmod(tmp, stat.S_IMODE(target.lstat().st_mode))
         except OSError:
             pass  # no existing target (the common case), or a platform that refuses
         _atomic_replace(tmp, target)
@@ -192,6 +195,14 @@ def save_project(project: Project, path: str | Path) -> Path:
             fh.write(data)
             fh.flush()
             os.fsync(fh.fileno())  # durability: bytes hit disk before the rename
+        try:
+            # Keep the mode the file already has, for the same reason
+            # atomic_write_text does: the temp file carries mkstemp's private
+            # 0600, so without this every save silently reverts a chmod the owner
+            # made deliberately.
+            os.chmod(tmp, stat.S_IMODE(target.lstat().st_mode))
+        except OSError:
+            pass  # first save (the common case), or a platform that refuses
         _atomic_replace(tmp, target)  # atomic on the same filesystem (retries on Windows)
         tmp = None  # ownership transferred to `target`; nothing to clean up
     finally:

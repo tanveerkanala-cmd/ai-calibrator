@@ -341,3 +341,33 @@ def test_every_generated_install_line_names_the_transformers_the_trainer_needs(t
         text = f.read_text(encoding="utf-8")
         assert "transformers>=" in text, f
         assert "transformers>=4.56.2" in text, f
+
+
+def test_a_non_budget_value_error_does_not_advise_lowering_the_cap():
+    """The SDK also raises ValueError when a proxy answers with a content type it
+    cannot parse. Telling that operator to lower their token budget sends them
+    after the wrong problem."""
+    import pytest as _pytest
+
+    from ai_calibrator.engines.base import EngineError
+
+    class _Proxy:
+        def create(self, **kwargs):
+            raise ValueError("Expected JSON response, got text/html")
+
+    eng = _anthropic_engine(16000, _Proxy())
+    with _pytest.raises(EngineError) as exc:
+        eng.complete("hi")
+
+    assert "text/html" in str(exc.value)
+    assert "CALIBRATOR_ANTHROPIC_MAX_TOKENS" not in str(exc.value)
+
+
+def test_an_over_ceiling_env_override_is_clamped_out_loud(monkeypatch, capsys):
+    """Silently honouring a smaller number than the operator set makes the next
+    truncation inexplicable."""
+    from ai_calibrator.engines.anthropic import MAX_NONSTREAMING_TOKENS, _default_max_tokens
+
+    monkeypatch.setenv("CALIBRATOR_ANTHROPIC_MAX_TOKENS", "64000")
+    assert _default_max_tokens() == MAX_NONSTREAMING_TOKENS
+    assert "64000" in capsys.readouterr().err

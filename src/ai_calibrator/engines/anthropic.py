@@ -8,6 +8,7 @@ ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, or an `ant auth login` profile — so
 from __future__ import annotations
 
 import os
+import sys
 from typing import Any
 
 from .base import (
@@ -37,6 +38,12 @@ def _default_max_tokens() -> int:
         try:
             value = int(raw)
             if value > 0:
+                if value > MAX_NONSTREAMING_TOKENS:
+                    # Say so. Silently honouring a smaller number than the one the
+                    # operator set makes the next truncation inexplicable.
+                    print(f"CALIBRATOR_ANTHROPIC_MAX_TOKENS={value} exceeds what one "
+                          f"non-streaming request can carry; using {MAX_NONSTREAMING_TOKENS}.",
+                          file=sys.stderr)
                 return min(value, MAX_NONSTREAMING_TOKENS)
         except ValueError:
             pass  # ignore junk; fall through to the default
@@ -127,10 +134,17 @@ class AnthropicEngine(Engine):
                 # map, so it surfaced as raw SDK text and was reported as bad user
                 # input rather than as an engine failure. Some models cap
                 # non-streaming output far below MAX_NONSTREAMING_TOKENS.
+                #
+                # A ValueError is not proof of that, though: the SDK also raises
+                # one when a proxy answers with a content type it cannot parse. Say
+                # what is known, and only advise lowering the cap when the message
+                # is about the token budget.
+                reason = str(exc).lower()
+                budget = "max_tokens" in reason or "streaming" in reason
                 raise EngineError(
-                    f"Anthropic rejected the request for {self.name} before sending it: {exc}\n"
-                    "  If this model caps non-streaming output, lower it:  "
-                    "CALIBRATOR_ANTHROPIC_MAX_TOKENS=8192 calibrate <command> …"
+                    f"Anthropic rejected the request for {self.name} before sending it: {exc}"
+                    + ("\n  If this model caps non-streaming output, lower it:  "
+                       "CALIBRATOR_ANTHROPIC_MAX_TOKENS=8192 calibrate <command> …" if budget else "")
                 ) from exc
             except Exception as exc:  # map SDK errors (auth/rate-limit/conn/timeout) to friendly text
                 friendly = _friendly_anthropic_error(exc, self.name)
@@ -149,7 +163,8 @@ class AnthropicEngine(Engine):
                     + (f"  Try raising the limit:  CALIBRATOR_ANTHROPIC_MAX_TOKENS={headroom} "
                        "calibrate <command> …"
                        if headroom > self.max_tokens else
-                       "  That is the most one non-streaming request can carry — split the input instead.")
+                       "  That is this tool's ceiling for one non-streaming request — split the "
+                       "input, or raise it and stream if your model supports a larger budget.")
                 )
             # content can be None/empty on a malformed or OpenAI-compatible proxy
             # response — don't let that raise a raw TypeError.

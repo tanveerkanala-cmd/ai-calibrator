@@ -424,3 +424,49 @@ def test_gate_scores_only_the_held_out_tests_both_runs_graded(tmp_path):
     assert "baseline 0% → candidate 100%" in result.output
     assert "graded different held-out tests" in result.output   # and says so
     assert _has_no_traceback(result.output)
+
+
+# --- an ingest that read nothing is not a successful ingest ---------------
+
+def test_ingest_fails_when_no_file_in_a_populated_source_could_be_read(tmp_path, monkeypatch):
+    """The corpus, facts, gaps and index are all replaced with emptiness. Green
+    ✓ and exit 0 would report that as work done."""
+    import ai_calibrator.engines as engines
+    from ai_calibrator.models import Project
+    from ai_calibrator.store import save_project
+
+    class _Engine:
+        name = "fake@test"
+
+        def complete(self, prompt, *, system=None, schema=None):
+            return {"facts": [], "gaps": []}
+
+    monkeypatch.setattr(engines, "get_engine", lambda spec: _Engine())
+
+    project = Project(name="p", goal="g")
+    save_project(project, tmp_path)
+    mats = tmp_path / "materials"
+    (mats / "prices.xlsx").write_bytes(b"PK\x03\x04" + bytes(range(256)) * 10)
+    (mats / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\n" + bytes(range(256)) * 8)
+
+    result = runner.invoke(app, ["ingest", str(tmp_path), "--no-index"])
+
+    assert result.exit_code == 1, result.output
+    assert "✓ Ingested" not in result.output
+    assert "prices.xlsx" in result.output and "logo.png" in result.output
+    assert _has_no_traceback(result.output)
+
+
+def test_import_refuses_a_destination_that_cannot_name_a_project(tmp_path):
+    """`merge` checks this before its interactive loop; `import` derives the name
+    the same way and used to find out only after a billed engine call."""
+    prompt_file = tmp_path / "prompt.txt"
+    prompt_file.write_text("You are a support agent. Be brief.", encoding="utf-8")
+    target = tmp_path / "..."
+
+    result = runner.invoke(app, ["import", str(target), "--goal", "g",
+                                 "--prompt", str(prompt_file)])
+
+    assert result.exit_code == 1, result.output
+    assert "Can't name a project after" in result.output
+    assert _has_no_traceback(result.output)

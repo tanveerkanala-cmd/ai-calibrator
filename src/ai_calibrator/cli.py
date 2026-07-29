@@ -263,7 +263,18 @@ def import_(
                     fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
+    # Same derivation `merge` uses, and the same reason to check it up front: the
+    # name is only validated when the Project is built, which happens after a
+    # billed engine call. A destination that cannot name a project should cost
+    # nothing to find out.
     name = path.resolve().name or "project"
+    from .models import validate_project_name
+    try:
+        validate_project_name(name)
+    except ValueError as exc:
+        typer.secho(f"Can't name a project after {path} — {exc}.", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
     engine_spec = engine
     try:
         eng = get_engine(engine_spec or EngineBinding().compiler)
@@ -502,6 +513,17 @@ def ingest(
             raise typer.Exit(code=1)
 
         save_project(project, path)
+
+    # A populated materials/ that yields nothing is a failure, not a success: the
+    # corpus, the facts, the gaps and the index have all just been replaced with
+    # emptiness, and a green ✓ with exit 0 would report that as work done.
+    if result.skipped and not result.materials:
+        typer.secho(f"✗ None of the {len(result.skipped)} file(s) in {src}/ could be read, so the "
+                    "project now has no materials, facts or gaps.", fg=typer.colors.RED, bold=True)
+        for rel, reason in result.skipped:
+            typer.echo(f"    · {rel} — {reason}")
+        typer.echo("  Convert them to text (or fix the errors above) and ingest again.")
+        raise typer.Exit(code=1)
 
     typer.secho(
         f"✓ Ingested {result.materials} file(s), {result.chunks} chunk(s), "
