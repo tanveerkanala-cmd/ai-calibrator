@@ -21,6 +21,7 @@ it's used, with receipts. Deterministic; no engine.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -101,7 +102,8 @@ def _fb_id_allocator(tests: list[TestCase]):
         yield f"fb_{n}"
 
 
-def absorb_feedback(project: Project, project_dir: str | Path) -> AbsorbResult:
+def absorb_feedback(project: Project, project_dir: str | Path, *,
+                    commit: Callable[[], None] | None = None) -> AbsorbResult:
     """Fold all pending feedback into the spec + tests; archive the records.
 
     Idempotent: consumed records move to ``feedback-absorbed.jsonl`` and
@@ -111,7 +113,14 @@ def absorb_feedback(project: Project, project_dir: str | Path) -> AbsorbResult:
     CONCURRENCY CONTRACT: the caller must hold ``store.project_lock`` (the CLI
     and API do). This function reads the inbox and then EMPTIES it; the lock is
     what stops a concurrent ``append_feedback`` from landing a record in that
-    window and having it destroyed by the truncate."""
+    window and having it destroyed by the truncate.
+
+    DURABILITY CONTRACT: the inbox is the only copy of a live verdict a human
+    took the trouble to give. Pass ``commit`` — the caller's project save — and it
+    runs while the records are still pending, so a save that fails (disk full,
+    permissions, a crash) leaves them there to absorb again instead of draining
+    them into a project that was never written. Re-absorbing costs nothing;
+    losing a flagged exchange the flywheel promised to pin forever does."""
     records = read_feedback(project_dir)
     result = AbsorbResult()
     if not records:
@@ -173,6 +182,11 @@ def absorb_feedback(project: Project, project_dir: str | Path) -> AbsorbResult:
                                           expects=[], notes=f"from live feedback ({verdict})"))
             result.tests_added += 1
             result.test_ids.append(tid)
+
+    # Persist what was folded BEFORE the records stop existing: nothing reads
+    # feedback-absorbed.jsonl back, so a failure after the truncate is final.
+    if commit is not None:
+        commit()
 
     # Archive: consumed records append to the audit trail; the inbox empties.
     logs = Path(project_dir) / "logs"

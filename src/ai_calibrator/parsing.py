@@ -7,13 +7,8 @@ runs without them.
 
 from __future__ import annotations
 
+import codecs
 from pathlib import Path
-
-# Suffixes we read directly as UTF-8 text.
-TEXT_SUFFIXES = {
-    ".txt", ".md", ".markdown", ".rst", ".csv", ".tsv",
-    ".json", ".yaml", ".yml", ".log", ".html", ".htm",
-}
 
 # Extracted-text ceiling for compressed formats. PDF/DOCX are zip/deflate
 # containers: a small file can decompress to gigabytes ("decompression bomb")
@@ -56,16 +51,44 @@ def read_document(path: str | Path) -> str:
         return _read_pdf(p)
     if suffix == ".docx":
         return _read_docx(p)
-    # Default: treat as text. Unknown binary types yield mostly-empty/garbled
-    # text and get filtered out by the caller's `.strip()` check.
+    # Default: treat as text, deciding on the CONTENT rather than the suffix — a
+    # plain-text material can be a .jsonl export, a .tex draft or an extensionless
+    # README, and refusing those would lose real content.
     try:
-        return p.read_text(encoding="utf-8", errors="replace")
+        raw = p.read_bytes()
     except OSError as exc:
         # Do NOT swallow this. Returning "" makes the caller's `.strip()` filter
         # drop the file with no entry in `skipped`, so a permission-denied file —
         # or one deleted between the scan and the read — vanishes from the corpus
         # silently. parse_materials' per-file handler turns this into a report.
         raise ValueError(f"{p.name}: {exc.strerror or exc}") from exc
+    return _decode_text(p.name, raw)
+
+
+def _decode_text(name: str, raw: bytes) -> str:
+    """Decode a material's bytes as text, or raise ValueError if they aren't text.
+
+    Decoding everything with ``errors="replace"`` is what let a .xlsx or a .png
+    count as a successfully ingested material: the mojibake is dense
+    non-whitespace, so the caller's `.strip()` check keeps it, the file's real
+    content never reaches the extractor, and one image can fill the extraction
+    window on its own. Refusing here puts the file in ``skipped``, where the
+    owner can see it and convert it."""
+    if raw.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+        # Notepad's "Unicode" .txt — real text, just not UTF-8. Read as UTF-8 it
+        # decodes to NUL-interleaved characters no reader or embedder can use.
+        try:
+            return raw.decode("utf-16")
+        except UnicodeDecodeError as exc:
+            raise ValueError(f"{name}: looks like UTF-16 text but could not be decoded ({exc.reason})") from exc
+    if b"\x00" in raw:
+        raise ValueError(f"{name}: looks like a binary file (image, spreadsheet, archive), not text")
+    for encoding in ("utf-8-sig", "cp1252"):  # utf-8-sig drops a BOM; cp1252 covers legacy exports
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    raise ValueError(f"{name}: could not be decoded as text (unrecognized encoding)")
 
 
 def _read_pdf(p: Path) -> str:

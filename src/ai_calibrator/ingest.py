@@ -87,6 +87,9 @@ def parse_materials(
 ) -> tuple[list[tuple[Path, str]], list[tuple[str, str]]]:
     """Read every (non-hidden, non-symlink) file under `source_dir` into text.
 
+    "Non-hidden" means no dotted component anywhere under the root, so nothing
+    inside `.git/`, `.ssh/` or `.venv/` is read — not just top-level dotfiles.
+
     Returns ``(docs, skipped)``. Each file is parsed in isolation: a corrupt PDF,
     an oversized file, or a rejected zip bomb is recorded in ``skipped`` as
     ``(relpath, reason)`` and the rest of the batch continues — one bad file
@@ -110,7 +113,13 @@ def parse_materials(
             return str(path)
 
     for p in sorted(base.rglob("*")):
-        if p.name.startswith(".") or p.is_symlink() or not p.is_file():
+        # rglob yields a hidden directory's children as paths of their own, so
+        # skipping `.git` by its leaf name still lets `.git/config` (a remote URL
+        # with a token in it) through. Every component below the root has to be
+        # tested — relative to the root, so a materials dir that is ITSELF hidden
+        # (`--source ~/.config/handbook`) still ingests.
+        if (any(part.startswith(".") for part in p.relative_to(base).parts)
+                or p.is_symlink() or not p.is_file()):
             continue
         # Defense in depth: the resolved path must stay within the materials tree
         # (guards a symlinked *directory* component, and hardlink surprises).
@@ -182,7 +191,8 @@ def extract_gaps(
         "Extract the facts and identify the gaps."
     )
     result = require_object(engine.complete(prompt, system=_EXTRACT_SYSTEM, schema=GAP_SCHEMA), "extractor")
-    facts = [str(f) for f in as_list(result.get("facts")) if not _looks_like_shard(str(f))]
+    facts = [str(f) for f in as_list(result.get("facts"))
+             if not _looks_like_shard(str(f), max_len=MAX_FACT_CHARS, markers=_FACT_SHARD_MARKERS)]
     gaps = [
         Gap(dimension=g["dimension"], why_it_matters=as_opt_str(g.get("why_it_matters")))
         for g in as_list(result.get("gaps"))
@@ -195,17 +205,28 @@ def extract_gaps(
 
 
 # Markers of leaked JSON / prompt scaffolding that a clean natural-language gap
-# label or fact never contains — used to reject malformed engine output.
+# label never contains — used to reject malformed engine output.
 _SHARD_MARKERS = ("```", "{", "}", '":', '["', "]}", "gap_content", "all-important-fields", "---")
 
+# A fact is a whole sentence the materials state, not a label, so the gap-list
+# markers are far too eager for it: a stated rule quotes template placeholders
+# ("open with 'Hi {first_name},'") and em-dash-ish punctuation as a matter of
+# course. Only the strings that no prose ever carries stay.
+_FACT_SHARD_MARKERS = ("```", '["', "]}", "gap_content", "all-important-fields")
+MAX_FACT_CHARS = 2_000  # a sanity ceiling for a dumped blob, not a sentence limit
 
-def _looks_like_shard(text: str) -> bool:
+
+def _looks_like_shard(text: str, *, max_len: int = 200, markers: tuple[str, ...] = _SHARD_MARKERS) -> bool:
     """True if ``text`` looks like a raw JSON/prompt shard rather than clean prose
-    (a code fence, brace/bracket soup, or an obviously truncated fragment)."""
+    (a code fence, brace/bracket soup, or an obviously truncated fragment).
+
+    The defaults describe a gap dimension — a short phrase. Facts are checked with
+    the sentence-scale limits above; grading them as labels silently deleted the
+    compound policies the extractor exists to pull out of the materials."""
     t = text.strip()
-    if not t or len(t) > 200:  # a real gap dimension is a short phrase
+    if not t or len(t) > max_len:
         return True
-    return any(m in t for m in _SHARD_MARKERS)
+    return any(m in t for m in markers)
 
 
 def ingest_project(

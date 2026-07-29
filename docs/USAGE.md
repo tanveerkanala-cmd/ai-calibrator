@@ -156,7 +156,10 @@ provider, so it never needs a key just to configure. (Also `PUT
 Drop your materials — product docs, past replies, policies, FAQs — into
 `materials/`, then ingest. The tool parses and indexes them, and works out the
 **gaps**: the things your materials *don't* settle (tone? refusal policy? edge
-cases?). Needs a configured engine (see §3).
+cases?). Needs a configured engine (see §3). Text of any kind is read (plus
+`.pdf`/`.docx` with the `docs` extra); hidden entries such as `.git/` are never
+read, and anything that isn't text — a spreadsheet, an image — is reported as
+skipped rather than ingested as garbage.
 
 With the `rag` extra installed (`pip install -e '.[rag]'`), ingest builds a local
 vector index (`knowledge.lancedb`) over your materials. **`calibrate eval` and
@@ -252,7 +255,8 @@ before any engine call is spent; a stage that can't run yet (no baseline run, no
 pinned golden) reports *skip* — never a silent pass. `--baseline RUN` drifts
 against a blessed run instead of the previous one; `--json` prints a
 machine-readable result. Exit codes: `0` gate passed, `1` couldn't gate
-(spec/engine problems), `2` the AI failed the gate.
+(spec/engine problems), `2` the AI failed the gate. The snapshot stage compares
+output text, so pin a golden only when the subject is deterministic (see below).
 ```bash
 calibrate ci my-ai --threshold 0.9 --tolerance 0.05   # e.g. nightly, or on every spec change
 ```
@@ -312,6 +316,11 @@ text changed** since (exit 2 on change). Catches tone shifts and semantic drift
 that pass/fail grading is too coarse to notice — run it after an `eval` to see
 not just *whether* the score moved but *what the answers became*.
 
+The comparison is on the output text itself, so it assumes a **deterministic
+subject**: temperature 0, or a pinned local model. A sampling model rewords itself
+between runs with nothing regressed, and `--check` reds out on that noise — there,
+keep it as a local review step rather than a gate.
+
 ### `calibrate report [--html] [--badge]` (no engine — instant)
 Generates a shareable **calibration report** (`calibration-report.md`) — the AI's
 "nutrition label": a **Calibration Confidence** score (coverage × pass rate), the
@@ -333,8 +342,10 @@ partial (`--max-tests` or interrupted) run. (The API also serves it live: `GET /
 ### `calibrate export-evals [--format promptfoo]` (no engine)
 Exports the generated test suite + rubric as a **promptfoo** config
 (`promptfooconfig.yaml`) — the provider-agnostic system prompt becomes a prompt,
-each test an input, each criterion an `llm-rubric` assertion. Run your
-calibrator suite inside promptfoo (`promptfoo eval -c promptfooconfig.yaml`)
+each test an input, each criterion an assertion. A criterion with a deterministic
+`check` exports as promptfoo's own exact assertion for it (`icontains`, `regex`, a
+length test), so it stays code-graded there too; the rest become `llm-rubric`. Run
+your calibrator suite inside promptfoo (`promptfoo eval -c promptfooconfig.yaml`)
 instead of being locked into `calibrate eval`. Anti-lock-in.
 
 ---
@@ -493,6 +504,8 @@ calibrate examples my-support-ai --dedup                  # drop duplicate input
 Column/key names are matched flexibly (`input`/`question`/`prompt`…,
 `good_output`/`output`/`answer`…); a UTF-8 BOM and messy rows are handled, and
 malformed rows are skipped with a per-line report rather than aborting the import.
+(Quoting that breaks the CSV reader itself — a stray `"` swallowing the rest of
+the file into one field — is the exception: that one is reported for the file.)
 Examples also grow from `calibrate teach` and captured eval corrections. Rule of
 thumb: ~50+ before a fine-tune tends to beat the prompt+RAG baseline.
 

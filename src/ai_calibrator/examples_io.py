@@ -62,7 +62,8 @@ def load_examples_report(path: str | Path) -> ImportReport:
     byte-order mark (common in Excel/CRM exports) doesn't poison the first
     header/field. Malformed rows are skipped WITH a reason and file line number
     rather than aborting the whole import. Raises ValueError only when the file
-    is missing/unreadable/unsupported, or yields no usable examples at all."""
+    is missing/unreadable/unsupported, cannot be parsed at all (a CSV whose
+    quoting breaks the reader mid-field), or yields no usable examples."""
     p = Path(path)
     if not p.exists():
         raise ValueError(f"No such file: {p}")
@@ -79,7 +80,18 @@ def load_examples_report(path: str | Path) -> ImportReport:
     # (row_dict_or_None, file_line_number) pairs — a None row is already malformed.
     indexed: list[tuple[object, int]]
     if suffix == ".csv":
-        indexed = _parse_csv(text)
+        # A csv.Error is NOT a ValueError, so an unguarded parse escapes the CLI's
+        # `except ValueError` and reaches the user as a raw traceback. It is a
+        # whole-file failure, not a per-row one: the reader is mid-field when it
+        # gives up, so there is no row to attribute it to.
+        try:
+            indexed = _parse_csv(text)
+        except csv.Error as exc:
+            raise ValueError(
+                f"{p.name} could not be read as CSV: {exc}. The likeliest cause is an unbalanced "
+                'double-quote (") in a cell — everything after it reads as one giant field. '
+                'Escape it as "" and retry.'
+            ) from exc
     elif suffix == ".jsonl":
         indexed = []
         for lineno, ln in enumerate(text.splitlines(), start=1):

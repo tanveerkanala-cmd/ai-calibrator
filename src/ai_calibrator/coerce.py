@@ -39,6 +39,13 @@ def safe_token(value: str, field: str) -> str:
     # and could point a generated FROM/output line at the wrong path.
     if ".." in value or value.startswith("/") or value.endswith("/"):
         raise ValueError(f"{field} must not contain '..' or a leading/trailing '/'; got {value!r}")
+    # The charset permits "-", so also reject a leading one: the generated
+    # Modelfile and README put this token straight onto a command line
+    # ("ollama pull <token>"), where "-rf" reads as an option, not a model. No
+    # real model id or output dir starts with a hyphen.
+    if value.startswith("-"):
+        raise ValueError(f"{field} must not start with '-' (it would read as a command-line "
+                         f"option where it is interpolated); got {value!r}")
     return value
 
 
