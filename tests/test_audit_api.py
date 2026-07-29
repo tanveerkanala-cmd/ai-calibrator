@@ -281,3 +281,36 @@ def test_a_name_that_already_exists_answers_409_even_while_the_project_is_busy(t
 
         r = c.post("/api/import", json={"name": "p", "goal": "g", "prompt": "be nice"})
         assert r.status_code == 409, r.text
+
+
+# --- the guard's port handling, and the cap on routes that read no body ----
+
+@pytest.mark.parametrize("host,expected", [
+    ("localhost:8765", 200),      # what a real browser sends
+    ("127.0.0.1:8765", 200),
+    ("[::1]:8765", 200),
+    ("localhost", 200),
+    ("evil.example:8765", 400),   # a port must not launder a foreign host
+    ("evil.example", 400),
+])
+def test_the_host_allowlist_ignores_the_port_but_not_the_host(tmp_path, host, expected):
+    """The suite addresses its clients portlessly, so nothing otherwise exercises
+    the guard's port-stripping — a guard that rejected every Host carrying a port
+    would pass the whole suite while refusing every real browser request."""
+    c = TestClient(create_app(tmp_path))
+    assert c.get("/api/health", headers={"Host": host}).status_code == expected
+
+
+def test_a_declared_oversize_body_is_refused_on_a_route_that_reads_no_body(tmp_path, monkeypatch):
+    """The budget is only spent by a handler that READS the body, so a route with
+    no body parameter — and every GET — would accept a declared gigabyte without
+    the cap ever being consulted."""
+    monkeypatch.setattr(api, "MAX_UPLOAD_BYTES", 4096)
+    c = TestClient(create_app(tmp_path))
+    assert c.post("/api/projects", json={"name": "p", "goal": "g"}).status_code == 200
+
+    for method, url in (("GET", "/api/projects"), ("POST", "/api/projects/p/compile")):
+        r = c.request(method, url, headers={"content-length": "1073741824",
+                                            "content-type": "application/json"},
+                      content=b"{}")
+        assert r.status_code == 413, (method, url, r.text)

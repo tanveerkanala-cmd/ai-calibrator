@@ -496,11 +496,14 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
     def submit_answers(name: str, body: AnswersBody):
         with _locked(name) as d:
             project = _load(name)
-            by_id = {it.id: it for it in project.interview}
+            # Apply to EVERY item whose id matches, exactly as the CLI does — a
+            # dict-by-id keeps only the last of any duplicate-id items (possible
+            # via a hand-edited project.yaml), silently dropping an answer the
+            # owner gave.
             applied = 0
-            for qid, ans in body.answers.items():
-                if qid in by_id:
-                    by_id[qid].answer = ans
+            for it in project.interview:
+                if it.id in body.answers:
+                    it.answer = body.answers[it.id]
                     applied += 1
             save_project(project, d)
         return {"applied": applied, "state": _state(project, name)}

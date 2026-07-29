@@ -20,6 +20,7 @@ module never requires the ``api`` extra (same lazy-import rule as runtime.py).
 
 from __future__ import annotations
 
+import json
 from urllib.parse import urlsplit
 
 LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
@@ -40,7 +41,11 @@ def _too_large(limit: int):
     without the ``api`` extra."""
     from fastapi import HTTPException
 
-    return HTTPException(413, f"request body too large (max {limit // 1024 // 1024} MB)")
+    return HTTPException(413, _too_large_detail(limit))
+
+
+def _too_large_detail(limit: int) -> str:
+    return f"request body too large (max {limit // 1024 // 1024} MB)"
 
 
 class _BodyLimit:
@@ -73,6 +78,17 @@ class _BodyLimit:
                 break
         seen = 0
         limit = self.max_bytes
+
+        if declared > limit:
+            # Answer here rather than inside the body read: the budget is only
+            # spent by a handler that actually READS the body, so a route with no
+            # body parameter (and every GET) would otherwise accept a declared
+            # gigabyte without ever consulting the cap.
+            await send({"type": "http.response.start", "status": 413,
+                        "headers": [(b"content-type", b"application/json")]})
+            await send({"type": "http.response.body",
+                        "body": json.dumps({"detail": _too_large_detail(limit)}).encode()})
+            return
 
         async def _measured_receive():
             nonlocal seen
