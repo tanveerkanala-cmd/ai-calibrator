@@ -17,7 +17,7 @@ from .checks import run_check_turns
 from .coerce import as_bool, as_list, as_opt_str, as_str, is_str
 from .compile import render_system_prompt
 from .engines.base import Engine, require_object
-from .models import CriterionResult, Project, Scorecard, TestResult
+from .models import CriterionResult, Project, Scorecard, TestResult, test_input_hash
 from .store import atomic_write_text
 
 JUDGE_SCHEMA = {
@@ -316,7 +316,8 @@ def run_eval(
                 if cid in graded:
                     graded[cid].weight = crit_by_id[cid].weight
                     crs.append(graded[cid])
-            results.append(TestResult(test_id=test.id, output=output, criteria=crs))
+            results.append(TestResult(test_id=test.id, output=output, criteria=crs,
+                                      input_hash=test_input_hash(test)))
     except KeyboardInterrupt:
         # Ctrl-C mid-run: surface what completed so the caller can still
         # save a partial scorecard instead of losing every graded test.

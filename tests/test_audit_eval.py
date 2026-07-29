@@ -366,3 +366,79 @@ def test_a_required_term_is_still_satisfied_by_the_turn_that_says_it():
     cr = _multi_turn_verdict(_checked("contains", "30-day"),
                              "Our policy is a 30-day window.", "Happy to help!")
     assert cr.passed
+
+
+# --- a test id is a slot, not an identity ----------------------------------
+
+def test_recompiled_tests_are_not_credited_with_the_old_run_verdicts(tmp_path):
+    """`compile` mints t1..tN positionally and regenerates the whole range, so the
+    ordinary loop — compile, eval, answer more questions, compile again — replaces
+    every probe with different text under the SAME id. Crediting the old run's
+    passes to them reports behavior that has never been executed as proven."""
+    from ai_calibrator.models import BehaviorSpec, EvalCriterion, Project, Weight
+    from ai_calibrator.models import TestCase as CaseModel
+
+    def _project(inputs):
+        p = Project(name="p", goal="g")
+        p.spec = BehaviorSpec(goal="g", eval_criteria=[
+            EvalCriterion(id="c1", description="on policy", weight=Weight.HIGH)])
+        p.tests = [CaseModel(id=f"t{i}", input=text, expects=["c1"])
+                   for i, text in enumerate(inputs, start=1)]
+        return p
+
+    before = _project(["what is the return window?", "do you price match?"])
+    card = run_eval(before, ScriptedSubject("a", "b"), PassJudge())
+    assert card.pass_rate == 1.0
+    assert all(r.input_hash for r in card.results)      # the run records WHAT it asked
+
+    cov = analyze_coverage(before.spec, before.tests)
+    assert report_dict(before, cov, card)["ungraded_tests"] == []
+
+    # Same ids, different questions — what a second `compile` produces.
+    after = _project(["can I return a gift?", "is shipping free?"])
+    d = report_dict(after, analyze_coverage(after.spec, after.tests), card)
+
+    assert d["ungraded_tests"] == ["t1", "t2"]
+    assert d["suite_pass_rate"] == 0.0 and d["confidence"] == 0.0
+    assert d["dropped_tests"] == ["t1", "t2"]           # and the old ones are named as gone
+
+
+def test_a_scorecard_without_content_hashes_still_reports_as_it_did(tmp_path):
+    """Existing projects must not have their reports invalidated: a result written
+    before the hash existed is matched by id, exactly as before."""
+    from ai_calibrator.models import CriterionResult, Scorecard, TestResult
+
+    project = _report_project(["t1", "t2"])
+    legacy = Scorecard(run_id="run-0001", results=[
+        TestResult(test_id=t, output="o",
+                   criteria=[CriterionResult(criterion_id="c1", passed=True, score=1.0)])
+        for t in ("t1", "t2")])
+    assert all(r.input_hash is None for r in legacy.results)
+
+    d = report_dict(project, analyze_coverage(project.spec, project.tests), legacy)
+    assert d["ungraded_tests"] == [] and d["suite_pass_rate"] == 1.0
+
+
+def test_an_unreadable_golden_fails_the_gate_instead_of_skipping_it(tmp_path):
+    """`load_golden` answers None for "absent" and for "corrupt" alike, so the gate
+    could skip a pinned check that a bad edit or an unresolved merge conflict had
+    silently disabled — turning a FAILING snapshot gate into a passing one."""
+    from ai_calibrator.ci import run_ci
+    from ai_calibrator.snapshot import GOLDEN_FILE
+
+    (tmp_path / GOLDEN_FILE).write_text("<<<<<<< HEAD\n{}\n=======\n", encoding="utf-8")
+    result = run_ci(_gate_project(), _Subject(), _PartialJudge("nothing matches"),
+                    project_dir=tmp_path, threshold=0.8)
+
+    stage = next(s for s in result.stages if s.name == "snapshot")
+    assert stage.status == "fail" and "could not be read" in stage.detail
+    assert not result.ok
+
+
+def test_no_golden_at_all_still_skips(tmp_path):
+    from ai_calibrator.ci import run_ci
+
+    result = run_ci(_gate_project(), _Subject(), _PartialJudge("nothing matches"),
+                    project_dir=tmp_path, threshold=0.8)
+    stage = next(s for s in result.stages if s.name == "snapshot")
+    assert stage.status == "skip" and result.ok

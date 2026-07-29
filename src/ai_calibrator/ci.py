@@ -28,7 +28,7 @@ from .eval import latest_run_id, next_run_id, run_eval, save_scorecard
 from .fmt import pct, pct_delta
 from .lint import lint_spec, lint_unknown_fields
 from .models import Project, Scorecard
-from .snapshot import compare, load_golden, outputs_of
+from .snapshot import GOLDEN_FILE, compare, load_golden, outputs_of
 from .store import atomic_write_text
 
 GATE_FILE = "last-gate.json"  # under <project>/evals/
@@ -151,6 +151,17 @@ def _drift_stage(project_dir: str | Path, baseline_id: str | None, card: Scoreca
 def _snapshot_stage(project_dir: str | Path, card: Scorecard) -> CiStage:
     golden = load_golden(project_dir)
     if golden is None:
+        # load_golden answers None for "absent" AND for "present but unreadable"
+        # — deliberately, so a hand-edited file cannot traceback. The gate must
+        # tell them apart: a golden that exists and cannot be parsed (a bad edit,
+        # an unresolved merge conflict, a truncated write) is a pinned check that
+        # is no longer being run, and skipping it silently turns a FAILING
+        # snapshot gate into a passing one.
+        if (Path(project_dir) / GOLDEN_FILE).exists():
+            return CiStage("snapshot", "fail",
+                           f"{GOLDEN_FILE} exists but could not be read as pinned outputs — "
+                           "the snapshot check is not running. Fix the file, or re-pin with "
+                           "`calibrate snapshot`.")
         return CiStage("snapshot", "skip", "no golden pinned — `calibrate snapshot` to pin outputs")
     diff = compare(golden, outputs_of(card))
     if diff.drifted:

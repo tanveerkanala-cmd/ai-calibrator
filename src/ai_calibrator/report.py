@@ -13,9 +13,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from collections import Counter
+
 from .coverage import CoverageReport
 from .fmt import pct
-from .models import BehaviorSpec, Project, Scorecard
+from .models import BehaviorSpec, Project, Scorecard, test_input_hash
 from .store import atomic_write_text
 
 
@@ -30,21 +32,46 @@ def calibration_confidence(coverage_rate: float, pass_rate: float, has_eval: boo
     return round(coverage_rate * pass_rate, 4)
 
 
+def _matches(test, result) -> bool:
+    """Does ``result`` record a run of ``test``?
+
+    The id alone is not identity: `compile` mints t1..tN positionally and
+    regenerates the whole range every time it runs, so the ordinary workflow
+    (compile -> eval -> answer more questions -> compile -> report) replaces every
+    probe with different text under the same id. Matching on the id alone hands
+    an old run's verdicts to tests that have never been executed — exactly the
+    unearned credit the ungraded/dropped receipts exist to prevent.
+
+    A result with no recorded hash predates the field. It is matched by id, so
+    existing scorecards keep reporting exactly as they did; every run from here
+    on records the content and gets the stricter check.
+    """
+    if result.test_id != test.id:
+        return False
+    return result.input_hash is None or result.input_hash == test_input_hash(test)
+
+
+def _graded(latest: Scorecard | None) -> list:
+    return [r for r in latest.results if r.criteria] if latest else []
+
+
 def _ungraded_tests(project: Project, latest: Scorecard | None) -> list[str]:
     """Ids of tests in the CURRENT suite that ``latest`` never graded.
 
     A scorecard is a claim about the suite as it stood when the run happened, and
     a run that was full when it ran keeps saying so forever. Every command that
     teaches the AI something new — `absorb`, `redteam --promote`,
-    `examples-to-tests` — grows the suite past the newest scorecard."""
+    `examples-to-tests` — grows the suite past the newest scorecard, and `compile`
+    rewrites the probes under their existing ids."""
     if latest is None:
         return []
-    graded = {r.test_id for r in latest.results if r.criteria}
-    return sorted({t.id for t in project.tests} - graded)
+    graded = _graded(latest)
+    return sorted(t.id for t in project.tests
+                  if not any(_matches(t, r) for r in graded))
 
 
 def _dropped_tests(project: Project, latest: Scorecard | None) -> list[str]:
-    """Ids ``latest`` graded that are no longer in the suite — failures first.
+    """Ids ``latest`` graded that the CURRENT suite no longer asks — failures first.
 
     The mirror image of :func:`_ungraded_tests`, and the reason it matters: the
     confidence divides by the CURRENT suite, so removing a test the run failed
@@ -53,9 +80,9 @@ def _dropped_tests(project: Project, latest: Scorecard | None) -> list[str]:
     invisible — a score that goes up is a claim, and this is the receipt for it."""
     if latest is None:
         return []
-    current = {t.id for t in project.tests}
-    graded = [r for r in latest.results if r.criteria and r.test_id not in current]
-    return [r.test_id for r in graded if not r.passed] + [r.test_id for r in graded if r.passed]
+    gone = [r for r in _graded(latest)
+            if not any(_matches(t, r) for t in project.tests)]
+    return [r.test_id for r in gone if not r.passed] + [r.test_id for r in gone if r.passed]
 
 
 def _suite_pass_rate(project: Project, latest: Scorecard | None) -> float:
@@ -67,8 +94,19 @@ def _suite_pass_rate(project: Project, latest: Scorecard | None) -> float:
     unproven, and unproven behavior cannot be credited as passing."""
     if latest is None or not project.tests:
         return 0.0
-    passed = {r.test_id for r in latest.results if r.criteria and r.passed}
-    return sum(1 for t in project.tests if t.id in passed) / len(project.tests)
+    # Consume each passing result at most once. Two suite rows sharing an id
+    # otherwise both claim the same verdict, which turns a duplicated failing
+    # test into a pass.
+    available = Counter(id(r) for r in _graded(latest) if r.passed)
+    passing = [r for r in _graded(latest) if r.passed]
+    credited = 0
+    for test in project.tests:
+        for r in passing:
+            if available[id(r)] and _matches(test, r):
+                available[id(r)] -= 1
+                credited += 1
+                break
+    return credited / len(project.tests)
 
 
 def report_dict(project: Project, coverage: CoverageReport, latest: Scorecard | None) -> dict:

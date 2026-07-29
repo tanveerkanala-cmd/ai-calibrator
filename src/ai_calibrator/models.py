@@ -192,6 +192,13 @@ class TestResult(PreservingModel):
     test_id: str
     output: str
     criteria: list[CriterionResult] = Field(default_factory=list)
+    # WHAT was asked, not just which slot asked it. `compile` mints test ids
+    # positionally (t1, t2, …) and regenerates the whole t* range on every run,
+    # so one id routinely names different content over time — and matching a
+    # scorecard to the current suite by id alone credits an old run's verdicts to
+    # tests that have never been executed. None on scorecards written before this
+    # field existed: that means "unknown", never "matches".
+    input_hash: str | None = None
 
     @property
     def passed(self) -> bool:
@@ -289,6 +296,17 @@ _WINDOWS_RESERVED_NAMES = frozenset(
     | {f"COM{i}" for i in range(1, 10)}
     | {f"LPT{i}" for i in range(1, 10)}
 )
+
+
+def test_input_hash(test: "TestCase") -> str:
+    """Content fingerprint of what a test actually asks.
+
+    Covers the follow-ups as well as the opening turn: a multi-turn test whose
+    later turns changed is a different question, however stable its id."""
+    import hashlib
+
+    payload = "\x00".join([test.input, *test.follow_ups])
+    return hashlib.sha256(payload.encode("utf-8", "surrogatepass")).hexdigest()[:16]
 
 
 def validate_project_name(v: object) -> str:
