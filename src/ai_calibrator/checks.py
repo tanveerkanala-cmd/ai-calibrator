@@ -71,3 +71,34 @@ def run_check(check: Check, output: str) -> tuple[bool, str]:
         ok = bool(text.strip())
         return ok, "non-empty" if ok else "empty output"
     return False, f"unknown check kind {kind!r}"  # unreachable via the Literal type
+
+
+def run_check_turns(check: Check, replies: list[str]) -> tuple[bool, str]:
+    """Grade a conversation's assistant replies → (passed, rationale).
+
+    Each reply is a whole answer, so the length and emptiness checks apply to
+    every reply on its own rather than to their concatenation: three 49-character
+    replies do not violate ``max_chars 50``, and a turn that says nothing fails
+    ``non_empty`` however chatty its neighbours were. That is also the granularity
+    the runtime guard enforces on a live answer, so what the eval certifies is
+    what serving allows.
+
+    ``contains``/``regex`` are the exception: they ask whether the conversation
+    *carries* something, which any one turn can settle — a closing "happy to
+    help!" must not fail a criterion the substantive turn satisfied. Grading them
+    reply by reply also stops a pattern from matching across the boundary between
+    two replies, text no answer ever produced.
+    """
+    if len(replies) <= 1:  # single-turn: graded exactly as it always has been
+        return run_check(check, replies[0] if replies else "")
+    verdicts = [run_check(check, reply) for reply in replies]
+    if check.kind in ("contains", "regex"):
+        for i, (ok, why) in enumerate(verdicts, start=1):
+            if ok:
+                return True, f"turn {i}: {why}"
+        return verdicts[0]  # no turn carried it — every rationale says the same thing
+    for i, (ok, why) in enumerate(verdicts, start=1):
+        if not ok:
+            return False, f"turn {i}: {why}"
+    # Never a summed measurement here: no single answer ever had it.
+    return True, f"all {len(replies)} turns pass {check.kind}" + (f" {check.value!r}" if check.value else "")

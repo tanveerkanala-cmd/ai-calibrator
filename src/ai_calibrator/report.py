@@ -30,11 +30,38 @@ def calibration_confidence(coverage_rate: float, pass_rate: float, has_eval: boo
     return round(coverage_rate * pass_rate, 4)
 
 
+def _ungraded_tests(project: Project, latest: Scorecard | None) -> list[str]:
+    """Ids of tests in the CURRENT suite that ``latest`` never graded.
+
+    A scorecard is a claim about the suite as it stood when the run happened, and
+    a run that was full when it ran keeps saying so forever. Every command that
+    teaches the AI something new — `absorb`, `redteam --promote`,
+    `examples-to-tests` — grows the suite past the newest scorecard."""
+    if latest is None:
+        return []
+    graded = {r.test_id for r in latest.results if r.criteria}
+    return sorted({t.id for t in project.tests} - graded)
+
+
+def _suite_pass_rate(project: Project, latest: Scorecard | None) -> float:
+    """Pass rate recomputed over the CURRENT suite — the confidence's second factor.
+
+    ``Scorecard.pass_rate`` divides by what that run graded, which is the honest
+    number *for that run*. Confidence is a claim about the AI as configured now,
+    so it divides by the suite as it stands now: a test no run has executed is
+    unproven, and unproven behavior cannot be credited as passing."""
+    if latest is None or not project.tests:
+        return 0.0
+    passed = {r.test_id for r in latest.results if r.criteria and r.passed}
+    return sum(1 for t in project.tests if t.id in passed) / len(project.tests)
+
+
 def report_dict(project: Project, coverage: CoverageReport, latest: Scorecard | None) -> dict:
     pass_rate = latest.pass_rate if latest else 0.0
     spec = project.spec
     return {
-        "confidence": calibration_confidence(coverage.coverage_rate, pass_rate, latest is not None),
+        "confidence": calibration_confidence(coverage.coverage_rate,
+                                             _suite_pass_rate(project, latest), latest is not None),
         "coverage_rate": coverage.coverage_rate,
         "pass_rate": pass_rate if latest else None,
         "weighted_score": latest.weighted_score if latest else None,
@@ -45,6 +72,7 @@ def report_dict(project: Project, coverage: CoverageReport, latest: Scorecard | 
         "criteria": len(spec.eval_criteria) if spec else 0,
         "tests": len(project.tests),
         "uncovered_criteria": [c.id for c in coverage.uncovered_criteria],
+        "ungraded_tests": _ungraded_tests(project, latest),
         "warnings": coverage.warnings,
     }
 
@@ -53,7 +81,9 @@ def render_report(project: Project, coverage: CoverageReport, latest: Scorecard 
     """Render the calibration report as Markdown."""
     spec = project.spec or BehaviorSpec(goal=project.goal, task_type=project.task_type)
     pass_rate = latest.pass_rate if latest else 0.0
-    conf = calibration_confidence(coverage.coverage_rate, pass_rate, latest is not None)
+    suite_rate = _suite_pass_rate(project, latest)
+    ungraded = _ungraded_tests(project, latest)
+    conf = calibration_confidence(coverage.coverage_rate, suite_rate, latest is not None)
     L: list[str] = []
 
     L += [f"# Calibration Report — {project.name}", ""]
@@ -66,7 +96,14 @@ def render_report(project: Project, coverage: CoverageReport, latest: Scorecard 
         L += [f"- Latest pass rate: **{pct(pass_rate)}** (run `{latest.run_id}`)"]
         L += [f"- Weighted score: **{pct(latest.weighted_score)}** "
               "(criteria weighted high=3 / medium=2 / low=1 — how much of what *matters* passed)"]
-        L += ["- Confidence = coverage × pass rate."]
+        if ungraded:
+            L += [f"- ⚠ **{len(ungraded)} of {len(project.tests)}** current test(s) have never been "
+                  f"graded — `{latest.run_id}` predates them; re-run `calibrate eval`."]
+        if suite_rate == pass_rate:
+            L += ["- Confidence = coverage × pass rate."]
+        else:
+            L += [f"- Confidence = coverage × **{pct(suite_rate)}**, the pass rate recomputed over "
+                  "the tests in the CURRENT suite."]
     else:
         L += ["- Latest pass rate: — (no eval yet — run `calibrate eval`)"]
         L += ["- Confidence is 0 until the AI is evaluated: untested behavior is uncalibrated."]
@@ -100,8 +137,16 @@ def render_report(project: Project, coverage: CoverageReport, latest: Scorecard 
             for r in fails[:10]:
                 why = "; ".join(c.rationale or c.criterion_id for c in r.criteria if not c.passed) or "—"
                 L += [f"  - `{r.test_id}`: {why}"]
+        elif ungraded:
+            # "No failing tests" would be a flat falsehood about the tests it skipped.
+            n_graded = len([r for r in latest.results if r.criteria])
+            L += [f"- ✓ No failures among the {n_graded} test(s) this run graded."]
         else:
             L += ["- ✓ No failing tests."]
+        if ungraded:
+            shown = ", ".join(f"`{t}`" for t in ungraded[:10])
+            more = f" (+{len(ungraded) - 10} more)" if len(ungraded) > 10 else ""
+            L += [f"- ⚠ Never graded by this run: {shown}{more}"]
         L += [""]
 
     L += ["## Knowledge sources", ""]
@@ -195,7 +240,7 @@ _HTML_PAGE = """<!doctype html>
 </style></head><body>
 <h1>Calibration Certificate — {name}</h1>
 <p class="goal">{goal}</p>
-<p class="conf {conf_class}">{confidence_pct}<small>calibration confidence = behavioral coverage × pass rate</small></p>
+<p class="conf {conf_class}">{confidence_pct}<small>calibration confidence = {conf_formula}</small></p>
 <table>
 <tr><th>Measure</th><th>Value</th></tr>
 {measure_rows}
@@ -225,7 +270,12 @@ def render_html_report(project: Project, coverage: CoverageReport, latest: Score
     from .ci import certification_status, latest_gate
 
     pass_rate = latest.pass_rate if latest else 0.0
-    conf = calibration_confidence(coverage.coverage_rate, pass_rate, latest is not None)
+    suite_rate = _suite_pass_rate(project, latest)
+    conf = calibration_confidence(coverage.coverage_rate, suite_rate, latest is not None)
+    # The subtitle is the reader's only way to reconcile the headline with the rows
+    # below it, so it has to name the rate the headline was actually built from.
+    conf_formula = ("behavioral coverage × pass rate" if suite_rate == pass_rate else
+                    "behavioral coverage × pass rate over the CURRENT test suite")
     status, detail = certification_status(project, project_dir)
     conf_class = "pass" if status == "pass" and conf >= 0.8 else ("fail" if status == "fail" else "warn")
 
@@ -233,8 +283,13 @@ def render_html_report(project: Project, coverage: CoverageReport, latest: Score
                  f"{pct(coverage.coverage_rate)} ({len(coverage.covered_criteria)}/{coverage.total_criteria} criteria tested)")]
     if latest:
         graded = [r for r in latest.results if r.criteria]
+        n_tests = len(project.tests)
         measures += [("Pass rate", f"{pct(pass_rate)} ({sum(1 for r in graded if r.passed)}/{len(graded)} tests)"),
-                     ("Weighted score", f"{pct(latest.weighted_score)} (high=3 · medium=2 · low=1)")]
+                     ("Weighted score", f"{pct(latest.weighted_score)} (high=3 · medium=2 · low=1)"),
+                     # Without this the coverage and pass-rate rows sit side by side
+                     # counting two different test sets, and nothing says so.
+                     ("Suite coverage of this run",
+                      f"{n_tests - len(_ungraded_tests(project, latest))}/{n_tests} current test(s) graded")]
     else:
         measures += [("Pass rate", "— (no eval yet)")]
     measures += [("Certification", f"{status} — {detail}")]
@@ -261,6 +316,7 @@ def render_html_report(project: Project, coverage: CoverageReport, latest: Score
     from datetime import datetime, timezone
     return _HTML_PAGE.format(
         name=_esc(project.name), goal=_esc(project.goal), confidence_pct=pct(conf), conf_class=conf_class,
+        conf_formula=conf_formula,
         measure_rows=measure_rows, gate_rows=gate_rows, criteria_rows=criteria_rows,
         date=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
         run_note=f" (`{_esc(latest.run_id)}`)" if latest else "",

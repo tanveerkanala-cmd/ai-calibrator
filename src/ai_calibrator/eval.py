@@ -13,7 +13,7 @@ import math
 from pathlib import Path
 from typing import Callable, Optional
 
-from .checks import run_check
+from .checks import run_check_turns
 from .coerce import as_bool, as_list, as_opt_str, as_str, is_str
 from .compile import render_system_prompt
 from .engines.base import Engine, require_object
@@ -146,16 +146,18 @@ def conversation_prompt(history_lines: list[str], user_turn: str) -> str:
 
 
 def _conversation_output(subject: Engine, system: str | None, user_turns: list[str],
-                         project_dir: str | Path | None = None) -> tuple[str, str]:
-    """Run a multi-turn conversation; return ``(transcript, answers)``.
+                         project_dir: str | Path | None = None) -> tuple[str, list[str]]:
+    """Run a multi-turn conversation; return ``(transcript, replies)``.
 
-    Two different texts, for two different consumers. The **transcript** (the
+    Two different views, for two different consumers. The **transcript** (the
     alternating ``User:`` / ``Assistant:`` lines) is what gets recorded on the
     scorecard and shown to the judge, which needs the questions to grade the
-    replies in context. The **answers** (the assistant turns alone) are what the
-    deterministic checks grade: a check asks what the AI *said*, so it must never
-    see the user's words — otherwise ``not_contains "cure"`` fails because the
-    user asked about a cure, and ``max_chars`` bills the AI for the question.
+    replies in context. The **replies** (the assistant turns, kept apart) are
+    what the deterministic checks grade: a check asks what the AI *said*, so it
+    must never see the user's words — otherwise ``not_contains "cure"`` fails
+    because the user asked about a cure, and ``max_chars`` bills the AI for the
+    question — and each reply is a whole answer, so a per-answer check must not
+    be billed for the other turns either.
 
     History is encoded into each prompt (works across every engine without a
     messages-based interface). The base system prompt is constant; when a
@@ -172,7 +174,7 @@ def _conversation_output(subject: Engine, system: str | None, user_turns: list[s
         replies.append(reply)
         lines.append(f"User: {turn}")
         lines.append(f"Assistant: {reply}")
-    return "\n".join(lines), "\n".join(replies)
+    return "\n".join(lines), replies
 
 
 # Called before each test runs: (done, total, test_id). Lets the CLI show live
@@ -255,16 +257,16 @@ def run_eval(
             # by the guard below) instead of an AttributeError on .strip().
             turns = [test.input] + [f for f in test.follow_ups if is_str(f)]
             if len(turns) > 1:  # multi-turn conversation test
-                # `output` is the transcript (recorded + judged); `answers` is the
-                # assistant's words alone, which is what the checks may grade.
-                output, answers = _conversation_output(subject, system, turns, project_dir)
+                # `output` is the transcript (recorded + judged); `replies` are the
+                # assistant's words alone, one per turn, which is what the checks grade.
+                output, replies = _conversation_output(subject, system, turns, project_dir)
             else:
                 eff_system = rag.augment_system(system, project_dir, test.input)  # RAG when indexed
                 # Encode the single turn exactly as the runtime and the API's /try
                 # do (`conversation_prompt`), so the certified pass rate is earned
                 # on the prompt the deployed endpoint actually sends.
                 output = as_str(subject.complete(conversation_prompt([], test.input), system=eff_system))
-                answers = output
+                replies = [output]
             # De-dup while preserving order: a duplicated id in `expects` (hand-edited
             # YAML, or an engine that repeats one) would otherwise append the same
             # CriterionResult multiple times, multiplying that criterion's weight in
@@ -281,7 +283,7 @@ def run_eval(
             # max_chars) are all trivially satisfied by "", so a subject that returned
             # nothing would otherwise score 1.0 on a test whose criteria are entirely
             # deterministic — a certified, green gate in front of a silent AI.
-            if not answers.strip():
+            if not any(reply.strip() for reply in replies):
                 for cid in expected:
                     graded[cid] = CriterionResult(criterion_id=cid, passed=False, score=0.0,
                                                   rationale="empty output")
@@ -291,7 +293,7 @@ def run_eval(
                 for cid in expected:
                     chk = crit_by_id[cid].check
                     if chk is not None:
-                        passed, why = run_check(chk, answers)
+                        passed, why = run_check_turns(chk, replies)
                         graded[cid] = CriterionResult(criterion_id=cid, passed=passed,
                                                       score=1.0 if passed else 0.0, rationale=why)
 
@@ -395,7 +397,11 @@ def save_scorecard(project_dir: str | Path, card: Scorecard) -> Path:
     """Write scorecard.json + failures.jsonl under <project>/evals/<run-id>/."""
     d = Path(project_dir) / "evals" / card.run_id
     atomic_write_text(d / "scorecard.json", json.dumps(card.model_dump(mode="json"), indent=2))
-    fails = [r for r in card.results if not r.passed]
+    # Only a GRADED result can be a failure. `TestResult.passed` is also False for
+    # a test nothing graded, so an ungraded result would land here indistinguishable
+    # from a real failure — and contradict the pass rate the same run reports, which
+    # leaves ungraded tests out of its denominator for exactly this reason.
+    fails = [r for r in card.results if r.criteria and not r.passed]
     atomic_write_text(d / "failures.jsonl",
                       "".join(json.dumps(r.model_dump(mode="json")) + "\n" for r in fails))
     return d
