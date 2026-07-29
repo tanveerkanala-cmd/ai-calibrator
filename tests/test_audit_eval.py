@@ -10,6 +10,7 @@ import json
 import re
 
 from ai_calibrator.coverage import analyze_coverage
+from ai_calibrator.drift import load_scorecard
 from ai_calibrator.eval import run_eval, save_scorecard
 from ai_calibrator.models import (
     BehaviorSpec,
@@ -217,3 +218,80 @@ def test_failures_file_records_only_tests_that_were_actually_graded(tmp_path):
     rows = [json.loads(line) for line in
             (d / "failures.jsonl").read_text(encoding="utf-8").splitlines()]
     assert [r["test_id"] for r in rows] == ["t-fail"]
+
+
+# --- the gate cannot certify what the judge never graded --------------------
+
+class _PartialJudge:
+    """Grades the criteria it is asked about, except for one test it stays silent
+    on — a malformed reply, a dropped criterion, a judge that lost the id."""
+
+    name = "judge@test"
+
+    def __init__(self, silent_on: str):
+        self.silent_on = silent_on
+
+    def complete(self, prompt, *, system=None, schema=None):
+        import re as _re
+        if self.silent_on in prompt:
+            return {"results": []}
+        ids = _re.findall(r"^- (\S+):", prompt, _re.M)
+        return {"results": [{"criterion_id": i, "passed": True, "score": 1.0, "rationale": "r"}
+                            for i in ids]}
+
+
+class _Subject:
+    name = "subject@test"
+
+    def complete(self, prompt, *, system=None, schema=None):
+        return "an answer that follows the documented policy"
+
+
+def _gate_project():
+    from ai_calibrator.models import BehaviorSpec, EvalCriterion, Project, Weight
+    from ai_calibrator.models import TestCase as CaseModel
+
+    p = Project(name="p", goal="g")
+    p.spec = BehaviorSpec(
+        goal="g",
+        standards=["Always answer with the documented policy."],
+        refusal_policy="decline medical questions",
+        eval_criteria=[EvalCriterion(id="c1", description="answer matches the documented policy",
+                                     weight=Weight.HIGH)],
+    )
+    p.tests = [CaseModel(id="t1", input="the first question", expects=["c1"]),
+               CaseModel(id="t2", input="the second question", expects=["c1"])]
+    return p
+
+
+def test_a_silent_judge_fails_the_criterion_instead_of_dropping_the_test(tmp_path):
+    """This is what keeps the gate honest, and it is worth pinning explicitly.
+
+    A judge that answers about t1 and says nothing about t2 must not make t2
+    disappear: an ungraded test leaves the pass rate's denominator, so the
+    surviving rate would be a true number about half the suite, and the gate
+    would certify on it. Instead every requested criterion comes back with a
+    verdict, defaulting to a fail — so t2 stays counted, the rate is 50%, and
+    the gate refuses."""
+    from ai_calibrator.ci import run_ci
+
+    result = run_ci(_gate_project(), _Subject(), _PartialJudge("the second question"),
+                    project_dir=tmp_path, threshold=0.8)
+
+    assert result.pass_rate == 0.5           # t2 counted, not dropped
+    stage = next(s for s in result.stages if s.name == "eval")
+    assert stage.status == "fail" and not result.ok
+    card = load_scorecard(tmp_path, result.run_id)
+    t2 = next(r for r in card.results if r.test_id == "t2")
+    assert t2.criteria and not t2.passed     # graded, and graded as a failure
+
+
+def test_a_fully_graded_run_certifies(tmp_path):
+    """The companion case: nothing silent, so nothing to hold back."""
+    from ai_calibrator.ci import run_ci
+
+    result = run_ci(_gate_project(), _Subject(), _PartialJudge("nothing matches this"),
+                    project_dir=tmp_path, threshold=0.8)
+
+    stage = next(s for s in result.stages if s.name == "eval")
+    assert stage.status == "pass" and result.ok and result.pass_rate == 1.0
