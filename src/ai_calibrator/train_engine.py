@@ -81,11 +81,34 @@ def assemble_role_dataset(project_dir: str | Path, role: str) -> list[dict]:
     return rows
 
 
+HUMAN_RATIONALE = "human-labeled ground truth (judge-check)"
+
+
 def _ground_truth_result(criterion_id: str, passed: bool) -> dict:
     """One graded criterion as the judge *should* have returned it."""
     return {"criterion_id": criterion_id, "passed": passed,
             "score": 1.0 if passed else 0.0,
-            "rationale": "human-labeled ground truth (judge-check)"}
+            "rationale": HUMAN_RATIONALE}
+
+
+def _dedup_rows(rows: list[dict]) -> list[dict]:
+    """Drop repeat (system, prompt, target) rows, keeping order.
+
+    ``assemble_role_dataset`` already applies this key to the log, but patching
+    changes targets: the same prompt logged twice with different verdicts
+    (``judge_passes`` self-consistency, or a re-run) survives that first pass and
+    then collapses to identical rows once a human label overwrites both."""
+    seen: set[tuple] = set()
+    out: list[dict] = []
+    for row in rows:
+        messages = row["messages"]
+        system = next((m["content"] for m in messages if m["role"] == "system"), "")
+        key = (system, messages[-2]["content"], messages[-1]["content"])
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(row)
+    return out
 
 
 def _graded_item(test_input: str, output: str) -> str:
@@ -95,10 +118,16 @@ def _graded_item(test_input: str, output: str) -> str:
     criteria that call asked about — which is what lets a single-criterion human
     label find the (usually multi-criterion) call it corrects. Derived from
     ``judge_prompt`` itself so the two can't drift; if that format ever loses the
-    marker no logged row matches, and each label falls back to a row of its own."""
+    marker no logged row matches, and each label falls back to a row of its own.
+
+    Split on the LAST marker, not the first. The criteria block is the tail of
+    the prompt, so the final occurrence is the real boundary — while the first is
+    whichever one the graded question or answer happened to contain, which
+    truncates the item to a short prefix that then claims unrelated logged rows
+    and overwrites the training target of a test nobody labeled."""
     from .eval import judge_prompt
 
-    head, marker, _ = judge_prompt(test_input, output, []).partition("CRITERIA:")
+    head, marker, _ = judge_prompt(test_input, output, []).rpartition("CRITERIA:")
     return head + marker
 
 
@@ -259,15 +288,16 @@ def export_engine_bundle(project_dir: str | Path, role: str, *, base_model: str 
         for row in rows:
             prompt = row["messages"][-2]["content"]
             item = next((i for i in verdicts if prompt.startswith(i)), None)
-            applied: set[str] = set()
             if item is not None:
                 row, applied = _apply_ground_truth(row, verdicts[item])
                 corrected |= {(item, cid) for cid in applied}
-            human += bool(applied)
             patched.append(row)
         unanswered = [row for item, cid, _, row in truth if (item, cid) not in corrected]
-        rows = patched + unanswered
-        human += len(unanswered)
+        rows = _dedup_rows(patched + unanswered)
+        # Count the rows that ended up carrying a human verdict, after dedup —
+        # counting patches instead reported one human decision as several
+        # whenever the same prompt had been logged more than once.
+        human = sum(1 for r in rows if HUMAN_RATIONALE in r["messages"][-1]["content"])
     recipe = recommend_recipe(len(rows), base_model=base_model)
 
     out = Path(project_dir) / "trained-engines" / role

@@ -74,21 +74,102 @@ def _decode_text(name: str, raw: bytes) -> str:
     content never reaches the extractor, and one image can fill the extraction
     window on its own. Refusing here puts the file in ``skipped``, where the
     owner can see it and convert it."""
-    if raw.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
-        # Notepad's "Unicode" .txt — real text, just not UTF-8. Read as UTF-8 it
-        # decodes to NUL-interleaved characters no reader or embedder can use.
-        try:
-            return raw.decode("utf-16")
-        except UnicodeDecodeError as exc:
-            raise ValueError(f"{name}: looks like UTF-16 text but could not be decoded ({exc.reason})") from exc
-    if b"\x00" in raw:
+    # UTF-32 FIRST: its little-endian BOM (ff fe 00 00) starts with the UTF-16
+    # one, so testing UTF-16 first decodes a UTF-32 file into NUL-interleaved
+    # characters — dense non-whitespace that passes the caller's non-empty check
+    # and gets ingested as the garbage this function exists to refuse.
+    for bom_pair, encoding in (((codecs.BOM_UTF32_LE, codecs.BOM_UTF32_BE), "utf-32"),
+                               ((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE), "utf-16")):
+        if raw.startswith(bom_pair):
+            # Notepad's "Unicode" .txt is one of these — real text, just not
+            # UTF-8, which would read it as NUL-interleaved nonsense.
+            try:
+                text = raw.decode(encoding)
+            except UnicodeDecodeError as exc:
+                raise ValueError(
+                    f"{name}: declares a {encoding.upper()} byte-order mark but could not be "
+                    f"decoded as {encoding.upper()} ({exc.reason})") from exc
+            if "\x00" in text:  # a BOM is not proof: verify the decode produced text
+                raise ValueError(f"{name}: has a {encoding.upper()} byte-order mark but does not "
+                                 "decode to text")
+            return text
+    # Before trying UTF-8, not after: NUL is a perfectly valid UTF-8 character, so
+    # a BOM-less UTF-16 file (half NULs) "decodes" cleanly and would be returned
+    # as the NUL-interleaved nonsense this function exists to catch.
+    if _nul_dense(raw):
+        # Either BOM-less UTF-16/32 (iconv -t UTF-16LE, bcp, some CRM exports) or
+        # an actual binary file. Only the former decodes to readable text.
+        for encoding in ("utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be"):
+            try:
+                text = raw.decode(encoding)
+            except UnicodeDecodeError:
+                continue
+            if _mostly_readable(text):
+                return text
         raise ValueError(f"{name}: looks like a binary file (image, spreadsheet, archive), not text")
-    for encoding in ("utf-8-sig", "cp1252"):  # utf-8-sig drops a BOM; cp1252 covers legacy exports
-        try:
-            return raw.decode(encoding)
-        except UnicodeDecodeError:
-            continue
-    raise ValueError(f"{name}: could not be decoded as text (unrecognized encoding)")
+    try:
+        # Sparse NULs are damage in an otherwise-good document, not a reason to
+        # discard it — but they must not travel on into prompts and embeddings.
+        return raw.decode("utf-8-sig").replace("\x00", "")   # drops a BOM if present
+    except UnicodeDecodeError:
+        pass
+    # cp1252 maps almost every byte, so it can only be the LAST resort: applied
+    # to UTF-8 that is merely damaged (one character truncated mid-sequence, a
+    # smart quote spliced into an export) it silently turns every multi-byte
+    # character in the whole file into mojibake. Repair the UTF-8 instead when
+    # that is what this is.
+    if _mostly_utf8(raw):
+        return raw.decode("utf-8", errors="replace").replace("\x00", "")
+    try:
+        return raw.decode("cp1252").replace("\x00", "")
+    except UnicodeDecodeError:
+        raise ValueError(f"{name}: could not be decoded as text (unrecognized encoding)") from None
+
+
+def _nul_dense(raw: bytes) -> bool:
+    """True if NULs are frequent enough to mean "not a UTF-8 text document".
+
+    A ratio, not mere presence: one stray NUL in an otherwise-valid export is a
+    damaged byte, and discarding the whole document over it loses real content —
+    with a message that points the owner at the wrong problem. Binary files and
+    UTF-16 text are both NUL-dense throughout; the caller tells them apart by
+    trying to decode.
+
+    The threshold sits well above what damage produces and well below what an
+    encoding produces: UTF-16 of mostly-ASCII text is about half NULs, while a
+    document with a few corrupted bytes is a fraction of one percent."""
+    if not raw:
+        return False
+    window = raw[:65536]
+    return window.count(0) / len(window) > 0.10
+
+
+def _mostly_readable(text: str) -> bool:
+    """True if a decode produced text rather than a plausible-looking accident.
+
+    Decoding UTF-16 with the wrong endianness rarely fails outright — it yields
+    characters from unrelated scripts — so a successful decode is not evidence on
+    its own."""
+    if not text:
+        return False
+    ok = sum(1 for ch in text if ch.isprintable() or ch in "\r\n\t")
+    return "\x00" not in text and ok / len(text) > 0.9
+
+
+def _mostly_utf8(raw: bytes) -> bool:
+    """True if the bytes are UTF-8 apart from a few damaged spots.
+
+    Distinguishes "UTF-8 with a bad byte" — one character truncated mid-sequence,
+    a smart quote spliced into an export — from "not UTF-8 at all", a genuine
+    legacy cp1252 document. The test is whether the file carries more multi-byte
+    characters that DID decode than bytes that did not: cp1252 text has none that
+    decode, while damaged UTF-8 is mostly intact by definition. Getting this
+    backwards is expensive in one direction only — cp1252 maps almost every byte,
+    so misreading UTF-8 as cp1252 silently mojibakes the whole document."""
+    repaired = raw.decode("utf-8", errors="replace")
+    bad = repaired.count("�")
+    decoded_multibyte = sum(1 for ch in repaired if ord(ch) > 0x7F and ch != "�")
+    return decoded_multibyte > bad
 
 
 def _read_pdf(p: Path) -> str:

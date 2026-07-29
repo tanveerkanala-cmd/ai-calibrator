@@ -346,3 +346,23 @@ def test_an_unchanged_suite_reports_nothing_dropped():
 
     assert report_dict(project, cov, card)["dropped_tests"] == []
     assert "no longer in the" not in render_report(project, cov, card)
+
+
+def test_a_banning_regex_fails_the_turn_that_breaks_it():
+    """`regex` is the only kind that can express a pattern-based ban — a literal
+    `not_contains` cannot. Grading it as "any turn carries it" would pass a
+    conversation in which one reply emitted the forbidden pattern, and would
+    certify green what `calibrate run --guard` flags on the same replies."""
+    banned = _checked("regex", r"^(?!.*\bguarantee\b).*$")
+    cr = _multi_turn_verdict(banned, "Our policy is a 30-day window.",
+                             "I guarantee a full refund.", "Anything else?")
+    assert not cr.passed
+    assert "turn 2" in (cr.rationale or "")
+
+
+def test_a_required_term_is_still_satisfied_by_the_turn_that_says_it():
+    """The companion: `contains` stays conversation-level, so a closing pleasantry
+    does not fail a criterion the substantive turn satisfied."""
+    cr = _multi_turn_verdict(_checked("contains", "30-day"),
+                             "Our policy is a 30-day window.", "Happy to help!")
+    assert cr.passed

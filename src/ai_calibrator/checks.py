@@ -83,16 +83,21 @@ def run_check_turns(check: Check, replies: list[str]) -> tuple[bool, str]:
     the runtime guard enforces on a live answer, so what the eval certifies is
     what serving allows.
 
-    ``contains``/``regex`` are the exception: they ask whether the conversation
-    *carries* something, which any one turn can settle — a closing "happy to
-    help!" must not fail a criterion the substantive turn satisfied. Grading them
-    reply by reply also stops a pattern from matching across the boundary between
-    two replies, text no answer ever produced.
+    ``contains`` is the exception: it asks whether the conversation *carries* a
+    term, which any one turn can settle — a closing "happy to help!" must not
+    fail a criterion the substantive turn already satisfied.
+
+    ``regex`` deliberately does NOT join it, positive-sounding though it is. It
+    is the only kind that can express a pattern-based BAN or a per-answer format
+    rule (``not_contains`` takes a literal substring only), so reading it as "any
+    turn carries it" would pass a conversation in which a reply broke the rule.
+    Per-reply is also what ``runtime._guard_failures`` enforces on a live answer,
+    and the eval must not certify what serving would flag.
     """
     if len(replies) <= 1:  # single-turn: graded exactly as it always has been
         return run_check(check, replies[0] if replies else "")
     verdicts = [run_check(check, reply) for reply in replies]
-    if check.kind in ("contains", "regex"):
+    if check.kind == "contains":
         for i, (ok, why) in enumerate(verdicts, start=1):
             if ok:
                 return True, f"turn {i}: {why}"

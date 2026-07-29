@@ -330,6 +330,12 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         name = _safe(body.name)  # canonical: stored name == directory name == routing key
         d = root / name
         project = Project(name=name, goal=body.goal, task_type=body.task_type)
+        # Answer the permanent condition before waiting on the lock: a name that
+        # already exists will still exist in ten seconds, so making the caller
+        # wait out the lock window to be told "retry shortly" is both slow and
+        # wrong. The in-lock re-check below is what makes the create atomic.
+        if (d / "project.yaml").exists():
+            raise HTTPException(409, "project already exists")
         # Atomic create: hold the project lock across the exists-check + write so
         # two concurrent POSTs for the same name can't both pass the check (one
         # wins with 200, the other deterministically gets 409 — never a partial
@@ -1006,6 +1012,8 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             raise HTTPException(400, "prompt is empty")
         name = _safe(body.name)
         d = root / name
+        if (d / "project.yaml").exists():   # permanent — don't wait out the lock for it
+            raise HTTPException(409, "project already exists")
         with _held(d, name):
             if (d / "project.yaml").exists():
                 raise HTTPException(409, "project already exists")
@@ -1071,6 +1079,8 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         out_name = _safe(body.out)
         out_dir = root / out_name
         goal = body.goal or first.goal
+        if (out_dir / "project.yaml").exists():   # permanent — don't wait out the lock
+            raise HTTPException(409, "merged project already exists")
         with _held(out_dir, out_name):
             if (out_dir / "project.yaml").exists():
                 raise HTTPException(409, "merged project already exists")

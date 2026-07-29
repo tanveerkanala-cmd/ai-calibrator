@@ -99,16 +99,24 @@ def to_promptfoo(project: Project) -> str:
     # `{{input}}` substitutes at all. Anything else the spec happens to contain
     # ("Hi {{first_name}}" from a support macro, a `{% if %}` block) would render
     # too, silently blanking it, so promptfoo would grade a prompt `calibrate
-    # eval` never scored. Wrapping unconditionally also stops promptfoo from
-    # auto-wrapping the WHOLE prompt — `{{input}}` included, which drops the test
-    # input — when the spec carries an unterminated tag. The replace covers a spec
-    # that literally contains the terminator; `{%- endraw %}` does not close a
-    # raw block.
-    body = render_system_prompt(spec).replace("{% endraw %}", "{%- endraw %}")
+    # eval` never scored.
+    #
+    # Escape the three delimiters rather than wrapping the body in `{% raw %}`.
+    # A raw block has a terminator to guess, and Nunjucks accepts every spelling
+    # of it — `{%endraw%}`, `{%   endraw   %}`, tabs — so a spec containing one
+    # closes the block early and the rest of the spec is EXECUTED as a template.
+    # promptfoo registers process.env as a template global, so that is not merely
+    # a rendering bug: it can read the operator's API keys into a prompt that is
+    # then sent to a third-party model. Escaped delimiters have no terminator and
+    # render back to the spec text byte for byte.
+    body = (render_system_prompt(spec)
+            .replace("{{", "{{ '{{' }}")
+            .replace("{%", "{{ '{%' }}")
+            .replace("{#", "{{ '{#' }}"))
 
     config = {
         "description": project.goal,
-        "prompts": ["{% raw %}" + body + "{% endraw %}\n\n{{input}}"],
+        "prompts": [body + "\n\n{{input}}"],
         "providers": [_provider_id(project.engines.subject)],
         "defaultTest": {"options": {"provider": _provider_id(project.engines.judge)}},
         "tests": tests,

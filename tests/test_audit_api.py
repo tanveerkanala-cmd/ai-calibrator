@@ -109,20 +109,33 @@ def test_a_busy_project_returns_423_instead_of_holding_the_connection(tmp_path, 
         proj.spec = BehaviorSpec(goal="g")
         save_project(proj, tmp_path / source)
 
-    calls = [
+    # Routes that act on the EXISTING busy project.
+    on_p = [
         ("DELETE", "/api/projects/p", {}),
         ("DELETE", "/api/projects/p/materials/faq.txt", {}),
-        ("POST", "/api/projects", {"json": {"name": "p", "goal": "g"}}),
-        ("POST", "/api/import", {"json": {"name": "p", "goal": "g", "prompt": "be nice"}}),
-        ("POST", "/api/merge/apply", {"json": {"out": "p", "sources": ["a", "b"]}}),
         ("POST", "/api/projects/p/log", {"json": {"enabled": True}}),
     ]
     with _held(tmp_path / "p"):
-        for method, url, kwargs in calls:
+        for method, url, kwargs in on_p:
             started = time.monotonic()
             r = c.request(method, url, **kwargs)
             assert r.status_code == 423, (method, url, r.text)
             assert time.monotonic() - started < 2, (method, url)  # gave up on the deadline
+
+    # The create-shaped routes reach the lock only for a name that does NOT
+    # already exist — an existing one is a permanent 409 answered before the
+    # wait. Contend on a fresh name so the bounded wait is what is measured.
+    on_new = [
+        ("POST", "/api/projects", {"json": {"name": "q", "goal": "g"}}),
+        ("POST", "/api/import", {"json": {"name": "q", "goal": "g", "prompt": "be nice"}}),
+        ("POST", "/api/merge/apply", {"json": {"out": "q", "sources": ["a", "b"]}}),
+    ]
+    with _held(tmp_path / "q"):
+        for method, url, kwargs in on_new:
+            started = time.monotonic()
+            r = c.request(method, url, **kwargs)
+            assert r.status_code == 423, (method, url, r.text)
+            assert time.monotonic() - started < 2, (method, url)
 
 
 def test_concurrent_creates_of_one_name_still_settle_on_200_and_409(tmp_path):
@@ -248,3 +261,23 @@ def test_the_served_ai_still_answers_an_ordinary_request(tmp_path):
     c = _served(tmp_path, _Answerer())
     r = c.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "hi"}]})
     assert r.status_code == 200, r.text
+
+
+def test_a_name_that_already_exists_answers_409_even_while_the_project_is_busy(tmp_path, monkeypatch):
+    """A permanent condition must not be reported as a temporary one. The project
+    exists, so the answer is 409 and always will be — waiting out the lock window
+    to say "an operation is in progress, retry shortly" is both slow and wrong."""
+    import time as _time
+
+    monkeypatch.setattr(api, "_LOCK_WAIT_SECONDS", 5.0)
+    c = TestClient(create_app(tmp_path))
+    assert c.post("/api/projects", json={"name": "p", "goal": "g"}).status_code == 200
+
+    with _held(tmp_path / "p"):
+        started = _time.monotonic()
+        r = c.post("/api/projects", json={"name": "p", "goal": "g"})
+        assert r.status_code == 409, r.text
+        assert _time.monotonic() - started < 1  # answered, not waited out
+
+        r = c.post("/api/import", json={"name": "p", "goal": "g", "prompt": "be nice"})
+        assert r.status_code == 409, r.text
