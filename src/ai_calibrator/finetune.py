@@ -30,7 +30,7 @@ DEFAULT_BASE = "Qwen/Qwen2.5-7B-Instruct"  # an open base you can actually LoRA
 _TRAIN_PY = '''#!/usr/bin/env python3
 """LoRA fine-tune from dataset.jsonl. Runs on CUDA, Apple Silicon (MPS), or CPU.
 
-    pip install "transformers>=4.46" "trl>=1.0" peft datasets accelerate pyyaml
+    pip install "transformers>=4.56.2" "trl>=1.0" peft datasets accelerate pyyaml
     python train.py            # writes the LoRA adapter to ./__OUT__/
 
 On a memory-limited CUDA GPU: `pip install bitsandbytes` and set QLORA=1 to load
@@ -127,7 +127,7 @@ if __name__ == "__main__":
 _MERGE_PY = '''#!/usr/bin/env python3
 """Merge the trained LoRA adapter into the base weights → ./__MERGE_OUT__/.
 
-    pip install "transformers>=4.46" peft torch
+    pip install "transformers>=4.56.2" peft torch
     python merge.py
 
 Then serve the merged model (see README.md) and point the project's `subject`
@@ -294,7 +294,7 @@ human-corrected) examples → a better fine-tune.
 
 ## 1. Train (runs on CUDA, Apple Silicon/MPS, or CPU — auto-detected)
 ```bash
-pip install "transformers>=4.46" "trl>=1.0" peft datasets accelerate pyyaml
+pip install "transformers>=4.56.2" "trl>=1.0" peft datasets accelerate pyyaml
 python train.py        # writes the LoRA adapter to ./{recipe["output_dir"]}/
 ```
 Fitting the base to your hardware: a fp16 LoRA of a 7B wants ~16GB VRAM. Below

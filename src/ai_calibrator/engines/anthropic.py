@@ -21,17 +21,23 @@ from .base import (
 
 DEFAULT_MAX_TOKENS = 16000
 
+# The SDK refuses a NON-STREAMING request whose max_tokens implies more than 10
+# minutes of generation — it budgets 3600s per 128k tokens and raises before any
+# HTTP call. These are non-streaming calls, so anything above this is not a
+# bigger budget, it is a guaranteed failure on every request.
+MAX_NONSTREAMING_TOKENS = 21_333
+
 
 def _default_max_tokens() -> int:
     """Env-overridable: a long compile or a big export can need more than 16k of
     output, and with no knob the truncation error below is a dead end. Set
-    CALIBRATOR_ANTHROPIC_MAX_TOKENS (tokens)."""
+    CALIBRATOR_ANTHROPIC_MAX_TOKENS (tokens), up to MAX_NONSTREAMING_TOKENS."""
     raw = os.getenv("CALIBRATOR_ANTHROPIC_MAX_TOKENS")
     if raw:
         try:
             value = int(raw)
             if value > 0:
-                return value
+                return min(value, MAX_NONSTREAMING_TOKENS)
         except ValueError:
             pass  # ignore junk; fall through to the default
     return DEFAULT_MAX_TOKENS
@@ -115,6 +121,17 @@ class AnthropicEngine(Engine):
         def _call() -> str:
             try:
                 resp = self._client.messages.create(**kwargs)
+            except ValueError as exc:
+                # The SDK validates the output budget before it sends, and does it
+                # with a plain ValueError — which _friendly_anthropic_error can't
+                # map, so it surfaced as raw SDK text and was reported as bad user
+                # input rather than as an engine failure. Some models cap
+                # non-streaming output far below MAX_NONSTREAMING_TOKENS.
+                raise EngineError(
+                    f"Anthropic rejected the request for {self.name} before sending it: {exc}\n"
+                    "  If this model caps non-streaming output, lower it:  "
+                    "CALIBRATOR_ANTHROPIC_MAX_TOKENS=8192 calibrate <command> …"
+                ) from exc
             except Exception as exc:  # map SDK errors (auth/rate-limit/conn/timeout) to friendly text
                 friendly = _friendly_anthropic_error(exc, self.name)
                 if friendly is not None:
@@ -123,10 +140,16 @@ class AnthropicEngine(Engine):
             if resp.stop_reason == "refusal":
                 raise EngineError(f"Claude declined the request ({self.name}).")
             if resp.stop_reason == "max_tokens":
+                # Only ever suggest a limit the SDK will accept — the old advice
+                # (always double) printed 32000 at the default, which every
+                # subsequent call would have failed on.
+                headroom = min(self.max_tokens * 2, MAX_NONSTREAMING_TOKENS)
                 raise EngineError(
                     f"Claude response truncated at max_tokens={self.max_tokens} ({self.name}).\n"
-                    f"  Try raising the limit:  CALIBRATOR_ANTHROPIC_MAX_TOKENS={self.max_tokens * 2} "
-                    "calibrate <command> …"
+                    + (f"  Try raising the limit:  CALIBRATOR_ANTHROPIC_MAX_TOKENS={headroom} "
+                       "calibrate <command> …"
+                       if headroom > self.max_tokens else
+                       "  That is the most one non-streaming request can carry — split the input instead.")
                 )
             # content can be None/empty on a malformed or OpenAI-compatible proxy
             # response — don't let that raise a raw TypeError.

@@ -271,7 +271,7 @@ def test_engine_bundle_install_line_matches_the_trainer_it_ships(tmp_path):
     (d / "judge.jsonl").write_text(json.dumps({"role": "judge", "prompt": "p", "output": "o"}) + "\n")
     export_engine_bundle(tmp_path, "judge")
     readme = (tmp_path / "trained-engines" / "judge" / "README.md").read_text(encoding="utf-8")
-    assert '"trl>=1.0"' in readme and '"transformers>=4.46"' in readme
+    assert '"trl>=1.0"' in readme and '"transformers>=4.56.2"' in readme
 
 
 

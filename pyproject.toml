@@ -50,7 +50,10 @@ docs = ["pypdf>=4.0", "python-docx>=1.1"]
 # only, so it's installed on demand by `train --qlora`, not pinned here.)
 # trl>=1.0: the generated train.py passes SFTConfig(max_length=...), which trl
 # renamed from max_seq_length in 1.x — 0.12 raises on it.
-train = ["torch>=2.2", "transformers>=4.46", "trl>=1.0", "peft>=0.11", "datasets>=2.19", "accelerate>=0.30"]
+# transformers>=4.56.2: train.py and merge.py load the base with `dtype=`, which
+# from_pretrained only accepts from 4.56 (before that it reaches the model
+# constructor as a TypeError) — and 4.56.2 is trl 1.x's own floor.
+train = ["torch>=2.2", "transformers>=4.56.2", "trl>=1.0", "peft>=0.11", "datasets>=2.19", "accelerate>=0.30"]
 dev = ["pytest>=8.0", "pytest-cov>=5.0", "fastapi>=0.110", "python-multipart>=0.0.9", "ruff>=0.6", "mypy>=1.11", "bandit>=1.7", "hypothesis>=6.100"]
 # Everything a user might want (all engines + web UI + document ingestion).
 # Excludes `train` (heavy GPU stack — install explicitly) and `dev`.

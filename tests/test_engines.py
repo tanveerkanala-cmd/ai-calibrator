@@ -72,8 +72,8 @@ def test_anthropic_max_tokens_is_env_overridable(monkeypatch):
     from ai_calibrator.engines.anthropic import DEFAULT_MAX_TOKENS, _default_max_tokens
     monkeypatch.delenv("CALIBRATOR_ANTHROPIC_MAX_TOKENS", raising=False)
     assert _default_max_tokens() == DEFAULT_MAX_TOKENS
-    monkeypatch.setenv("CALIBRATOR_ANTHROPIC_MAX_TOKENS", "64000")
-    assert _default_max_tokens() == 64000
+    monkeypatch.setenv("CALIBRATOR_ANTHROPIC_MAX_TOKENS", "20000")
+    assert _default_max_tokens() == 20000
     for junk in ("junk", "0", "-5", "1e999"):
         monkeypatch.setenv("CALIBRATOR_ANTHROPIC_MAX_TOKENS", junk)
         assert _default_max_tokens() == DEFAULT_MAX_TOKENS, junk   # junk → default, never crash

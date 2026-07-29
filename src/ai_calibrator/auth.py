@@ -29,9 +29,11 @@ def _looks_like_placeholder(key: str) -> bool:
     """True if a set key is obviously not a real credential — an ellipsis/angle
     placeholder copied from the docs, or implausibly short — so `auth` doesn't
     green-check it and defer the real failure to the first engine call."""
+    # Judge the WHOLE key. Measuring the last hyphen-delimited segment instead
+    # flagged real keys: bodies are base64url, an alphabet that contains "-", so
+    # roughly one key in eleven has one within its final few characters.
     k = key.strip()
-    return ("..." in k or "<" in k or ">" in k or k.endswith("-")
-            or len(k.split("-")[-1]) < 8)
+    return "..." in k or "<" in k or ">" in k or len(k) < 20
 
 
 # The binary has to say one of these about itself before we will run it.

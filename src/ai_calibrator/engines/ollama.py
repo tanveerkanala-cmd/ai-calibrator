@@ -110,6 +110,14 @@ class OllamaEngine(Engine):
                     f"Ollama returned invalid JSON (truncated or corrupted response): "
                     f"{resp.text[:200]!r}"
                 ) from exc
+            # A cut-off answer is an error, not an answer: returned as if it were
+            # finished, it is graded and certified as the whole answer.
+            if isinstance(data, dict) and data.get("done_reason") == "length":
+                raise EngineError(
+                    f"Ollama response truncated — model {self.model!r} hit its output limit.\n"
+                    f"  Raise num_predict (or the context length) for {self.model!r}, "
+                    "or split the work into smaller steps."
+                )
             try:
                 return data["message"]["content"]
             except (KeyError, TypeError) as exc:

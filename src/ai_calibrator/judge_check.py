@@ -19,6 +19,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .coerce import as_bool
 from .models import Scorecard
 from .store import atomic_write_text
 
@@ -39,7 +40,12 @@ def save_labels(project_dir: str | Path, run_id: str, labels: list[dict]) -> Pat
     Saving them makes the calibration an *asset*, not a one-off reading: the
     Engine-Trainer uses these as ground-truth rows when localizing the judge
     role, and agreement can be recomputed later. Re-labeling the same
-    (test, criterion) replaces the old label."""
+    (test, criterion) replaces the old label.
+
+    CONCURRENCY CONTRACT: the caller must hold ``store.project_lock``. This
+    RELOADS the file and rewrites it whole, so two unserialized writers each
+    merge onto a stale read and the loser's labels are gone — silently, since
+    the write itself is atomic and every caller still succeeds."""
     path = _labels_path(project_dir, run_id)
     merged: dict[tuple, dict] = {}
     for label in load_labels(project_dir, run_id) + list(labels):
@@ -52,7 +58,9 @@ def save_labels(project_dir: str | Path, run_id: str, labels: list[dict]) -> Pat
                 and label["test_id"] and label["criterion_id"] and "passed" in label):
             merged[(label["test_id"], label["criterion_id"])] = {
                 "test_id": label["test_id"], "criterion_id": label["criterion_id"],
-                "passed": bool(label.get("passed")),
+                # as_bool, not bool: an API client or a hand-edited file can carry
+                # the verdict as the STRING "false", which bool() reads as PASS.
+                "passed": as_bool(label.get("passed")),
             }
     path.parent.mkdir(parents=True, exist_ok=True)
     return atomic_write_text(path, json.dumps({"run_id": run_id, "labels": list(merged.values())},
@@ -141,7 +149,7 @@ def judge_agreement(card: Scorecard, human_labels: list[dict]) -> JudgeAgreement
             # describe coverage it does not have; report it separately instead.
             ag.unmatched += 1
             continue
-        human_passed = bool(label.get("passed"))
+        human_passed = as_bool(label.get("passed"))
         match = cr.passed == human_passed
         ag.total += 1
         ag.agreed += int(match)

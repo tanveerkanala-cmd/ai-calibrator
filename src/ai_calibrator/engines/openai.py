@@ -94,7 +94,8 @@ class OpenAIEngine(Engine):
                 raise friendly from exc
             raise
         try:
-            message = resp.choices[0].message
+            choice = resp.choices[0]
+            message = choice.message
         except (IndexError, AttributeError, TypeError, KeyError) as exc:
             # TypeError/KeyError too: choices may be None or a non-list on a
             # malformed (or OpenAI-compatible) response, not just empty/missing.
@@ -106,6 +107,16 @@ class OpenAIEngine(Engine):
         refusal = getattr(message, "refusal", None)
         if refusal:
             raise EngineError(f"OpenAI declined the request ({self.name}): {refusal}")
+        # A cut-off answer is an error, exactly as it is on the Anthropic adapter:
+        # returned as if it were finished, it is graded and certified as the whole
+        # answer, and on the schema path its half-written JSON is diagnosed as a
+        # weak model instead of an exhausted output budget. Match "length" strictly
+        # — OpenAI-compatible endpoints omit the field or send their own values.
+        if getattr(choice, "finish_reason", None) == "length":
+            raise EngineError(
+                f"OpenAI response truncated — {self.model!r} hit its output limit ({self.name}).\n"
+                "  Bind a model with a larger output budget, or split the work into smaller steps."
+            )
         return message.content or ""
 
     def complete(

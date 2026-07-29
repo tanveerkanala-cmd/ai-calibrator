@@ -21,6 +21,7 @@ from typing import Any
 
 import yaml
 
+from .coerce import as_bool
 from .engines.base import Engine
 from .finetune import recommend_recipe, render_train_py
 from .store import atomic_write_text
@@ -80,14 +81,35 @@ def assemble_role_dataset(project_dir: str | Path, role: str) -> list[dict]:
     return rows
 
 
-def human_judge_rows(project_dir: str | Path) -> list[dict]:
-    """Ground-truth judge rows from saved judge-check labels.
+def _ground_truth_result(criterion_id: str, passed: bool) -> dict:
+    """One graded criterion as the judge *should* have returned it."""
+    return {"criterion_id": criterion_id, "passed": passed,
+            "score": 1.0 if passed else 0.0,
+            "rationale": "human-labeled ground truth (judge-check)"}
+
+
+def _graded_item(test_input: str, output: str) -> str:
+    """The head of a judge prompt: WHICH answer was graded, before the criteria.
+
+    Every judge call about the same (test, output) pair shares it, whatever
+    criteria that call asked about — which is what lets a single-criterion human
+    label find the (usually multi-criterion) call it corrects. Derived from
+    ``judge_prompt`` itself so the two can't drift; if that format ever loses the
+    marker no logged row matches, and each label falls back to a row of its own."""
+    from .eval import judge_prompt
+
+    head, marker, _ = judge_prompt(test_input, output, []).partition("CRITERIA:")
+    return head + marker
+
+
+def _ground_truth(project_dir: str | Path) -> list[tuple[str, str, bool, dict]]:
+    """``(graded item, criterion id, human verdict, standalone row)`` per label.
 
     A logged judge row teaches the local model to *imitate the cloud judge* —
     including its mistakes. A judge-check label is what a HUMAN said the verdict
-    should be, so it trains toward the truth instead. Each label is rebuilt into
-    the exact prompt the judge role sees (eval.judge_prompt, single-criterion
-    block); the target is the JSON the judge *should* have returned.
+    should be, so it trains toward the truth instead. The standalone row rebuilds
+    the prompt the judge role sees when a test targets that one criterion; the
+    graded item is what ties the label back to the call that actually graded it.
 
     Labels whose test, criterion, or scorecard no longer exists are skipped — the
     prompt can't be faithfully reconstructed without them."""
@@ -104,10 +126,13 @@ def human_judge_rows(project_dir: str | Path) -> list[dict]:
         return []
     if project.spec is None:
         return []
-    desc_by_id = {c.id: c.description for c in project.spec.eval_criteria}
+    # A criterion carrying a deterministic check is graded by code and never
+    # reaches the judge (eval.run_eval), so a label on one is a truthful verdict
+    # about the criterion but not a question this role is ever asked.
+    desc_by_id = {c.id: c.description for c in project.spec.eval_criteria if c.check is None}
     input_by_test = {t.id: t.input for t in project.tests}
 
-    rows: list[dict] = []
+    truth: list[tuple[str, str, bool, dict]] = []
     seen: set[tuple] = set()
     for run_id, labels in all_labels(project_dir):
         try:
@@ -118,22 +143,53 @@ def human_judge_rows(project_dir: str | Path) -> list[dict]:
             tid, cid = label.get("test_id"), label.get("criterion_id")
             if tid not in outputs or cid not in desc_by_id or tid not in input_by_test:
                 continue
-            passed = bool(label.get("passed"))
+            passed = as_bool(label.get("passed"))
             prompt = judge_prompt(input_by_test[tid], outputs[tid], [(cid, desc_by_id[cid])])
-            target = json.dumps({"results": [{
-                "criterion_id": cid, "passed": passed, "score": 1.0 if passed else 0.0,
-                "rationale": "human-labeled ground truth (judge-check)",
-            }]}, sort_keys=True)
+            target = json.dumps({"results": [_ground_truth_result(cid, passed)]}, sort_keys=True)
             key = (JUDGE_SYSTEM, prompt)
             if key in seen:
                 continue
             seen.add(key)
-            rows.append({"messages": [
-                {"role": "system", "content": JUDGE_SYSTEM},
-                {"role": "user", "content": prompt},
-                {"role": "assistant", "content": target},
-            ]})
-    return rows
+            truth.append((_graded_item(input_by_test[tid], outputs[tid]), cid, passed, {
+                "messages": [
+                    {"role": "system", "content": JUDGE_SYSTEM},
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": target},
+                ]}))
+    return truth
+
+
+def human_judge_rows(project_dir: str | Path) -> list[dict]:
+    """Ground-truth judge rows from saved judge-check labels — see ``_ground_truth``."""
+    return [row for _, _, _, row in _ground_truth(project_dir)]
+
+
+def _apply_ground_truth(row: dict, verdicts: dict[str, bool]) -> tuple[dict, set[str]]:
+    """``row`` with every human-labeled criterion's verdict replacing the judge's,
+    plus the ids that were replaced.
+
+    The correction is a PATCH, not a swap: one judge call grades all of a test's
+    judged criteria at once, so dropping the row would discard the verdicts the
+    human never disputed, and appending beside it would leave the dataset teaching
+    the very verdict they overturned."""
+    try:
+        target = json.loads(row["messages"][-1]["content"])
+    except ValueError:
+        return row, set()  # a plain-text target (assemble_role_dataset passes those through)
+    results = target.get("results") if isinstance(target, dict) else None
+    if not isinstance(results, list):
+        return row, set()
+    applied: set[str] = set()
+    for r in results:
+        # String ids only — an unhashable one would raise TypeError on the lookup.
+        if isinstance(r, dict) and isinstance(r.get("criterion_id"), str) and r["criterion_id"] in verdicts:
+            cid = r["criterion_id"]
+            r.update(_ground_truth_result(cid, verdicts[cid]))
+            applied.add(cid)
+    if not applied:
+        return row, applied
+    return {"messages": row["messages"][:-1] + [
+        {"role": "assistant", "content": json.dumps(target, sort_keys=True)}]}, applied
 
 
 @dataclass
@@ -159,7 +215,7 @@ own private, free model — once it's PROVEN to match the cloud one.
 
 ## 1. Train (GPU — LoRA of a 7B ~16GB VRAM, else a rented cloud GPU)
 ```bash
-pip install "transformers>=4.46" "trl>=1.0" peft datasets accelerate pyyaml
+pip install "transformers>=4.56.2" "trl>=1.0" peft datasets accelerate pyyaml
 python train.py        # → ./{recipe["output_dir"]}/
 ```
 
@@ -179,23 +235,39 @@ agrees with the cloud engine. Swap it into `engines.{role}` in `project.yaml`
 def export_engine_bundle(project_dir: str | Path, role: str, *, base_model: str | None = None) -> TrainEngineResult:
     """Write ``<project>/engines/<role>/`` : dataset.jsonl, recipe.yaml, train.py, README.
 
-    For the judge role, human judge-check labels become ground-truth rows: they
-    are added to the dataset, and any logged (imitation) row asking the exact
-    same question is dropped in favor of the human answer."""
+    For the judge role, human judge-check labels are ground truth: each one
+    overwrites the verdict the logged judge call gave that criterion, and a label
+    no logged call answers becomes a row of its own."""
     # role becomes a directory component — gate it to the known roles so no caller
     # (Core included) can traverse out of trained-engines/ with e.g. "../../x".
     if role not in TRAINABLE_ROLES:
         raise ValueError(f"role must be one of: {', '.join(sorted(TRAINABLE_ROLES))} (got {role!r})")
     rows = assemble_role_dataset(project_dir, role)
-    human: list[dict] = human_judge_rows(project_dir) if role == "judge" else []
-    if human:
-        # Dedup on the GRADED PROMPT (the user turn, always messages[-2]) alone.
-        # The judge system prompt is constant (JUDGE_SYSTEM), so keying on it too
-        # would fail to drop a logged imitation row that happened to be recorded
-        # without a system message — leaving both the model's verdict and the
-        # human's for the same question in the dataset.
-        claimed = {r["messages"][-2]["content"] for r in human}
-        rows = [r for r in rows if r["messages"][-2]["content"] not in claimed] + human
+    truth = _ground_truth(project_dir) if role == "judge" else []
+    human = 0
+    if truth:
+        # Match on the GRADED ITEM (the head of the user turn, always messages[-2])
+        # rather than on the whole prompt: a label names ONE criterion while the
+        # call that graded it asked about every judged criterion of that test, so
+        # comparing prompts whole only ever matched single-criterion tests — and
+        # left the contradicted verdict in the dataset for all the others.
+        verdicts: dict[str, dict[str, bool]] = {}
+        for item, cid, passed, _ in truth:
+            verdicts.setdefault(item, {})[cid] = passed
+        corrected: set[tuple[str, str]] = set()
+        patched: list[dict] = []
+        for row in rows:
+            prompt = row["messages"][-2]["content"]
+            item = next((i for i in verdicts if prompt.startswith(i)), None)
+            applied: set[str] = set()
+            if item is not None:
+                row, applied = _apply_ground_truth(row, verdicts[item])
+                corrected |= {(item, cid) for cid in applied}
+            human += bool(applied)
+            patched.append(row)
+        unanswered = [row for item, cid, _, row in truth if (item, cid) not in corrected]
+        rows = patched + unanswered
+        human += len(unanswered)
     recipe = recommend_recipe(len(rows), base_model=base_model)
 
     out = Path(project_dir) / "trained-engines" / role
@@ -209,10 +281,10 @@ def export_engine_bundle(project_dir: str | Path, role: str, *, base_model: str 
     _write("dataset.jsonl", "".join(json.dumps(r) + "\n" for r in rows))
     _write("recipe.yaml", yaml.safe_dump(recipe, sort_keys=False, allow_unicode=True))
     _write("train.py", render_train_py(recipe))
-    _write("README.md", _engine_readme(role, recipe, len(rows), len(human)))
+    _write("README.md", _engine_readme(role, recipe, len(rows), human))
 
     return TrainEngineResult(role=role, examples=len(rows), base_model=recipe["base_model"],
-                             bundle_dir=str(out), files=files, human_examples=len(human))
+                             bundle_dir=str(out), files=files, human_examples=human)
 
 
 # --- the prove-it (agreement) gate ------------------------------------------
