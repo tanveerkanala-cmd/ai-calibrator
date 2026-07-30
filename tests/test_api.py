@@ -879,6 +879,7 @@ def test_delete_moves_the_tree_aside_before_removing_it(tmp_path, monkeypatch):
     acquires it while this delete is still running, so two holders proceed at
     once. The tree is renamed under the lock and removed after it is released, so
     a project recreated under the same name cannot be caught by the removal."""
+    import os
     import shutil
     from pathlib import Path
 
@@ -900,15 +901,26 @@ def test_delete_moves_the_tree_aside_before_removing_it(tmp_path, monkeypatch):
     monkeypatch.setattr(shutil, "rmtree", watching_rmtree)
     r = c.request("DELETE", "/api/projects/p")
 
-    assert r.status_code == 200, r.text
-    assert removed and removed[0] != tmp_path / "p"     # never the live path
-    assert load_project(tmp_path / "p").goal == "brand new"   # the new project is untouched
+    # The invariant both platforms must hold: a project recreated under this name
+    # is never caught by the removal.
+    assert load_project(tmp_path / "p").goal == "brand new"
+    if os.name == "nt":
+        # Windows cannot rename a directory holding an open handle — which is the
+        # same fact that makes deleting in place safe there, since the handle also
+        # blocks unlinking `.lock`. The recreated project is what remains, so the
+        # delete correctly reports that it did not finish.
+        assert r.status_code == 409, r.text
+    else:
+        assert r.status_code == 200, r.text
+        assert removed and removed[0] != tmp_path / "p"     # never the live path
 
 
 def test_delete_reports_failure_when_the_tree_cannot_be_moved(tmp_path, monkeypatch):
     """A delete that removed nothing must not claim success."""
     import os
 
+    if os.name == "nt":
+        pytest.skip("Windows deletes in place; os.replace is not on that path")
     c = _client(tmp_path)
     assert c.post("/api/projects", json={"name": "p", "goal": "g"}).status_code == 200
 

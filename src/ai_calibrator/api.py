@@ -362,28 +362,50 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         d = _dir(name)
         if not (d / "project.yaml").exists():
             raise HTTPException(404, f"no project {name!r}")
-        # Move the tree aside while holding the lock, then delete it after the
-        # lock is released. Deleting IN PLACE destroys the very lock file that is
-        # providing the mutual exclusion: on POSIX the unlink succeeds and a
-        # concurrent actor immediately creates a fresh `.lock` at the same path
-        # and acquires it, so two holders proceed at once; on Windows the open
-        # handle blocks the unlink and the directory survives the rmtree. A rename
-        # has neither problem — the lock file travels with the tree, this request
-        # keeps holding the same inode, and a waiter finds no project.yaml and
-        # correctly reports the project gone.
-        stash = d.parent / f".{d.name}.deleting-{os.getpid()}-{threading.get_ident()}"
-        with _held(d, name):
+        # The lock file lives INSIDE the tree being deleted, and the two platforms
+        # fail that differently — so each gets the approach that is correct for it.
+        #
+        # POSIX: unlink succeeds even on an open file, so deleting in place
+        # destroys the lock that is providing the mutual exclusion. A waiter then
+        # creates a fresh `.lock` at the same path and acquires it while this
+        # delete is still running, and two holders proceed at once. Renaming the
+        # tree aside takes the lock file with it, so this request keeps holding
+        # the same inode and a waiter correctly finds no project.
+        #
+        # Windows: that same rename is refused (the open handle blocks renaming
+        # the directory), and it is refused for the reason that makes in-place
+        # deletion safe there — the handle also blocks unlinking `.lock`, so the
+        # exclusion survives the rmtree. Delete in place, then clean up the
+        # leftover lock file once the handle is closed.
+        if os.name == "nt":  # pragma: no cover - exercised on the Windows CI leg
+            from .store import LOCK_FILE
+            with _held(d, name):
+                shutil.rmtree(d, ignore_errors=True)
+            # Retry ONLY when that stale lock file (or nothing) is all that is
+            # left: releasing the lock lets a concurrent create rebuild a project
+            # under this name, and a blind second rmtree would destroy it.
             try:
-                os.replace(d, stash)
-            except OSError as exc:
-                raise HTTPException(409, f"could not delete {name!r}: {exc}. Check permissions "
-                                         "or another process holding its files open.")
-        shutil.rmtree(stash, ignore_errors=True)
+                leftovers = {p.name for p in d.iterdir()}
+            except OSError:
+                leftovers = set()
+            if d.exists() and leftovers <= {LOCK_FILE}:
+                shutil.rmtree(d, ignore_errors=True)
+            remains = d
+        else:
+            stash = d.parent / f".{d.name}.deleting-{os.getpid()}-{threading.get_ident()}"
+            with _held(d, name):
+                try:
+                    os.replace(d, stash)
+                except OSError as exc:
+                    raise HTTPException(409, f"could not delete {name!r}: {exc}. Check permissions "
+                                             "or another process holding its files open.")
+            shutil.rmtree(stash, ignore_errors=True)
+            remains = stash
         # ignore_errors swallows every OSError, so verify rather than assume: a
         # delete that removed nothing (or half the tree) must not report success
         # while the project's uploaded documents are still on disk.
-        if stash.exists():
-            raise HTTPException(409, f"could not fully delete {name!r} — files remain at {stash}. "
+        if remains.exists():
+            raise HTTPException(409, f"could not fully delete {name!r} — files remain at {remains}. "
                                      "Check permissions or another process holding them open.")
         return {"deleted": name}
 

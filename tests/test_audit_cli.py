@@ -462,7 +462,9 @@ def test_import_refuses_a_destination_that_cannot_name_a_project(tmp_path):
     the same way and used to find out only after a billed engine call."""
     prompt_file = tmp_path / "prompt.txt"
     prompt_file.write_text("You are a support agent. Be brief.", encoding="utf-8")
-    target = tmp_path / "..."
+    # A reserved device name: rejected on every platform, and unlike "..." it
+    # survives resolve() on Windows instead of collapsing to the parent.
+    target = tmp_path / "CON"
 
     result = runner.invoke(app, ["import", str(target), "--goal", "g",
                                  "--prompt", str(prompt_file)])
