@@ -121,7 +121,7 @@ class FileLock:
                 # both dead code on Windows: every caller silently blocked forever.
                 contended = False
                 try:
-                    msvcrt.locking(self._fd, msvcrt.LK_NBLCK, 1)
+                    msvcrt.locking(self._fd, msvcrt.LK_NBLCK, 1)  # type: ignore[attr-defined]  # win32-only
                 except OSError as exc:
                     if exc.errno not in (errno.EDEADLK, errno.EACCES, errno.EAGAIN):
                         raise
@@ -135,7 +135,7 @@ class FileLock:
                         self._on_wait()
                     while True:
                         try:
-                            msvcrt.locking(self._fd, msvcrt.LK_LOCK, 1)
+                            msvcrt.locking(self._fd, msvcrt.LK_LOCK, 1)  # type: ignore[attr-defined]  # win32-only
                             break
                         except OSError as exc:
                             if exc.errno != errno.EDEADLK:
@@ -144,7 +144,8 @@ class FileLock:
             # _BACKEND == "none": best-effort no-op (atomic writes still apply).
         except OSError:
             # Never leak the descriptor if locking itself failed.
-            os.close(self._fd)
+            if self._fd is not None:
+                os.close(self._fd)
             self._fd = None
             raise
         return self
@@ -158,7 +159,7 @@ class FileLock:
             elif _BACKEND == "msvcrt":  # pragma: no cover - Windows only
                 try:
                     os.lseek(self._fd, 0, os.SEEK_SET)
-                    msvcrt.locking(self._fd, msvcrt.LK_UNLCK, 1)
+                    msvcrt.locking(self._fd, msvcrt.LK_UNLCK, 1)  # type: ignore[attr-defined]  # win32-only
                 except OSError:
                     pass
         finally:

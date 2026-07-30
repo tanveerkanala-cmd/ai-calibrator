@@ -110,8 +110,9 @@ def lint_spec(spec: BehaviorSpec, tests: list[TestCase]) -> LintReport:
 
     # Untested criteria + orphan expectations (reuse the coverage analysis).
     cov = analyze_coverage(spec, tests)
-    for c in cov.uncovered_criteria:
-        issues.append(LintIssue("untested_criterion", "warn", f"Criterion {c.id!r} has no targeted test.", c.id))
+    for uncovered in cov.uncovered_criteria:
+        issues.append(LintIssue("untested_criterion", "warn",
+                                f"Criterion {uncovered.id!r} has no targeted test.", uncovered.id))
     # An `expects` naming a criterion the spec doesn't have grades against nothing:
     # the test still runs (and still costs an engine call) but contributes no
     # verdict, so it silently leaves the pass rate's denominator. That is a green

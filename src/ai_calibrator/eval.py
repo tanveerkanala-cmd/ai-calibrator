@@ -272,10 +272,11 @@ def run_eval(
             # CriterionResult multiple times, multiplying that criterion's weight in
             # the weighted score. Each criterion counts once.
             _seen: set[str] = set()
-            expected = [
-                cid for cid in (test.expects or list(crit_by_id))
-                if cid in crit_by_id and not (cid in _seen or _seen.add(cid))
-            ]
+            expected: list[str] = []
+            for cid in (test.expects or list(crit_by_id)):
+                if cid in crit_by_id and cid not in _seen:
+                    _seen.add(cid)
+                    expected.append(cid)
             graded: dict[str, CriterionResult] = {}
 
             # An answer that says NOTHING fails everything, before any grading layer

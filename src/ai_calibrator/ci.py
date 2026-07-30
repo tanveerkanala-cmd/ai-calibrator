@@ -19,7 +19,7 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Union
+from typing import Callable, Union, cast
 
 from .compile import render_system_prompt
 from .drift import compare_scorecards, load_scorecard
@@ -40,7 +40,14 @@ EngineOrFactory = Union[Engine, Callable[[], Engine]]
 
 
 def _resolve(engine: EngineOrFactory) -> Engine:
-    return engine() if callable(engine) and not hasattr(engine, "complete") else engine
+    """An engine, whether one was passed or a factory for one.
+
+    Duck-typed on purpose: an Engine is anything with ``complete``, and a factory
+    is any other callable. `cast` records what the check established, since no
+    static form expresses "callable but not an Engine"."""
+    if callable(engine) and not hasattr(engine, "complete"):
+        return cast("Callable[[], Engine]", engine)()
+    return cast("Engine", engine)
 
 
 @dataclass
@@ -79,9 +86,14 @@ def run_ci(
     one). ``subject``/``judge`` may be engines or zero-arg factories (factories
     are called only after lint passes). The caller validates numeric inputs."""
     result = CiResult()
+    if project.spec is None:
+        # Callers guard this, but a gate is exactly the wrong place to trust that:
+        # an uncompiled project has nothing to lint, evaluate or certify.
+        raise ValueError("No spec to certify — run `calibrate compile` first.")
+    spec = project.spec
 
     # 1. lint — free; errors mean the gate can't measure anything meaningful.
-    report = lint_spec(project.spec, project.tests)
+    report = lint_spec(spec, project.tests)
     report.issues.extend(lint_unknown_fields(project))
     n_err, n_warn = len(report.errors), len(report.warnings)
     detail = f"{n_err} error(s), {n_warn} warning(s)"

@@ -77,6 +77,20 @@ exclude = ["docs/BUILD-PLAN.md"]
 # inside a bare "N skipped" line.
 addopts = "-ra"
 
+[tool.mypy]
+python_version = "3.10"
+files = ["src/ai_calibrator"]
+# Optional extras (cloud engines, RAG, document parsing, the web server) are not
+# installed in every environment and several ship no type information. Their
+# absence is a packaging fact, not a defect in this code — the modules that use
+# them already import lazily and degrade with a friendly message.
+[[tool.mypy.overrides]]
+module = [
+    "anthropic.*", "openai.*", "lancedb.*", "sentence_transformers.*",
+    "pypdf.*", "docx.*", "torch.*", "uvicorn.*", "regex.*", "yaml.*",
+]
+ignore_missing_imports = true
+
 [tool.ruff.lint]
 # Bug-focused static-analysis gate: pyflakes (F), bugbear (B), syntax (E9).
 # B008 and B904 are intentional framework idioms here — Typer/FastAPI require

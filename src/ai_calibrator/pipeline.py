@@ -103,6 +103,12 @@ def calibrate_loop(
         raise ValueError(f"max_rounds must be <= {MAX_REFINE_ROUNDS} (got {max_rounds})")
     if not isinstance(threshold, (int, float)) or not math.isfinite(threshold) or not (0.0 <= threshold <= 1.0):
         raise ValueError(f"threshold must be a finite number in [0, 1] (got {threshold!r})")
+    if project.spec is None:
+        # The loop refines the spec's standards, so an uncompiled project has
+        # nothing to refine — fail here rather than partway through round one,
+        # after the subject and judge have already been billed for an eval.
+        raise ValueError("No spec to refine — run `calibrate compile` first.")
+    spec = project.spec
 
     cards: list[Scorecard] = []
     for rnd in range(1, max_rounds + 1):
@@ -119,7 +125,7 @@ def calibrate_loop(
         if not new_standards:
             break  # nothing NEW to add — more rounds would just repeat themselves
         # Update the source of truth; the next round re-renders the system prompt.
-        project.spec.standards.extend(new_standards)
+        spec.standards.extend(new_standards)
         if on_spec_change is not None:
             on_spec_change(project)  # persist before the next round earns a scorecard
 

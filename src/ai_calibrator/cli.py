@@ -661,7 +661,12 @@ def interview(
     # interview ids, and prompting for each would collect two answers under one
     # dict key (losing the first). The apply step fans the answer to every match.
     seen_ids: set[str] = set()
-    pending = [it for it in pending if not (it.id in seen_ids or seen_ids.add(it.id))]
+    unique_pending = []
+    for it in pending:
+        if it.id not in seen_ids:
+            seen_ids.add(it.id)
+            unique_pending.append(it)
+    pending = unique_pending
     answers: dict[str, str] = {}
     for item in pending:
         if accept_drafts:

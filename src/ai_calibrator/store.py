@@ -141,7 +141,8 @@ def atomic_write_text(path: str | Path, text: str) -> Path:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=str(target.parent), prefix=target.name + ".", suffix=".tmp")
-    tmp: Path | None = Path(tmp_name)
+    tmp = Path(tmp_name)
+    ours = True  # we still own the temp file — clear it once the rename takes it
     try:
         fh = os.fdopen(fd, "w", encoding="utf-8")
     except BaseException:  # fdopen didn't take the fd — close it (quietly, so the
@@ -155,9 +156,9 @@ def atomic_write_text(path: str | Path, text: str) -> Path:
             os.fsync(fh.fileno())
         _preserve_mode(tmp, target)
         _atomic_replace(tmp, target)
-        tmp = None
+        ours = False
     finally:
-        if tmp is not None:
+        if ours:
             _unlink_quietly(tmp)
     return target
 
@@ -194,7 +195,8 @@ def save_project(project: Project, path: str | Path) -> Path:
     # cross-filesystem rename is not). mkstemp gives each concurrent writer its
     # own path, eliminating the shared-".tmp"-file race entirely.
     fd, tmp_name = tempfile.mkstemp(dir=str(directory), prefix=PROJECT_FILE + ".", suffix=".tmp")
-    tmp: Path | None = Path(tmp_name)
+    tmp = Path(tmp_name)
+    ours = True  # we still own the temp file — clear it once the rename takes it
     try:
         fh = os.fdopen(fd, "w", encoding="utf-8")
     except BaseException:  # fdopen didn't take the fd — close it (quietly, so the
@@ -210,9 +212,9 @@ def save_project(project: Project, path: str | Path) -> Path:
         # reverts a chmod the owner made deliberately.
         _preserve_mode(tmp, target)
         _atomic_replace(tmp, target)  # atomic on the same filesystem (retries on Windows)
-        tmp = None  # ownership transferred to `target`; nothing to clean up
+        ours = False  # ownership transferred to `target`; nothing to clean up
     finally:
-        if tmp is not None:
+        if ours:
             _unlink_quietly(tmp)  # an error before replace left a stray temp
 
     _fsync_dir(directory)

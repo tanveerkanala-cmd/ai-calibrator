@@ -32,6 +32,13 @@ class Role(str, Enum):
 class EngineError(RuntimeError):
     """An engine/provider failure (upstream), as opposed to bad user input."""
 
+    # The upstream HTTP status, when the adapter knew one. Callers use it to tell
+    # "this model rejected the request" (400 — e.g. no strict-json_schema support,
+    # safe to retry unconstrained) from a timeout / 429 / 5xx, which must never
+    # silently downgrade to an unconstrained call. Declared here rather than
+    # assigned ad hoc so both sides of that decision share one contract.
+    status: int | None = None
+
 
 class EngineTimeout(EngineError):
     """The engine/provider did not respond in time."""

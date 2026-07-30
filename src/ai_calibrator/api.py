@@ -520,9 +520,10 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             project = _load(name)
             if project.spec is None:
                 raise HTTPException(400, f"No spec yet — POST /api/projects/{name}/compile first (examples attach to the spec).")
-            added, skipped = merge_examples(project.spec, new, dedup=body.dedup)
+            spec = project.spec
+            added, skipped = merge_examples(spec, new, dedup=body.dedup)
             save_project(project, d)
-        return {"added": added, "skipped": skipped, **examples_status(_load(name).spec)}
+        return {"added": added, "skipped": skipped, **examples_status(spec)}
 
     @app.post("/api/projects/{name}/compile")
     def compile_(name: str, make_engine=Depends(_engine_factory)):

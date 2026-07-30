@@ -14,6 +14,7 @@ detected rather than silently coerced.
 from __future__ import annotations
 
 import re
+from typing import TypeGuard
 
 # A model id / output-dir token safe to bake into a GENERATED file that later
 # runs — train.py / run.py (Python), a Modelfile, README/shell lines. Restricting
@@ -49,8 +50,12 @@ def safe_token(value: str, field: str) -> str:
     return value
 
 
-def is_str(value: object) -> bool:
-    """True only for a non-blank string — used to gate required string fields."""
+def is_str(value: object) -> TypeGuard[str]:
+    """True only for a non-blank string — used to gate required string fields.
+
+    A TypeGuard so the narrowing is visible to a type checker: this is the
+    project's standard "is this usable as a string?" gate, and without it every
+    site that guards with it still reads as ``object`` afterwards."""
     return isinstance(value, str) and bool(value.strip())
 
 
