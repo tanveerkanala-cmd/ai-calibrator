@@ -874,16 +874,20 @@ def test_api_refine_persists_each_round_before_the_next_one_is_graded(tmp_path):
 
 
 def test_delete_moves_the_tree_aside_before_removing_it(tmp_path, monkeypatch):
-    """Deleting IN PLACE destroys the lock file providing the mutual exclusion:
-    on POSIX a concurrent actor then creates a fresh `.lock` at the same path and
-    acquires it while this delete is still running, so two holders proceed at
-    once. The tree is renamed under the lock and removed after it is released, so
-    a project recreated under the same name cannot be caught by the removal."""
+    """POSIX: deleting IN PLACE destroys the lock file providing the mutual
+    exclusion — unlink succeeds on an open file there, so a waiter creates a
+    fresh `.lock` at the same path and acquires it while this delete is still
+    running. Renaming takes the lock file with the tree, so the name is free the
+    instant the rename lands and a project recreated under it is never caught by
+    the removal."""
     import os
     import shutil
     from pathlib import Path
 
     from ai_calibrator.store import load_project
+
+    if os.name == "nt":
+        pytest.skip("Windows cannot rename a directory holding an open handle; it deletes in place")
 
     c = _client(tmp_path)
     assert c.post("/api/projects", json={"name": "p", "goal": "old"}).status_code == 200
@@ -894,25 +898,55 @@ def test_delete_moves_the_tree_aside_before_removing_it(tmp_path, monkeypatch):
     def watching_rmtree(path, *a, **kw):
         removed.append(Path(path))
         # A create wins the name the instant the rename frees it — the window the
-        # old in-place delete could not survive.
+        # in-place delete could not survive.
         save_project(Project(name="p", goal="brand new"), tmp_path / "p")
         real_rmtree(path, *a, **kw)
 
     monkeypatch.setattr(shutil, "rmtree", watching_rmtree)
     r = c.request("DELETE", "/api/projects/p")
 
-    # The invariant both platforms must hold: a project recreated under this name
-    # is never caught by the removal.
-    assert load_project(tmp_path / "p").goal == "brand new"
-    if os.name == "nt":
-        # Windows cannot rename a directory holding an open handle — which is the
-        # same fact that makes deleting in place safe there, since the handle also
-        # blocks unlinking `.lock`. The recreated project is what remains, so the
-        # delete correctly reports that it did not finish.
-        assert r.status_code == 409, r.text
-    else:
-        assert r.status_code == 200, r.text
-        assert removed and removed[0] != tmp_path / "p"     # never the live path
+    assert r.status_code == 200, r.text
+    assert removed and removed[0] != tmp_path / "p"          # never the live path
+    assert load_project(tmp_path / "p").goal == "brand new"  # the new project is untouched
+
+
+def test_delete_retry_cannot_destroy_a_project_recreated_in_the_window(tmp_path, monkeypatch):
+    """Windows: the tree is deleted in place, and the open lock handle blocks
+    unlinking `.lock` — so the directory survives the first pass and a second one
+    runs after the lock is released. A create can win the name in between, and
+    that retry must leave the new project alone."""
+    import os
+    import shutil
+    from pathlib import Path
+
+    from ai_calibrator.store import load_project
+
+    if os.name != "nt":
+        pytest.skip("POSIX renames the tree aside; there is no second pass")
+
+    c = _client(tmp_path)
+    assert c.post("/api/projects", json={"name": "p", "goal": "old"}).status_code == 200
+
+    real_rmtree = shutil.rmtree
+    seen = []
+
+    def fake_rmtree(path, *a, **kw):
+        p = Path(path)
+        seen.append(p)
+        if len(seen) > 1:
+            real_rmtree(p, *a, **kw)
+            return
+        for child in p.iterdir():
+            if child.name == ".lock":
+                continue  # an open handle: Windows refuses to unlink it
+            real_rmtree(child) if child.is_dir() else child.unlink()
+        save_project(Project(name="p", goal="brand new"), p)  # a concurrent create
+
+    monkeypatch.setattr(shutil, "rmtree", fake_rmtree)
+    r = c.request("DELETE", "/api/projects/p")
+
+    assert load_project(tmp_path / "p").goal == "brand new"  # survived the retry
+    assert r.status_code == 409  # files remain, so the delete never claims success
 
 
 def test_delete_reports_failure_when_the_tree_cannot_be_moved(tmp_path, monkeypatch):
