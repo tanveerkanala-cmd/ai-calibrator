@@ -84,8 +84,12 @@ def load_labels(project_dir: str | Path, run_id: str) -> list[dict]:
         return []
     # Require the verdict too: a label without "passed" carries no judgment, and
     # letting it through would be silently treated as a fail downstream.
+    # isinstance, not truthiness: a list or dict id is truthy and reaches the
+    # consumers as an unhashable dictionary key, which aborts a whole export with
+    # a TypeError. save_labels writes strings; a hand-edited file may not.
     return [x for x in labels
-            if isinstance(x, dict) and x.get("test_id") and x.get("criterion_id") and "passed" in x]
+            if isinstance(x, dict) and isinstance(x.get("test_id"), str) and x["test_id"]
+            and isinstance(x.get("criterion_id"), str) and x["criterion_id"] and "passed" in x]
 
 
 def all_labels(project_dir: str | Path) -> list[tuple[str, list[dict]]]:

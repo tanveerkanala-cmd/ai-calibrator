@@ -1129,6 +1129,10 @@ def absorb(path: Path = typer.Argument(Path("."), help="Project directory.")) ->
     typer.echo(f"  examples added: {result.examples_added}   pinned tests added: {result.tests_added}"
                + (f" ({', '.join(result.test_ids)})" if result.test_ids else "")
                + (f"   skipped: {result.skipped}" if result.skipped else ""))
+    if result.unparsed:
+        typer.secho(f"  ⚠ {result.unparsed} inbox line(s) could not be read and were LEFT IN "
+                    "PLACE — they are still in logs/feedback.jsonl. Absorbing cannot consume "
+                    "them, and deleting them would destroy the only copy.", fg=typer.colors.YELLOW)
     if result.tests_added:
         # Only a new TEST moves config_hash; an examples-only absorb leaves the
         # fingerprint (and therefore the gate) exactly where it was.

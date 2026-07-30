@@ -92,10 +92,21 @@ def append_feedback(project_dir: str | Path, record: dict, *,
 
 def read_feedback(project_dir: str | Path) -> list[dict]:
     """Pending feedback records, junk-tolerant (malformed lines are skipped)."""
+    return read_feedback_lines(project_dir)[0]
+
+
+def read_feedback_lines(project_dir: str | Path) -> tuple[list[dict], list[str]]:
+    """``(records, unparsed_lines)`` from the inbox.
+
+    The unparsed half matters because the inbox is TRUNCATED after absorb: a line
+    that cannot be parsed is not absorbed, so truncating it away destroys it —
+    silently, and it was the only copy of something a human took the trouble to
+    send. A partial write or an encoding accident is exactly how one arises."""
     f = Path(project_dir) / "logs" / FEEDBACK_FILE
     if not f.exists():
-        return []
+        return [], []
     out: list[dict] = []
+    junk: list[str] = []
     for line in f.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line:
@@ -103,10 +114,13 @@ def read_feedback(project_dir: str | Path) -> list[dict]:
         try:
             obj = json.loads(line)
         except ValueError:
+            junk.append(line)
             continue
         if isinstance(obj, dict):
             out.append(obj)
-    return out
+        else:
+            junk.append(line)
+    return out, junk
 
 
 @dataclass
@@ -117,6 +131,7 @@ class AbsorbResult:
     tests_added: int = 0
     skipped: int = 0                       # malformed or duplicate records
     superseded: int = 0                    # earlier examples retracted by a later verdict
+    unparsed: int = 0                      # inbox lines left in place because nothing could read them
     test_ids: list[str] = field(default_factory=list)
 
 
@@ -159,7 +174,7 @@ def absorb_feedback(project: Project, project_dir: str | Path, *,
     permissions, a crash) leaves them there to absorb again instead of draining
     them into a project that was never written. Re-absorbing costs nothing;
     losing a flagged exchange the flywheel promised to pin forever does."""
-    records = read_feedback(project_dir)
+    records, unparsed = read_feedback_lines(project_dir)
     result = AbsorbResult()
     if not records:
         return result
@@ -231,7 +246,11 @@ def absorb_feedback(project: Project, project_dir: str | Path, *,
     absorbed = logs / ABSORBED_FILE
     prior = absorbed.read_text(encoding="utf-8") if absorbed.exists() else ""
     atomic_write_text(absorbed, prior + "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records))
-    atomic_write_text(logs / FEEDBACK_FILE, "")
+    # Keep what could not be parsed. Truncating it away would destroy the only
+    # copy of a record nothing consumed — and a later release that can read it
+    # (or a human eye) still can.
+    atomic_write_text(logs / FEEDBACK_FILE, "".join(line + "\n" for line in unparsed))
+    result.unparsed = len(unparsed)
     return result
 
 
@@ -239,4 +258,4 @@ def absorb_dict(result: AbsorbResult) -> dict:
     return {"ups": result.ups, "downs": result.downs,
             "examples_added": result.examples_added, "tests_added": result.tests_added,
             "skipped": result.skipped, "superseded": result.superseded,
-            "test_ids": result.test_ids}
+            "unparsed": result.unparsed, "test_ids": result.test_ids}
