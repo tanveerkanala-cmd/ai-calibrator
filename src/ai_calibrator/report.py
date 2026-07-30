@@ -360,6 +360,17 @@ def render_html_report(project: Project, coverage: CoverageReport, latest: Score
                      # counting two different test sets, and nothing says so.
                      ("Suite coverage of this run",
                       f"{n_tests - len(_ungraded_tests(project, latest))}/{n_tests} current test(s) graded")]
+        # The certificate is the artifact that gets shared, so it must carry the
+        # same receipt the markdown does: removing a test this run FAILED raises
+        # the headline without the AI having changed, and a reader multiplying the
+        # rows above would otherwise never see it.
+        dropped = _dropped_tests(project, latest)
+        if dropped:
+            failed = {r.test_id for r in latest.results if r.criteria and not r.passed}
+            n_failed = sum(1 for t in dropped if t in failed)
+            measures += [("Graded but no longer in the suite",
+                          f"{len(dropped)} test(s)"
+                          + (f", {n_failed} of which this run FAILED" if n_failed else ""))]
     else:
         measures += [("Pass rate", "— (no eval yet)")]
     measures += [("Certification", f"{status} — {detail}")]

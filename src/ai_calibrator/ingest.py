@@ -167,6 +167,13 @@ def _join_capped(docs: list[tuple[Path, str]], cap: int) -> tuple[str, int]:
         body = text[:budget]
         parts.append(header + body)
         total += len(header) + len(body)
+        if len(body) < len(text):
+            # Only a document taken WHOLE counts as analyzed. Counting a truncated
+            # one made `analyzed == materials`, which is the CLI's signal that
+            # every file informed the facts and the gap list — so the warning that
+            # the corpus was cut off never fired, on exactly the run where the tail
+            # of a document silently did not reach the extractor.
+            break
         included += 1
     return "".join(parts), included
 

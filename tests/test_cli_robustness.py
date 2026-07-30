@@ -517,5 +517,8 @@ def test_ingest_warns_when_only_part_of_the_corpus_was_analyzed(tmp_path, monkey
 
     result = runner.invoke(app, ["ingest", str(tmp_path), "--no-index"])
     assert result.exit_code == 0, result.output
-    assert "1 of 2 file(s) fit" in result.output
+    # Neither file FIT: a.md was truncated at the cap and b.md never reached the
+    # extractor. Counting a partially-read file as analyzed is what let a single
+    # oversized material report "1 of 1" and suppress this warning entirely.
+    assert "0 of 2 file(s) fit" in result.output
     assert _has_no_traceback(result.output)

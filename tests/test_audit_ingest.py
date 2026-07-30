@@ -555,3 +555,51 @@ def test_bom_less_wide_encodings_pick_the_right_endianness(tmp_path, encoding):
     f = tmp_path / "notes.txt"
     f.write_bytes("Refunds are issued within 30 days.".encode(encoding))
     assert read_document(f) == "Refunds are issued within 30 days."
+
+
+# --- an exported check must mean the same thing on the other side ----------
+
+@pytest.mark.parametrize("pattern,portable", [
+    (r"^\d{3}-\d{4}$", True),
+    (r"[A-Z][a-z]+\s+", True),
+    (r"(?i)refund", False),        # JS takes flags as an argument, not inline
+    (r"(?P<year>\d{4})", False),   # JS spells named groups (?<year>...)
+    (r"\Astrict", False),          # JS has ^ and $ only
+    (r"a*+b", False),              # possessive quantifiers: a SyntaxError in JS
+    (r"\p{L}+", False),            # needs the /u flag promptfoo does not pass
+])
+def test_only_regexes_both_engines_read_alike_are_exported(pattern, portable):
+    """promptfoo's regex assertion is `new RegExp(value)` — JavaScript. Outside the
+    common subset JS either throws or matches something else, so the exported
+    suite would grade a different rule than `calibrate eval` does."""
+    p = _checked_project()
+    p.spec.eval_criteria[0].check = Check(kind="regex", value=pattern)
+
+    out = to_promptfoo(p)
+    asserts = yaml.safe_load(out)["tests"][0]["assert"]
+
+    if portable:
+        assert {"type": "regex", "value": pattern} in asserts
+        assert not out.startswith("# NOTE:")
+    else:
+        assert all(a["type"] != "regex" for a in asserts)
+        assert any(a["type"] == "llm-rubric" for a in asserts)
+        assert "cannot express" in out.splitlines()[0]      # and it says so
+
+
+def test_a_single_oversized_material_is_reported_as_not_analyzed(tmp_path, monkeypatch):
+    """One file bigger than the window used to report "1 of 1 analyzed", so the
+    truncation warning never fired on the only run where it mattered."""
+    from ai_calibrator import ingest as ingest_mod
+
+    monkeypatch.setattr(ingest_mod, "MAX_EXTRACT_CHARS", 200)
+    mats = tmp_path / "materials"
+    mats.mkdir()
+    (mats / "handbook.md").write_text("policy. " * 500, encoding="utf-8")
+
+    project = Project(name="p", goal="g")
+    result = ingest_mod.ingest_project(project, mats, FakeEngine({"facts": [], "gaps": []}),
+                                       project_dir=tmp_path, build_index=False)
+
+    assert result.materials == 1
+    assert result.analyzed == 0     # nothing fit the window, and the CLI now says so

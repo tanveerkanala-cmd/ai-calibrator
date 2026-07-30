@@ -873,10 +873,12 @@ def test_api_refine_persists_each_round_before_the_next_one_is_graded(tmp_path):
     assert "Cite the policy section you relied on." in load_project(tmp_path / "p").spec.standards
 
 
-def test_delete_retry_cannot_destroy_a_project_recreated_in_the_window(tmp_path, monkeypatch):
-    # The second rmtree runs after the lock is released, so a create can win the
-    # lock in between. Simulate the Windows leftover (`.lock` survives the first
-    # pass) plus that concurrent create: the retry must leave the new project alone.
+def test_delete_moves_the_tree_aside_before_removing_it(tmp_path, monkeypatch):
+    """Deleting IN PLACE destroys the lock file providing the mutual exclusion:
+    on POSIX a concurrent actor then creates a fresh `.lock` at the same path and
+    acquires it while this delete is still running, so two holders proceed at
+    once. The tree is renamed under the lock and removed after it is released, so
+    a project recreated under the same name cannot be caught by the removal."""
     import shutil
     from pathlib import Path
 
@@ -886,25 +888,38 @@ def test_delete_retry_cannot_destroy_a_project_recreated_in_the_window(tmp_path,
     assert c.post("/api/projects", json={"name": "p", "goal": "old"}).status_code == 200
 
     real_rmtree = shutil.rmtree
-    seen = []
+    removed = []
 
-    def fake_rmtree(path, *a, **kw):
-        p = Path(path)
-        seen.append(p)
-        if len(seen) > 1:
-            real_rmtree(p, *a, **kw)
-            return
-        for child in p.iterdir():
-            if child.name == ".lock":
-                continue  # an open handle: Windows refuses to unlink it
-            real_rmtree(child) if child.is_dir() else child.unlink()
-        save_project(Project(name="p", goal="brand new"), p)  # a concurrent create
+    def watching_rmtree(path, *a, **kw):
+        removed.append(Path(path))
+        # A create wins the name the instant the rename frees it — the window the
+        # old in-place delete could not survive.
+        save_project(Project(name="p", goal="brand new"), tmp_path / "p")
+        real_rmtree(path, *a, **kw)
 
-    monkeypatch.setattr(shutil, "rmtree", fake_rmtree)
+    monkeypatch.setattr(shutil, "rmtree", watching_rmtree)
     r = c.request("DELETE", "/api/projects/p")
 
-    assert load_project(tmp_path / "p").goal == "brand new"  # survived the retry
-    assert r.status_code == 409  # files remain, so the delete never claims success
+    assert r.status_code == 200, r.text
+    assert removed and removed[0] != tmp_path / "p"     # never the live path
+    assert load_project(tmp_path / "p").goal == "brand new"   # the new project is untouched
+
+
+def test_delete_reports_failure_when_the_tree_cannot_be_moved(tmp_path, monkeypatch):
+    """A delete that removed nothing must not claim success."""
+    import os
+
+    c = _client(tmp_path)
+    assert c.post("/api/projects", json={"name": "p", "goal": "g"}).status_code == 200
+
+    def refuse(src, dst):
+        raise OSError(13, "Permission denied")
+
+    monkeypatch.setattr(os, "replace", refuse)
+    r = c.request("DELETE", "/api/projects/p")
+
+    assert r.status_code == 409 and "could not delete" in r.text
+    assert (tmp_path / "p" / "project.yaml").exists()   # still there, as reported
 
 
 def test_api_snapshot_refuses_to_pin_a_partial_run(tmp_path):
@@ -1004,7 +1019,11 @@ def test_ingest_reports_how_many_files_were_analyzed(tmp_path, monkeypatch):
 
     body = c.post("/api/projects/p/ingest").json()
     assert body["materials"] == 2
-    assert body["analyzed"] == 1
+    # Neither file FIT the window — the first was truncated at the cap and the
+    # second never reached the extractor at all. Counting a partially-read file
+    # as analyzed is what let a single oversized material report "1 of 1
+    # analyzed" and suppress the warning entirely.
+    assert body["analyzed"] == 0
 
 
 

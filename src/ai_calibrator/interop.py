@@ -31,6 +31,25 @@ def _provider_id(spec: str) -> str:
     }.get(provider, spec)
 
 
+# Constructs Python's `regex`/`re` accept that JavaScript's RegExp does not read
+# the same way. Conservative by design: a pattern exports only when NONE of these
+# appear in it, so the failure mode is an honest downgrade to llm-rubric, never a
+# rule that quietly means something different on the other side.
+_PY_ONLY_REGEX = (
+    "(?P", "(?#", "(?>", "(?(",      # named groups, comments, atomic, conditionals
+    "\\A", "\\Z", "\\z",          # JS has ^ and $ only
+    "(?i", "(?m", "(?s", "(?x",      # inline flags — JS takes flags as an argument
+    "\\p{", "\\P{",                 # Unicode properties need the /u flag JS is not given
+    "*+", "++", "?+", "}+",          # possessive quantifiers
+    "\\h", "\\R", "\\K",           # `regex` module extensions
+)
+
+
+def _portable_regex(pattern: str) -> bool:
+    """True if this pattern means the same thing to Python and to JavaScript."""
+    return not any(token in pattern for token in _PY_ONLY_REGEX)
+
+
 def _check_assert(check: Check) -> dict | None:
     """The promptfoo assertion equivalent to a deterministic ``check``, or None.
 
@@ -45,7 +64,14 @@ def _check_assert(check: Check) -> dict | None:
     if kind == "not_contains":
         return {"type": "not-icontains", "value": value}
     if kind == "regex":
-        return {"type": "regex", "value": value}
+        # promptfoo's regex assertion is `new RegExp(value)` — JavaScript, not
+        # Python. The dialects agree on a common subset and diverge outside it
+        # (named groups, \\A, \\Z, inline flags, atomic groups): JS either throws
+        # or, worse, matches something else, so the exported suite would grade a
+        # different rule than `calibrate eval` does. Export only what both read
+        # identically; anything else takes the honest downgrade the caller already
+        # implements (llm-rubric, plus a NOTE naming the criterion).
+        return {"type": "regex", "value": value} if _portable_regex(value) else None
     if kind == "non_empty":
         return {"type": "javascript", "value": "output.trim().length > 0"}
     if kind in ("max_chars", "min_chars"):

@@ -109,7 +109,9 @@ def test_ingest_reports_documents_the_extractor_never_saw(tmp_path):
             return {"facts": [], "gaps": []}
 
     _facts, _gaps, analyzed = extract_gaps("g", "assistant", docs, Eng())
-    assert analyzed == 1 and analyzed < len(docs)
+    # a.md is exactly the cap, so the per-file header pushes it past the budget
+    # and it is truncated too — nothing was read whole.
+    assert analyzed == 0 and analyzed < len(docs)
 
 
 # --- a merge must not silently lose a human's rule --------------------------

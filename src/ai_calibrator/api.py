@@ -13,6 +13,7 @@ from __future__ import annotations
 import math
 import os
 import tempfile
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -358,31 +359,31 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         it can't race an in-flight operation on the same project."""
         import shutil
 
-        from .store import LOCK_FILE
         d = _dir(name)
         if not (d / "project.yaml").exists():
             raise HTTPException(404, f"no project {name!r}")
+        # Move the tree aside while holding the lock, then delete it after the
+        # lock is released. Deleting IN PLACE destroys the very lock file that is
+        # providing the mutual exclusion: on POSIX the unlink succeeds and a
+        # concurrent actor immediately creates a fresh `.lock` at the same path
+        # and acquires it, so two holders proceed at once; on Windows the open
+        # handle blocks the unlink and the directory survives the rmtree. A rename
+        # has neither problem — the lock file travels with the tree, this request
+        # keeps holding the same inode, and a waiter finds no project.yaml and
+        # correctly reports the project gone.
+        stash = d.parent / f".{d.name}.deleting-{os.getpid()}-{threading.get_ident()}"
         with _held(d, name):
-            shutil.rmtree(d, ignore_errors=True)
-        # Second pass AFTER the lock is released. The lock file lives inside the
-        # tree and is held open for the duration of the block; Windows refuses to
-        # unlink an open file, so `.lock` (and therefore the directory) routinely
-        # survives the first rmtree there. Nothing is wrong in that case — retry
-        # now that the handle is closed. Retry ONLY when that stale lock file (or
-        # nothing) is all that is left: releasing the lock lets a concurrent
-        # create take it and rebuild a project under the same name, and a blind
-        # second rmtree would silently destroy that brand-new project.
-        try:
-            leftovers = {p.name for p in d.iterdir()}
-        except OSError:
-            leftovers = set()  # already gone, or unreadable — d.exists() decides below
-        if d.exists() and leftovers <= {LOCK_FILE}:
-            shutil.rmtree(d, ignore_errors=True)
+            try:
+                os.replace(d, stash)
+            except OSError as exc:
+                raise HTTPException(409, f"could not delete {name!r}: {exc}. Check permissions "
+                                         "or another process holding its files open.")
+        shutil.rmtree(stash, ignore_errors=True)
         # ignore_errors swallows every OSError, so verify rather than assume: a
         # delete that removed nothing (or half the tree) must not report success
         # while the project's uploaded documents are still on disk.
-        if d.exists():
-            raise HTTPException(409, f"could not fully delete {name!r} — files remain at {d}. "
+        if stash.exists():
+            raise HTTPException(409, f"could not fully delete {name!r} — files remain at {stash}. "
                                      "Check permissions or another process holding them open.")
         return {"deleted": name}
 
