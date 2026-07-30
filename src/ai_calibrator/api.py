@@ -1126,6 +1126,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             proj = merged_project(out_name, named, goal=goal, task_type=first.task_type,
                                   drops=set(body.drops), additions=body.additions)
             save_project(proj, out_dir)
+            write_project_gitignore(out_dir)  # parity with init/import — see cli.merge
         return _state(proj, out_name)
 
     @app.post("/api/projects/{name}/log")

@@ -1002,7 +1002,7 @@ def ci(
         project = _load(path, on_error=_fail)
         if project.spec is None or not project.tests:
             reason = "nothing to gate — run `calibrate compile` (or `import`) first"
-            raise _fail(reason, f"Nothing to gate — {reason}.")
+            raise _fail(reason, "Nothing to gate — run `calibrate compile` (or `import`) first.")
         # Factories: engines are acquired only if lint passes — a lint-broken spec
         # shouldn't demand credentials, and an engine problem shouldn't mask lint.
         log_on = project.log_interactions
@@ -1949,6 +1949,10 @@ def merge(
                 typer.secho(f"A project already exists at {out}/.", fg=typer.colors.RED)
                 raise typer.Exit(code=1)
             save_project(merged, out)
+            # The same .gitignore init and import write. A merged org project is
+            # one of the likeliest to end up in git, and without this its logs/,
+            # evals/ and any .env are committable.
+            write_project_gitignore(out)
             atomic_write_text(out / "reconciliation.yaml",
                               _yaml.safe_dump({"stakeholders": list(named), "conflicts": audit,
                                                "field_conflicts": scalar_audit},
@@ -2565,6 +2569,10 @@ def examples(
     dupe_note = f" ({st['duplicates']} duplicate(s) — `--dedup` to clean)" if st["duplicates"] else ""
     typer.secho(f"\n{st['unique_inputs']} unique training example(s){dupe_note}; "
                 f"{st['with_output']} with an output.", bold=True)
+    if st.get("engine_written"):
+        typer.secho(f"  {st['engine_written']} of {st['with_output']} answered example(s) are "
+                    "compiler-written and cannot be trained on — import your own, or capture "
+                    "corrections with `calibrate teach`.", fg=typer.colors.YELLOW)
     if st["enough_to_finetune"]:
         typer.secho(f"✓ Enough to try a fine-tune (recommended ≥{st['recommended']}). Next:  calibrate train",
                     fg=typer.colors.GREEN)

@@ -522,3 +522,32 @@ def test_ingest_warns_when_only_part_of_the_corpus_was_analyzed(tmp_path, monkey
     # oversized material report "1 of 1" and suppress this warning entirely.
     assert "0 of 2 file(s) fit" in result.output
     assert _has_no_traceback(result.output)
+
+
+def test_merge_writes_the_protective_gitignore(tmp_path, monkeypatch):
+    """`init` and `import` both write it; merge was the last creation path that
+    did not — and a merged org project is among the likeliest to end up in git,
+    where its logs/, evals/ and any .env would be committable."""
+    import ai_calibrator.stakeholders as stake
+    from ai_calibrator.models import BehaviorSpec, Project
+    from ai_calibrator.store import save_project
+
+    class _Eng:
+        name = "fake@test"
+
+    dirs = {}
+    for nm in ("alpha", "beta"):
+        dirs[nm] = tmp_path / nm
+        save_project(Project(name=nm, goal="g",
+                             spec=BehaviorSpec(goal="g", standards=[f"{nm} rule"])), dirs[nm])
+    monkeypatch.setattr("ai_calibrator.engines.get_engine", lambda spec: _Eng())
+    monkeypatch.setattr(stake, "detect_conflicts", lambda statements, engine: [])
+
+    out = tmp_path / "org"
+    r = runner.invoke(app, ["merge", str(out), "--from", str(dirs["alpha"]),
+                            "--from", str(dirs["beta"])])
+    assert r.exit_code == 0, r.output
+    gitignore = out / ".gitignore"
+    assert gitignore.is_file(), "merged project has no .gitignore"
+    body = gitignore.read_text(encoding="utf-8")
+    assert "logs/" in body and ".env" in body

@@ -228,7 +228,10 @@ def test_dedup_keeps_the_correction_not_the_rejected_answer():
 
 def test_training_overlap_names_tests_that_are_training_prompts():
     project = Project(name="p", goal="g")
-    project.spec = BehaviorSpec(goal="g", examples=[Example(input="q1", good_output="a")])
+    # source must be declared: an engine-written example is not a training row, so
+    # a test using its input is held out rather than overlapping.
+    project.spec = BehaviorSpec(goal="g", examples=[
+        Example(input="q1", good_output="a", source="human")])
     project.tests = [CaseModel(id="ex_1", input="q1"), CaseModel(id="t1", input="unseen")]
     card = Scorecard(run_id="run-0001", results=[
         ResultModel(test_id="ex_1", output="o",
@@ -430,3 +433,75 @@ def test_held_out_rate_reports_zero_tests_rather_than_a_verdict():
 
     card = _card("run-2", [("ex_1", True)])
     assert held_out_rate(card, {"ex_1"}) == (0.0, 0)   # caller must treat as "cannot judge"
+
+
+# --- the two halves of "what did the model train on" must never drift apart ---
+
+def test_training_overlap_uses_the_same_rule_as_the_dataset():
+    """A compiler-written example is not a training target, so a test using its
+    input is genuinely HELD OUT. When only assemble_dataset learned about
+    provenance, the gate excluded tests the model had never seen — shrinking the
+    held-out set and changing verdicts."""
+    from ai_calibrator.finetune import assemble_dataset, training_overlap
+
+    p = Project(name="p", goal="g")
+    p.spec = BehaviorSpec(goal="g", examples=[
+        Example(input="q_engine", good_output="a", source="engine"),
+        Example(input="q_human", good_output="a", source="human"),
+    ])
+    p.tests = [CaseModel(id="ex_1", input="q_engine"), CaseModel(id="ex_2", input="q_human")]
+    card = Scorecard(run_id="run-1", results=[
+        ResultModel(test_id=t, output="o",
+                    criteria=[CriterionResult(criterion_id="c1", passed=True, score=1.0)])
+        for t in ("ex_1", "ex_2")])
+
+    trained_inputs = {r["messages"][-2]["content"] for r in assemble_dataset(p)}
+    assert trained_inputs == {"q_human"}
+    # Exactly the tests whose input was actually trained on — no more.
+    assert training_overlap(p, card) == ["ex_2"]
+
+
+def test_is_training_row_is_the_single_definition():
+    from ai_calibrator.finetune import is_training_row
+
+    assert is_training_row(Example(input="q", good_output="a", source="human"))
+    assert is_training_row(Example(input="q", good_output="a", source="human_ratified"))
+    assert not is_training_row(Example(input="q", good_output="a", source="engine"))
+    assert not is_training_row(Example(input="q", good_output=None, source="human"))
+
+
+def test_recompile_keeps_the_owners_example_over_a_synthesized_one():
+    """A fresh synthesis emitting the same input must not evict the human's row —
+    that loses their material and silently downgrades it to untrainable."""
+    from ai_calibrator.compile import compile_project
+
+    class Eng:
+        name = "e@test"
+
+        def __init__(self):
+            self.n = 0
+
+        def complete(self, prompt, *, system=None, schema=None):
+            self.n += 1
+            if self.n == 1:
+                return {"persona": {"voice": "", "reading_level": ""}, "standards": [],
+                        "do_not": [], "edge_cases": [], "format": "", "refusal_policy": "",
+                        "eval_criteria": [],
+                        "examples": [{"input": "q1", "good_output": "the compiler wrote this",
+                                      "bad_output": "", "why": ""}]}
+            return {"tests": []}
+
+    import tempfile
+    from ai_calibrator.models import InterviewItem
+
+    p = Project(name="p", goal="g")
+    p.interview = [InterviewItem(id="q1", dimension="tone", question="?", answer="warm")]
+    p.spec = BehaviorSpec(goal="g", examples=[
+        Example(input="q1", good_output="the owner wrote this", source="human")])
+
+    with tempfile.TemporaryDirectory() as d:
+        compile_project(p, Eng(), project_dir=d)
+
+    kept = {e.input: e for e in p.spec.examples}
+    assert kept["q1"].good_output == "the owner wrote this"
+    assert kept["q1"].source == "human"

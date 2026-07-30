@@ -231,12 +231,21 @@ def examples_status(spec: BehaviorSpec) -> dict:
     total = len(inputs)
     unique = len(set(inputs))
     with_output = sum(1 for e in spec.examples if is_str(e.good_output))
+    # Only human-authored / human-ratified rows are fine-tuning targets, so this
+    # is the count that decides whether the Advanced tier can do anything. Counting
+    # every row told owners they were ready while `calibrate train` refused them.
+    trainable = sum(1 for e in spec.examples if is_str(e.good_output) and e.trainable)
     return {
         "total": total,
         "unique_inputs": unique,
         "duplicates": total - unique,
         "with_output": with_output,
+        "trainable": trainable,
+        "engine_written": with_output - trainable,
         "recommended": RECOMMENDED_EXAMPLES,
-        "short_by": max(0, RECOMMENDED_EXAMPLES - unique),
-        "enough_to_finetune": unique >= RECOMMENDED_EXAMPLES,
+        # Measured in TRAINABLE rows: a project whose examples are all
+        # compiler-written has nothing to fine-tune on, and saying otherwise sends
+        # the owner to `calibrate train`, which then refuses them.
+        "short_by": max(0, RECOMMENDED_EXAMPLES - trainable),
+        "enough_to_finetune": trainable >= RECOMMENDED_EXAMPLES,
     }

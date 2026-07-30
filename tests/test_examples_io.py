@@ -102,11 +102,26 @@ def test_dedup_examples_keeps_latest_in_first_position():
 
 
 def test_examples_status_threshold_guidance():
-    spec = BehaviorSpec(goal="g", examples=[Example(input=f"q{i}", good_output="x") for i in range(10)])
+    """Readiness is measured in TRAINABLE rows — the ones `calibrate train` will
+    actually use. These fixtures declare provenance because the default is
+    `engine`, which is deliberately untrainable."""
+    spec = BehaviorSpec(goal="g", examples=[
+        Example(input=f"q{i}", good_output="x", source="human") for i in range(10)])
     st = examples_status(spec)
     assert st["unique_inputs"] == 10 and st["short_by"] == 40 and st["enough_to_finetune"] is False
-    spec.examples = [Example(input=f"q{i}", good_output="x") for i in range(55)]
+    spec.examples = [Example(input=f"q{i}", good_output="x", source="human") for i in range(55)]
     assert examples_status(spec)["enough_to_finetune"] is True
+
+
+def test_a_project_of_compiler_written_examples_is_not_finetune_ready():
+    """Counting rows the trainer refuses told owners they were ready when they
+    had nothing to train on."""
+    spec = BehaviorSpec(goal="g", examples=[
+        Example(input=f"q{i}", good_output="x", source="engine") for i in range(60)])
+    st = examples_status(spec)
+    assert st["with_output"] == 60 and st["trainable"] == 0
+    assert st["engine_written"] == 60
+    assert st["enough_to_finetune"] is False and st["short_by"] == 50
 
 
 def test_malformed_yaml_import_is_a_friendly_error(tmp_path):

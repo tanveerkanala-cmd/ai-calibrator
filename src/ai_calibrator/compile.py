@@ -447,8 +447,15 @@ def compile_project(project: Project, engine: Engine, *, project_dir: str | Path
             # Carry forward previously-captured rules so a recompile can't drop them.
             spec.standards = _dedup(list(spec.standards) + list(prior.standards))
             spec.do_not = _dedup(list(spec.do_not) + list(prior.do_not))
-            have = {ex.input for ex in spec.examples}
-            spec.examples = list(spec.examples) + [ex for ex in prior.examples if ex.input not in have]
+            # A human's example always beats a freshly synthesized one for the same
+            # input. The fresh spec's examples are compiler-written; letting one
+            # evict the owner's imported or corrected row would lose their material
+            # AND silently downgrade it to untrainable, so the fine-tune dataset
+            # shrinks without anyone touching it.
+            kept_human = {ex.input: ex for ex in prior.examples if ex.trainable}
+            fresh = [ex for ex in spec.examples if ex.input not in kept_human]
+            have = {ex.input for ex in fresh}
+            spec.examples = fresh + [ex for ex in prior.examples if ex.input not in have]
             # Same for the SCALAR behavior fields. A synthesis run that simply
             # didn't restate them (the schema is satisfied by "", which becomes
             # None) would otherwise delete the voice, the format rule, and the

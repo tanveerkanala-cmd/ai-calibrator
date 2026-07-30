@@ -1163,3 +1163,32 @@ def test_teach_learn_records_each_judgment_once(tmp_path):
     spec = load_project(tmp_path / "p").spec
     assert len(spec.examples) == 1
     assert spec.standards == ["S1"]
+
+
+def test_merge_apply_writes_the_protective_gitignore(tmp_path):
+    """Parity with the CLI's merge and with POST /api/projects."""
+    from ai_calibrator.models import BehaviorSpec, Project
+    from ai_calibrator.store import save_project
+
+    class NoConflict:
+        name = "fake@test"
+
+        def __init__(self, spec):
+            pass
+
+        def complete(self, prompt, *, system=None, schema=None):
+            return {"conflicts": []}
+
+    for nm in ("alpha", "beta"):
+        p = Project(name=nm, goal="g")
+        p.spec = BehaviorSpec(goal="g", standards=[f"{nm} rule"])
+        save_project(p, tmp_path / nm)
+
+    app_ = create_app(tmp_path)
+    app_.dependency_overrides[_engine_factory] = lambda: (lambda spec: NoConflict(spec))
+    r = TestClient(app_).post("/api/merge/apply",
+                              json={"out": "org", "sources": ["alpha", "beta"]})
+    assert r.status_code == 200, r.text
+    gitignore = tmp_path / "org" / ".gitignore"
+    assert gitignore.is_file(), "merged project has no .gitignore"
+    assert "logs/" in gitignore.read_text(encoding="utf-8")

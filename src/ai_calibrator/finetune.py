@@ -22,7 +22,7 @@ import yaml
 
 from .coerce import safe_token
 from .compile import render_system_prompt
-from .models import Project, Scorecard
+from .models import Example, Project, Scorecard
 from .store import atomic_write_text
 
 DEFAULT_BASE = "Qwen/Qwen2.5-7B-Instruct"  # an open base you can actually LoRA
@@ -192,6 +192,17 @@ class FinetuneResult:
     excluded_engine: int = 0
 
 
+def is_training_row(ex: Example) -> bool:
+    """Does this example become a fine-tuning target?
+
+    The single definition, deliberately shared by ``assemble_dataset`` (which
+    builds the rows) and ``training_overlap`` (which decides what the gate must
+    hold out). They are two halves of one rule and MUST agree: when only the
+    first learned about provenance, the gate started excluding tests the model
+    had never trained on, shrinking the held-out set and changing verdicts."""
+    return bool(ex.input and ex.good_output and ex.trainable)
+
+
 def assemble_dataset(project: Project) -> list[dict]:
     """Chat-format SFT rows from the spec's good examples.
 
@@ -207,7 +218,7 @@ def assemble_dataset(project: Project) -> list[dict]:
     system = render_system_prompt(spec)
     rows: list[dict] = []
     for ex in spec.examples:
-        if ex.input and ex.good_output and ex.trainable:
+        if is_training_row(ex):
             rows.append({
                 "messages": [
                     {"role": "system", "content": system},
@@ -289,10 +300,14 @@ def training_overlap(project: Project, card: Scorecard) -> list[str]:
     `absorb` turn those same examples into ``ex_*`` / ``fb_*`` tests, so the gate
     can end up grading a model on prompts it memorized. That is not a held-out
     comparison, and a memorizing fine-tune would pass it. Callers report the
-    overlap so the number is read for what it is."""
+    overlap so the number is read for what it is.
+
+    Uses the SAME predicate as ``assemble_dataset`` — an example the dataset
+    excludes was never trained on, so a test using its input is genuinely held
+    out and must stay in the comparison."""
     trained = {
         ex.input for ex in (project.spec.examples if project.spec else [])
-        if ex.input and ex.good_output
+        if is_training_row(ex)
     }
     by_id = {t.id: t.input for t in project.tests}
     return sorted(r.test_id for r in card.results
