@@ -887,7 +887,7 @@ def test_delete_moves_the_tree_aside_before_removing_it(tmp_path, monkeypatch):
     from ai_calibrator.store import load_project
 
     if os.name == "nt":
-        pytest.skip("Windows cannot rename a directory holding an open handle; it deletes in place")
+        pytest.skip("platform-specific: Windows cannot rename a directory holding an open handle")
 
     c = _client(tmp_path)
     assert c.post("/api/projects", json={"name": "p", "goal": "old"}).status_code == 200
@@ -922,7 +922,7 @@ def test_delete_retry_cannot_destroy_a_project_recreated_in_the_window(tmp_path,
     from ai_calibrator.store import load_project
 
     if os.name != "nt":
-        pytest.skip("POSIX renames the tree aside; there is no second pass")
+        pytest.skip("platform-specific: POSIX renames the tree aside, so there is no second pass")
 
     c = _client(tmp_path)
     assert c.post("/api/projects", json={"name": "p", "goal": "old"}).status_code == 200
@@ -954,7 +954,7 @@ def test_delete_reports_failure_when_the_tree_cannot_be_moved(tmp_path, monkeypa
     import os
 
     if os.name == "nt":
-        pytest.skip("Windows deletes in place; os.replace is not on that path")
+        pytest.skip("platform-specific: Windows deletes in place, so os.replace is not on that path")
     c = _client(tmp_path)
     assert c.post("/api/projects", json={"name": "p", "goal": "g"}).status_code == 200
 

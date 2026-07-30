@@ -417,7 +417,7 @@ def test_a_rewrite_keeps_the_mode_the_owner_set(tmp_path):
     import stat as stat_mod
 
     if os.name == "nt":
-        pytest.skip("POSIX permissions")
+        pytest.skip("platform-specific: POSIX permissions")
     from ai_calibrator.store import atomic_write_text
 
     target = tmp_path / "calibration-report.md"
@@ -436,7 +436,7 @@ def test_a_new_artifact_is_still_created_private(tmp_path):
     import stat as stat_mod
 
     if os.name == "nt":
-        pytest.skip("POSIX permissions")
+        pytest.skip("platform-specific: POSIX permissions")
     from ai_calibrator.store import atomic_write_text
 
     target = atomic_write_text(tmp_path / "scorecard.json", "{}")

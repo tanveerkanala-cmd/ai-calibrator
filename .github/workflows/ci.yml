@@ -54,16 +54,19 @@ jobs:
         # openai/docx costs zero, so the count stayed above any sane threshold in
         # exactly the scenarios this job exists to prevent.
         run: python -c "import lancedb, sentence_transformers, openai, docx, pypdf, anthropic"
-      - name: Test — and fail on any skip (one run, not two)
-        # With [all,dev] installed nothing here has a legitimate reason to skip, so
-        # `-W error` is not needed: the skip count IS the coverage guard. Tee the
-        # output so the assertion reads the same run the log shows.
+      - name: Test — and fail on any skip an extra could explain
+        # With [all,dev] installed, a skip means an optional extra failed to
+        # import and a whole layer went untested behind a green badge — the skip
+        # count IS the coverage guard. The one legitimate exception is a test that
+        # only applies to the other operating system; those say so in the reason,
+        # and are counted separately so a missing extra can never hide among them.
         run: |
           set -o pipefail
           pytest -q -rs | tee pytest.out
           SKIPPED=$(grep -c "^SKIPPED" pytest.out || true)
-          echo "skipped: $SKIPPED"
-          test "$SKIPPED" -eq 0
+          PLATFORM=$(grep -c "^SKIPPED.*platform-specific:" pytest.out || true)
+          echo "skipped: $SKIPPED (platform-specific: $PLATFORM)"
+          test "$SKIPPED" -eq "$PLATFORM"
 
   locale:
     # Guards the encoding class: files are written UTF-8, so every read must be

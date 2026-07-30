@@ -55,7 +55,7 @@ def test_ingest_skips_oversize(tmp_path):
 # CWE-732 — logs and lock are owner-only
 def test_logs_and_lock_are_private(tmp_path):
     if os.name == "nt":
-        pytest.skip("POSIX permissions")
+        pytest.skip("platform-specific: POSIX permissions")
     from ai_calibrator.engine_log import LoggingEngine
     from ai_calibrator.locking import FileLock
 
