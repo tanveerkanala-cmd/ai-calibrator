@@ -131,7 +131,7 @@ def _graded_item(test_input: str, output: str) -> str:
     return head + marker
 
 
-def _ground_truth(project_dir: str | Path) -> list[tuple[str, str, bool, dict]]:
+def _ground_truth(project_dir: str | Path) -> list[tuple[str, str, bool, dict | None]]:
     """``(graded item, criterion id, human verdict, standalone row)`` per label.
 
     A logged judge row teaches the local model to *imitate the cloud judge* —
@@ -166,7 +166,7 @@ def _ground_truth(project_dir: str | Path) -> list[tuple[str, str, bool, dict]]:
     judged_ids = {c.id for c in project.spec.eval_criteria if c.check is None}
     input_by_test = {t.id: t.input for t in project.tests}
 
-    truth: list[tuple[str, str, bool, dict]] = []
+    truth: list[tuple[str, str, bool, dict | None]] = []
     seen: set[tuple] = set()
     for run_id, labels in all_labels(project_dir):
         try:
@@ -296,10 +296,11 @@ def export_engine_bundle(project_dir: str | Path, role: str, *, base_model: str 
         patched: list[dict] = []
         for row in rows:
             prompt = row["messages"][-2]["content"]
-            item = next((i for i in verdicts if prompt.startswith(i)), None)
-            if item is not None:
-                row, applied = _apply_ground_truth(row, verdicts[item])
-                corrected |= {(item, cid) for cid in applied}
+            # A different name from the loop variable above, which is always a str.
+            match = next((i for i in verdicts if prompt.startswith(i)), None)
+            if match is not None:
+                row, applied = _apply_ground_truth(row, verdicts[match])
+                corrected |= {(match, cid) for cid in applied}
             patched.append(row)
         unanswered = [row for item, cid, _, row in truth
                       if row is not None and (item, cid) not in corrected]

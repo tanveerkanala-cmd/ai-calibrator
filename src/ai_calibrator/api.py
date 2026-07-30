@@ -422,7 +422,8 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         # cleanly instead of corrupting the target. The size cap is _BodyLimit's:
         # by the time this runs the body has already been received in full.
         fd, tmp_name = tempfile.mkstemp(dir=str(mats), prefix=".upload-", suffix=".tmp")
-        tmp: Path | None = Path(tmp_name)
+        tmp = Path(tmp_name)
+        ours = True  # we own the temp file until the rename takes it
         try:
             with os.fdopen(fd, "wb") as out:
                 while True:
@@ -434,9 +435,9 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
                 os.replace(tmp, target)
             except OSError as exc:  # name the filesystem still rejects → 4xx, not a 500
                 raise HTTPException(400, f"could not store {base!r}: {exc.strerror or exc}") from exc
-            tmp = None
+            ours = False
         finally:
-            if tmp is not None:
+            if ours:
                 tmp.unlink(missing_ok=True)
         return {"uploaded": target.name}
 
@@ -995,7 +996,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
                 learned = infer_standards(project.goal, judged, generator)
                 result = apply_learned(project, [], learned)
                 save_project(project, d)
-                if project.tests:
+                if project.spec is not None and project.tests:
                     from .compile import write_build_bundle
                     write_build_bundle(project.spec, project.tests, d)
             except HTTPException:

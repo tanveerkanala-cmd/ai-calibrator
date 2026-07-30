@@ -15,6 +15,7 @@ from pathlib import Path
 
 from collections import Counter
 
+from .coerce import as_str
 from .coverage import CoverageReport
 from .fmt import pct
 from .models import BehaviorSpec, Project, Scorecard, test_input_hash
@@ -379,9 +380,10 @@ def render_html_report(project: Project, coverage: CoverageReport, latest: Score
     gate = latest_gate(project_dir)
     if gate and isinstance(gate.get("stages"), list):
         gate_rows = "\n".join(
-            f"<tr><td>{_esc(s.get('name'))}</td>"
-            f"<td class=\"{ {'pass': 'pass', 'fail': 'fail'}.get(s.get('status'), 'warn') }\">{_esc(s.get('status'))}</td>"
-            f"<td>{_esc(s.get('detail'))}</td></tr>"
+            f"<tr><td>{_esc(as_str(s.get('name')))}</td>"
+            f"<td class=\"{ {'pass': 'pass', 'fail': 'fail'}.get(as_str(s.get('status')), 'warn') }\">"
+            f"{_esc(as_str(s.get('status')))}</td>"
+            f"<td>{_esc(as_str(s.get('detail')))}</td></tr>"
             for s in gate["stages"] if isinstance(s, dict))
     else:
         gate_rows = "<tr><td colspan=\"3\">no gate on record — run <code>calibrate ci</code></td></tr>"

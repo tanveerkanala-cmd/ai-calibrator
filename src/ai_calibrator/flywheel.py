@@ -156,7 +156,7 @@ def _fb_id_allocator(tests: list[TestCase]):
 
 
 def absorb_feedback(project: Project, project_dir: str | Path, *,
-                    commit: Callable[[], None] | None = None) -> AbsorbResult:
+                    commit: Callable[[], object] | None = None) -> AbsorbResult:
     """Fold all pending feedback into the spec + tests; archive the records.
 
     Idempotent: consumed records move to ``feedback-absorbed.jsonl`` and

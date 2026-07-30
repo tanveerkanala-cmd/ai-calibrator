@@ -40,7 +40,7 @@ from .coerce import as_str, is_str
 from .compile import render_system_prompt
 from .engines.base import Engine
 from .eval import conversation_prompt
-from .models import Project
+from .models import Check, Project
 from .store import load_project
 from .webguard import install_guard
 
@@ -63,7 +63,7 @@ def _content_text(content) -> str | None:
         return content
     if isinstance(content, list):
         parts = [p for p in content if isinstance(p, dict)]
-        texts = [p.get("text") for p in parts if p.get("type") == "text" and is_str(p.get("text"))]
+        texts = [t for t in (p.get("text") for p in parts if p.get("type") == "text") if is_str(t)]
         if parts and len(texts) == len(parts) == len(content):
             return "".join(texts)
     return None
@@ -107,13 +107,13 @@ def encode_messages(messages: list[dict]) -> str:
     return conversation_prompt(history, turns[-1][1])
 
 
-def _guard_checks(project: Project) -> list[tuple[str, object]]:
+def _guard_checks(project: Project) -> list[tuple[str, Check]]:
     if project.spec is None:
         return []
     return [(c.id, c.check) for c in project.spec.eval_criteria if c.check is not None]
 
 
-def _guard_failures(checks: list[tuple[str, object]], text: str) -> list[str]:
+def _guard_failures(checks: list[tuple[str, Check]], text: str) -> list[str]:
     """Criterion ids the answer fails — graded exactly as the eval harness grades.
 
     An answer that says NOTHING fails everything: the negative-form checks
@@ -254,11 +254,16 @@ def create_ai_app(project_dir: str | Path, *, engine: Engine | None = None, guar
         # tools would otherwise get a plain completion and never know).
         if body.get("tools") or body.get("functions"):
             raise HTTPException(400, "tool/function calling is not supported by this endpoint")
+        # Validated OUTSIDE the try: a bad request is the caller's fault (400),
+        # and the handler below maps everything it catches to an engine failure.
+        messages = body.get("messages")
+        if not isinstance(messages, list):
+            raise HTTPException(400, "`messages` must be a list of chat messages")
         try:
             # The engine call is blocking; run it in a threadpool so one in-flight
             # completion (often 30-60s) doesn't freeze every other request on the
             # event loop — the endpoint must stay concurrent.
-            content, guard_state = await run_in_threadpool(_complete, body.get("messages"))
+            content, guard_state = await run_in_threadpool(_complete, messages)
         except ValueError as exc:
             raise HTTPException(400, str(exc))
         except Exception as exc:  # engine failure → OpenAI-style 502, not a traceback
@@ -341,7 +346,8 @@ def create_ai_app(project_dir: str | Path, *, engine: Engine | None = None, guar
             turns, output = known["turns"], known["output"]
         else:
             output = as_str(body.get("output"))
-            raw = body.get("turns") if isinstance(body.get("turns"), list) else [body.get("input")]
+            supplied = body.get("turns")
+            raw = supplied if isinstance(supplied, list) else [body.get("input")]
             turns = [t for t in raw if is_str(t) and t.strip()]
             if not turns or not output.strip():
                 raise HTTPException(400, "pass a completion_id, or `input` (or `turns`) and `output`")

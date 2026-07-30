@@ -28,13 +28,21 @@ deterministic fake engines. To exercise a real model locally, install
 
 ```bash
 ruff check .              # must be clean (pyflakes, bugbear, syntax)
+mypy                      # must be clean — configured in pyproject.toml
 pytest -q                 # must be all green — and runs in a few seconds
 ```
 
-These two are what CI enforces (CI also runs the suite once with `[all,dev]` so
-the retrieval/OpenAI/DOCX paths are exercised on every push). `mypy` ships in the `dev` extra as an *advisory*
-tool — the tree is not yet mypy-clean, so a full run reports pre-existing errors
-you did not cause. Don't treat it as a gate; do keep new code annotated.
+These three are what CI enforces (CI also runs the suite once with `[all,dev]`
+so the retrieval/OpenAI/DOCX paths are exercised on every push, and once under
+`LC_ALL=C` so an encoding assumption cannot hide behind a UTF-8 locale).
+
+`mypy` is a gate, not advice. It reports zero errors today, and the value of
+that is not tidiness: the checks it makes are exactly the ones that catch an
+unguarded `project.spec` or a `None` reaching a formatter, and those cannot be
+seen at all in a report that is already 76 errors long. If a genuinely
+impossible case is the only way to satisfy it, narrow it with a real guard
+rather than a cast — every one of those guards in this tree turned out to be a
+reachable path, or is documented as unreachable where it is written.
 
 Ground rules the codebase already follows — please keep them true:
 

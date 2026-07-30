@@ -304,6 +304,10 @@ def import_(
         raise
 
     spec = project.spec
+    if spec is None:  # reverse_project always builds one; a None here is a bug, not a state
+        typer.secho("Import produced no spec — nothing was extracted from that prompt.",
+                    fg=typer.colors.RED)
+        raise typer.Exit(code=1)
     typer.secho(
         f"✓ Imported → {path}/  ({len(spec.standards)} standard(s), {len(spec.do_not)} never-rule(s), "
         f"{len(spec.eval_criteria)} criterion(s), {len(project.tests)} test(s) extracted).",
@@ -383,6 +387,7 @@ def engines(
                 if role not in valid_roles:
                     typer.secho(f"Unknown role {role!r}. Valid: {', '.join(valid_roles)}.", fg=typer.colors.RED)
                     raise typer.Exit(code=1)
+                assert model is not None  # the branch condition above guarantees it
                 spec = _check_spec(model)
                 setattr(project.engines, role, spec)
                 changed = f"{role} → {spec}"
@@ -867,6 +872,9 @@ def eval_(
                     save_project(proj, path)
                     write_build_bundle(proj.spec, proj.tests, path)
 
+                if refiner is None:  # --refine builds one; belt and braces
+                    typer.secho("--refine needs a refiner engine.", fg=typer.colors.RED)
+                    raise typer.Exit(code=1)
                 cards = calibrate_loop(
                     project, subject, judge, refiner,
                     threshold=threshold, max_rounds=rounds, judge_passes=judge_passes, project_dir=path,
@@ -942,7 +950,10 @@ def eval_(
             typer.secho(f"\n⚠ {len(low)} verdict(s) the judge was split on — worth a human check:",
                         fg=typer.colors.YELLOW)
             for tid, c in low[:10]:
-                typer.echo(f"  · {tid} / {c.criterion_id}: {pct(c.confidence)} agreement → {'pass' if c.passed else 'fail'}")
+                # low_confidence_results filters on `confidence is not None`, so
+                # the fallback is unreachable — it keeps the formatter total.
+                agreement = c.confidence if c.confidence is not None else 0.0
+                typer.echo(f"  · {tid} / {c.criterion_id}: {pct(agreement)} agreement → {'pass' if c.passed else 'fail'}")
 
     typer.echo(f"\nScorecards saved under {Path(path)}/evals/.")
     if ok:
@@ -1191,13 +1202,16 @@ def add_check(
                         fg=typer.colors.RED)
             raise typer.Exit(code=1)
         try:
-            crit.check = Check(kind=kind, value=value)
+            # model_validate, not the constructor: `kind` is a Literal in the
+            # model and an arbitrary CLI string is exactly what this line is
+            # validating, which is what the except below exists to report.
+            crit.check = Check.model_validate({"kind": kind, "value": value})
         except ValidationError:
             typer.secho("kind must be one of: contains, not_contains, regex, max_chars, min_chars, non_empty.",
                         fg=typer.colors.RED)
             raise typer.Exit(code=1)
         save_project(project, path)
-        if project.tests:
+        if project.spec is not None and project.tests:
             write_build_bundle(project.spec, project.tests, path)
     typer.secho(f"✓ Criterion {criterion!r} is now graded deterministically: {kind} {value!r}.", fg=typer.colors.GREEN)
     typer.echo("  it will be checked exactly (no judge) on the next `calibrate eval`.")
@@ -1744,7 +1758,7 @@ def teach(
         project = _load(path)
         saved = apply_learned(project, judged, None)
         save_project(project, path)
-        if project.tests:
+        if project.spec is not None and project.tests:
             write_build_bundle(project.spec, project.tests, path)
 
     typer.echo("\nInferring your standards from these judgments …")
@@ -1765,7 +1779,7 @@ def teach(
         # fine-tune dataset.
         result = apply_learned(project, [], learned)
         save_project(project, path)
-        if project.tests:  # refresh the build bundle if one exists
+        if project.spec is not None and project.tests:  # refresh the bundle if one exists
             write_build_bundle(project.spec, project.tests, path)
     result.examples_recorded = saved.examples_recorded  # what phase 1 actually wrote
 
@@ -1841,6 +1855,10 @@ def merge(
             raise typer.Exit(code=1)
         named[proj.name] = proj.spec
         first = first or proj
+
+    if first is None:  # unreachable via the CLI (--from is required twice over)
+        typer.secho("Nothing to merge — pass at least two --from projects.", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
 
     try:
         engine = get_engine(first.engines.compiler)
@@ -2509,6 +2527,9 @@ def examples(
         _require_project(path)  # no junk .lock dir for a typo'd name
         with project_lock(path, on_wait=_lock_wait_notice):                 # load→mutate→save under the lock (fresh reload)
             project = _load(path)
+            if project.spec is None:  # re-checked: the guard above read an earlier load
+                typer.secho("No spec yet — run `calibrate compile` first.", fg=typer.colors.YELLOW)
+                raise typer.Exit(code=1)
             added, skipped = merge_examples(project.spec, report.examples)
             save_project(project, path)
         msg = f"✓ Imported {added} example(s) from {import_file.name}"
@@ -2527,13 +2548,20 @@ def examples(
         _require_project(path)  # no junk .lock dir for a typo'd name
         with project_lock(path, on_wait=_lock_wait_notice):
             project = _load(path)
+            if project.spec is None:  # re-checked against this reload, not the first
+                typer.secho("No spec yet — run `calibrate compile` first.", fg=typer.colors.YELLOW)
+                raise typer.Exit(code=1)
             removed = dedup_examples(project.spec)
             save_project(project, path)
         typer.secho(f"✓ Removed {removed} duplicate example(s)." if removed else "No duplicates to remove.",
                     fg=typer.colors.GREEN)
 
     project = _load(path)
-    st = examples_status(project.spec)
+    spec = project.spec
+    if spec is None:  # the guard at the top read an earlier load of this project
+        typer.secho("No spec yet — run `calibrate compile` first.", fg=typer.colors.YELLOW)
+        raise typer.Exit(code=1)
+    st = examples_status(spec)
     dupe_note = f" ({st['duplicates']} duplicate(s) — `--dedup` to clean)" if st["duplicates"] else ""
     typer.secho(f"\n{st['unique_inputs']} unique training example(s){dupe_note}; "
                 f"{st['with_output']} with an output.", bold=True)
@@ -2544,11 +2572,11 @@ def examples(
         typer.secho(f"→ {st['short_by']} more for a solid fine-tune (recommended ≥{st['recommended']}). "
                     "Add via --import <file>, `calibrate teach`, or captured eval corrections.",
                     fg=typer.colors.CYAN)
-    for ex in project.spec.examples[:6]:
+    for ex in spec.examples[:6]:
         out = (ex.good_output or "")[:60]
         typer.echo(f"  • {ex.input[:60]}" + (f"  →  {out}" if out else "  (no output yet)"))
-    if len(project.spec.examples) > 6:
-        typer.echo(f"  … and {len(project.spec.examples) - 6} more")
+    if len(spec.examples) > 6:
+        typer.echo(f"  … and {len(spec.examples) - 6} more")
 
 
 def main() -> None:
@@ -2556,8 +2584,14 @@ def main() -> None:
     # (✓ ⚠ →) to '?', never crash — Rich's --help rendering raised a raw
     # UnicodeEncodeError otherwise.
     for stream in (sys.stdout, sys.stderr):
+        # getattr, not a direct call: a replaced stream (pytest's capture, a pipe
+        # wrapper) is a TextIO without reconfigure, which is exactly the case the
+        # except below is for — and the only case the type says can happen.
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
         try:
-            stream.reconfigure(errors="replace")
+            reconfigure(errors="replace")
         except (AttributeError, OSError):  # non-reconfigurable stream (tests, pipes)
             pass
     app()

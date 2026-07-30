@@ -10,6 +10,7 @@ deterministic renders; the test cases are a second engine pass. Output lands in
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -286,7 +287,7 @@ def _looks_like_scaffolding(text: str) -> bool:
 
 # --- Deterministic renders (compiled from the spec) -------------------------
 
-def tests_from_examples(spec: BehaviorSpec, existing: list[TestCase] = ()) -> list[TestCase]:
+def tests_from_examples(spec: BehaviorSpec, existing: Sequence[TestCase] = ()) -> list[TestCase]:
     """Turn the spec's examples into regression tests (golden anchors).
 
     Each example's input becomes a test graded against all criteria — so the exact

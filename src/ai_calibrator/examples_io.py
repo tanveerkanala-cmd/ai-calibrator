@@ -78,14 +78,14 @@ def load_examples_report(path: str | Path) -> ImportReport:
 
     report = ImportReport()
     # (row_dict_or_None, file_line_number) pairs — a None row is already malformed.
-    indexed: list[tuple[object, int]]
+    indexed: list[tuple[object, int]]  # a row dict, or None for one already malformed
     if suffix == ".csv":
         # A csv.Error is NOT a ValueError, so an unguarded parse escapes the CLI's
         # `except ValueError` and reaches the user as a raw traceback. It is a
         # whole-file failure, not a per-row one: the reader is mid-field when it
         # gives up, so there is no row to attribute it to.
         try:
-            indexed = _parse_csv(text)
+            indexed = list(_parse_csv(text))
         except csv.Error as exc:
             raise ValueError(
                 f"{p.name} could not be read as CSV: {exc}. The likeliest cause is an unbalanced "

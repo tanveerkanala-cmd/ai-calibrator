@@ -91,6 +91,10 @@ jobs:
       - run: pip install -e '.[dev]'
       - name: Bandit (medium+ severity)
         run: bandit -r src/ai_calibrator --severity-level medium -q
+      # Gated, not advisory. A type checker nobody can run clean is a type
+      # checker nobody reads, and a real None-crash hides in the noise.
+      - name: mypy
+        run: mypy
 
   package:
     # Every other job installs with `pip install -e`, which imports straight from

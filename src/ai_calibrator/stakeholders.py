@@ -172,8 +172,8 @@ def scalar_conflicts(named_specs: dict[str, BehaviorSpec]) -> list[tuple[str, li
     )
     out: list[tuple[str, list[tuple[str, str]]]] = []
     for label, get in fields:
-        vals = [(n, get(sp)) for n, sp in sorted(named_specs.items())]
-        vals = [(n, v) for n, v in vals if is_str(v) and v.strip()]
+        raw = [(n, get(sp)) for n, sp in sorted(named_specs.items())]
+        vals = [(n, v) for n, v in raw if is_str(v) and v.strip()]
         if len({v for _, v in vals}) > 1:
             out.append((label, vals))
     return out
