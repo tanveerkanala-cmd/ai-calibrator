@@ -16,7 +16,7 @@ import yaml
 from pydantic import ValidationError
 
 from . import __version__
-from .models import EngineBinding, Project, TaskType
+from .models import AnswerSource, EngineBinding, Project, TaskType
 from .fmt import pct, pct_delta
 from .store import atomic_write_text, load_project, project_lock, save_project, write_project_gitignore
 
@@ -672,10 +672,13 @@ def interview(
             seen_ids.add(it.id)
             unique_pending.append(it)
     pending = unique_pending
-    answers: dict[str, str] = {}
+    # (answer, where it came from). The spec compiles from these, so an answer
+    # the tool wrote and nobody read must stay distinguishable from one a person
+    # decided — see InterviewItem.answer_source.
+    answers: dict[str, tuple[str, AnswerSource]] = {}
     for item in pending:
         if accept_drafts:
-            answers[item.id] = item.draft_answer or ""
+            answers[item.id] = (item.draft_answer or "", "engine")
         else:
             typer.secho(f"[{item.dimension}] {item.question}", bold=True)
             if item.rationale:
@@ -683,7 +686,11 @@ def interview(
             typer.echo(f"  draft: {item.draft_answer}")
             resp = typer.prompt("  your answer (Enter to accept draft)",
                                 default="", show_default=False)
-            answers[item.id] = resp.strip() or (item.draft_answer or "")
+            typed = resp.strip()
+            # Enter on a draft a person just read IS ratification; typing their
+            # own answer is authorship. Both are human decisions.
+            source: AnswerSource = "human" if typed else "human_ratified"
+            answers[item.id] = (typed or (item.draft_answer or ""), source)
             typer.echo("")
 
     # Apply under the lock against a FRESH load, so a concurrent edit isn't
@@ -696,12 +703,18 @@ def interview(
         # project.yaml), silently discarding a collected answer.
         for it in project.interview:
             if it.id in answers:
-                it.answer = answers[it.id]
+                it.answer, it.answer_source = answers[it.id]
         save_project(project, path)
         answered = sum(1 for it in project.interview if it.answer)
         total = len(project.interview)
 
     typer.secho(f"✓ {answered}/{total} answered.", fg=typer.colors.GREEN)
+    if accept_drafts:
+        typer.secho("  ⚠ These are the tool's own drafted answers, accepted without review. "
+                    "It cannot know what your materials do not state, so a draft may assert "
+                    "policy you never wrote — and `compile` turns answers into standards, eval "
+                    "criteria and graded tests. Re-run `calibrate interview` (without "
+                    "--accept-drafts) to read and correct them.", fg=typer.colors.YELLOW)
     typer.echo("Next:  calibrate compile")
 
 
@@ -764,6 +777,20 @@ def compile(path: Path = typer.Argument(Path("."), help="Project directory.")) -
     typer.echo(f"  bundle → {result.build_dir}/")
     for f in result.files:
         typer.echo(f"    {f}")
+    # The receipt that matters most: this spec's standards, criteria and tests are
+    # only as trustworthy as the answers they were synthesized from, and an
+    # auto-accepted draft is the tool's own guess. It cannot know what the
+    # materials leave unstated, so a draft can assert policy nobody wrote — and it
+    # then becomes a criterion the AI is graded against.
+    unratified = [it for it in project.interview if it.unratified]
+    if unratified:
+        typer.secho(
+            f"  ⚠ {len(unratified)} of {sum(1 for it in project.interview if it.answer)} answer(s) "
+            "this spec was built from are the tool's own drafts, accepted without review "
+            f"({', '.join(it.dimension for it in unratified[:4])}"
+            + (", …" if len(unratified) > 4 else "") + "). Anything they assert that your "
+            "materials do not state is now a graded criterion. Re-run `calibrate interview` "
+            "to read and correct them.", fg=typer.colors.YELLOW)
     typer.echo("\nNext:  calibrate eval")
 
 

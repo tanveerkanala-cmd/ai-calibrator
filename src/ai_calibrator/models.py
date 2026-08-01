@@ -85,6 +85,11 @@ class Gap(PreservingModel):
     why_it_matters: str | None = None
 
 
+# Where a recorded answer came from. Named so the CLI, the API and the model all
+# state the same three options rather than passing bare strings around.
+AnswerSource = Literal["human", "human_ratified", "engine"]
+
+
 class InterviewItem(PreservingModel):
     """One adaptive question, its drafted answer, and the user's ratified answer."""
     id: str
@@ -93,6 +98,19 @@ class InterviewItem(PreservingModel):
     draft_answer: str | None = None      # propose-and-ratify: the tool's guess
     answer: str | None = None            # the user's confirmed/corrected answer
     rationale: str | None = None         # why the tool asked (teach-while-scaffolding)
+    # WHERE the answer came from — the same distinction `Example.source` draws,
+    # and it matters more here: the whole spec compiles from these answers, so a
+    # model-invented one becomes a standard, an eval criterion, and a graded test.
+    # `--accept-drafts` takes the tool's guess unreviewed, which is a legitimate
+    # way to move fast but is NOT the human ratification the propose-and-ratify
+    # design assumes. None = recorded before this field existed (unknown), which
+    # is never treated as engine-written.
+    answer_source: AnswerSource | None = None
+
+    @property
+    def unratified(self) -> bool:
+        """True if this answer is the tool's own guess, accepted without review."""
+        return self.answer is not None and self.answer_source == "engine"
 
 
 # --- The compiled behavior spec (source of truth) --------------------------

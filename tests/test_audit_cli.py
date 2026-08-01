@@ -493,3 +493,67 @@ def test_gate_refuses_non_comparable_runs_even_with_no_training_overlap(tmp_path
     assert result.exit_code == 2, result.output
     assert "CANNOT JUDGE" in result.output and "ACCEPT" not in result.output
     assert _has_no_traceback(result.output)
+
+
+# --- an answer the tool wrote is not an answer a person gave ---------------
+
+def _interview_project(tmp_path):
+    from ai_calibrator.models import Gap, InterviewItem, Project
+    from ai_calibrator.store import save_project
+
+    p = Project(name="p", goal="g")
+    p.gaps = [Gap(dimension="shipping_cost"), Gap(dimension="tone")]
+    p.interview = [
+        InterviewItem(id="q1", dimension="shipping_cost", question="What is it?",
+                      draft_answer="It is $4.95."),
+        InterviewItem(id="q2", dimension="tone", question="What voice?",
+                      draft_answer="Warm and plain."),
+    ]
+    save_project(p, tmp_path)
+    return p
+
+
+def test_accepted_drafts_are_recorded_as_the_tools_own_answers(tmp_path):
+    """`--accept-drafts` takes the tool's guess unreviewed. It cannot know what the
+    materials leave unstated, so a draft can assert policy nobody wrote — and
+    `compile` turns answers into standards, criteria and graded tests. The spec
+    must stay able to tell those from a human's decision."""
+    from ai_calibrator.store import load_project
+
+    _interview_project(tmp_path)
+    result = runner.invoke(app, ["interview", str(tmp_path), "--accept-drafts"])
+    assert result.exit_code == 0, result.output
+
+    items = load_project(tmp_path).interview
+    assert [it.answer for it in items] == ["It is $4.95.", "Warm and plain."]
+    assert all(it.answer_source == "engine" for it in items)
+    assert all(it.unratified for it in items)
+    assert "accepted without review" in result.output
+
+
+def test_a_typed_answer_and_an_accepted_draft_are_both_human_decisions(tmp_path):
+    """Reading a draft and pressing Enter IS ratification; typing your own is
+    authorship. Neither is the tool answering itself."""
+    from ai_calibrator.store import load_project
+
+    _interview_project(tmp_path)
+    # q1: type a correction. q2: Enter to accept the draft.
+    result = runner.invoke(app, ["interview", str(tmp_path)], input="Not stated for orders under $35.\n\n")
+    assert result.exit_code == 0, result.output
+
+    by_id = {it.id: it for it in load_project(tmp_path).interview}
+    assert by_id["q1"].answer == "Not stated for orders under $35."
+    assert by_id["q1"].answer_source == "human"
+    assert by_id["q2"].answer == "Warm and plain."
+    assert by_id["q2"].answer_source == "human_ratified"
+    assert not any(it.unratified for it in by_id.values())
+    assert "accepted without review" not in result.output
+
+
+def test_an_answer_from_before_the_field_existed_is_not_called_engine_written(tmp_path):
+    """Existing projects must not be retroactively distrusted: no recorded source
+    means unknown, which is never reported as the tool's own guess."""
+    from ai_calibrator.models import InterviewItem
+
+    item = InterviewItem(id="q1", dimension="tone", question="?", answer="Warm.")
+    assert item.answer_source is None and not item.unratified
