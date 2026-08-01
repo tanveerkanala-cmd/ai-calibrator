@@ -486,40 +486,49 @@ def test_a_ratified_spec_carries_no_such_warning(tmp_path):
     assert "Spec provenance" not in render_html_report(project, cov, None, tmp_path)
 
 
-# --- a criterion the judge cannot grade ------------------------------------
+# --- the judge grades with the instructions the AI was given ----------------
 
-def test_lint_flags_a_criterion_that_defers_to_something_the_judge_never_sees():
-    """`judge_prompt` shows the judge the test input, the AI's output and the
-    criterion text — not the spec. A criterion that defers to the spec asks a
-    question the judge cannot answer, and the answer it invents looks
-    authoritative: in a live run, "cites only figures stated in this spec" failed
-    outputs for repeating policy the materials really did contain."""
-    from ai_calibrator.lint import lint_spec
-    from ai_calibrator.models import BehaviorSpec, Check, EvalCriterion, Weight
+def test_the_judge_sees_the_instructions_the_ai_was_given():
+    """Without them a judge cannot grade any criterion that refers to them, and it
+    does not abstain: in a live run "cites only policies stated in this spec"
+    failed answers for stating policy the materials really did contain, with
+    confident rationales and a 0% headline."""
+    from ai_calibrator.eval import JUDGE_SYSTEM, judge_system
 
-    spec = BehaviorSpec(goal="g", standards=["Always cite the documented 30-day window."],
-                        eval_criteria=[
-        EvalCriterion(id="spec_ref", weight=Weight.HIGH,
-                      description="Cites only policies and figures stated in this spec."),
-        EvalCriterion(id="self_contained", weight=Weight.HIGH,
-                      description="States the 30-day return window explicitly."),
-        # A deterministic check grades by code, so it never reaches the judge.
-        EvalCriterion(id="code_graded", weight=Weight.HIGH,
-                      description="Mentions the policy document verbatim.",
-                      check=Check(kind="contains", value="30-day")),
-    ])
+    assert judge_system() == JUDGE_SYSTEM       # nothing to add, nothing added
+    assert judge_system("   ") == JUDGE_SYSTEM  # and blank is nothing
 
-    flagged = {i.where for i in lint_spec(spec, []).issues if i.code == "ungradeable_reference"}
-    assert flagged == {"spec_ref"}
+    withrules = judge_system("Refunds are issued within 5 business days.")
+    assert JUDGE_SYSTEM in withrules            # still told how to grade
+    assert "Refunds are issued within 5 business days." in withrules
+    assert "NOT invented" in withrules          # and told what that means
+    assert "not criteria" in withrules          # without mistaking them for criteria
 
 
-def test_the_judge_prompt_still_carries_only_what_the_lint_rule_assumes():
-    """The rule exists because of what judge_prompt omits. If that ever changes,
-    this test should fail and the rule should be revisited rather than left
-    warning about something no longer true."""
-    from ai_calibrator.eval import judge_prompt
+def test_the_trainer_reproduces_the_system_message_the_judge_graded_under(tmp_path):
+    """A ground-truth row must carry the identical system message, or the local
+    judge trains on a distribution the cloud judge never graded under."""
+    from ai_calibrator.compile import render_system_prompt
+    from ai_calibrator.eval import judge_system
+    from ai_calibrator.judge_check import save_labels
+    from ai_calibrator.models import BehaviorSpec, EvalCriterion, Project
+    from ai_calibrator.store import save_project
+    from ai_calibrator.train_engine import human_judge_rows
 
-    prompt = judge_prompt("a question", "an answer", [("c1", "a criterion")])
-    assert "a question" in prompt and "an answer" in prompt and "a criterion" in prompt
-    for absent in ("STANDARDS", "SYSTEM PROMPT", "SPEC"):
-        assert absent not in prompt.upper().replace("CRITERIA", "")
+    p = Project(name="p", goal="answer returns questions")
+    p.spec = BehaviorSpec(goal="answer returns questions",
+                          standards=["Always cite the documented 30-day window."],
+                          eval_criteria=[EvalCriterion(id="c1", description="cites the window",
+                                                       weight=Weight.HIGH)])
+    p.tests = [CaseModel(id="t1", input="can I return this?", expects=["c1"])]
+    save_project(p, tmp_path)
+    save_scorecard(tmp_path, Scorecard(run_id="run-0001", results=[
+        ResultModel(test_id="t1", output="the answer",
+                    criteria=[CriterionResult(criterion_id="c1", passed=True, score=1.0)])]))
+    save_labels(tmp_path, "run-0001", [{"test_id": "t1", "criterion_id": "c1", "passed": False}])
+
+    rows = human_judge_rows(tmp_path)
+    assert rows, "a human label should produce a ground-truth row"
+    recorded = rows[0]["messages"][0]["content"]
+    assert recorded == judge_system(render_system_prompt(p.spec))
+    assert "30-day window" in recorded

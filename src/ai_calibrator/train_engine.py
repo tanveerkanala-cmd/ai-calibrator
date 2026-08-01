@@ -145,7 +145,8 @@ def _ground_truth(project_dir: str | Path) -> list[tuple[str, str, bool, dict | 
     from pydantic import ValidationError
 
     from .drift import load_scorecard
-    from .eval import JUDGE_SYSTEM, judge_prompt
+    from .compile import render_system_prompt
+    from .eval import judge_prompt, judge_system
     from .judge_check import all_labels
     from .store import load_project
 
@@ -162,6 +163,11 @@ def _ground_truth(project_dir: str | Path) -> list[tuple[str, str, bool, dict | 
     # still exists in the dataset, and a human verdict must still correct it.
     # Dropping the label outright let attaching a check silently restore the very
     # judgment the human overturned.
+    # The judge grades with the AI's own instructions in its system message, so a
+    # ground-truth row must carry the identical one — a row that trains on a
+    # different system message teaches the local judge a distribution the cloud
+    # judge never graded under.
+    system = judge_system(render_system_prompt(project.spec))
     desc_by_id = {c.id: c.description for c in project.spec.eval_criteria}
     judged_ids = {c.id for c in project.spec.eval_criteria if c.check is None}
     input_by_test = {t.id: t.input for t in project.tests}
@@ -180,7 +186,7 @@ def _ground_truth(project_dir: str | Path) -> list[tuple[str, str, bool, dict | 
             passed = as_bool(label.get("passed"))
             prompt = judge_prompt(input_by_test[tid], outputs[tid], [(cid, desc_by_id[cid])])
             target = json.dumps({"results": [_ground_truth_result(cid, passed)]}, sort_keys=True)
-            key = (JUDGE_SYSTEM, prompt)
+            key = (system, prompt)
             if key in seen:
                 continue
             seen.add(key)
@@ -189,7 +195,7 @@ def _ground_truth(project_dir: str | Path) -> list[tuple[str, str, bool, dict | 
             # one gets the correction applied to its logged row (below) and
             # nothing new invented for it.
             row = {"messages": [
-                {"role": "system", "content": JUDGE_SYSTEM},
+                {"role": "system", "content": system},
                 {"role": "user", "content": prompt},
                 {"role": "assistant", "content": target},
             ]} if cid in judged_ids else None

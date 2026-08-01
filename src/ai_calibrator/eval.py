@@ -51,6 +51,40 @@ JUDGE_SYSTEM = (
 _JUDGE_SYSTEM = JUDGE_SYSTEM  # back-compat alias
 
 
+def judge_system(instructions: str | None = None) -> str:
+    """The judge's system message: how to grade, plus what the AI was told.
+
+    Without the instructions a judge cannot grade any criterion that refers to
+    them — "cites only policies stated in the spec" is the natural way to phrase
+    "don't invent", and the compiler writes criteria like it. Asked to check
+    output against rules it was never shown, a judge does not abstain: in a live
+    run it failed answers for stating policy the materials really did contain,
+    with confident, specific rationales and a 0% headline. Grading an answer
+    against criteria without the instructions is marking an exam without the
+    syllabus.
+
+    It goes in the SYSTEM message, not the per-test prompt, because it is
+    identical for every test in a run — so Anthropic's prompt cache (applied to
+    `system` in the adapter) charges for it roughly once rather than once per
+    test, which matters for the highest-volume role in the tool.
+
+    Public for the same reason ``judge_prompt`` is: the Engine-Trainer rebuilds
+    ground-truth rows and must reproduce byte-for-byte what the judge saw."""
+    rules = (instructions or "").strip()
+    if not rules:
+        return JUDGE_SYSTEM
+    return (
+        f"{JUDGE_SYSTEM}\n\n"
+        "The AI under test was given the instructions below. Treat them as the "
+        "authority for what it was told to do: a fact or figure stated there is "
+        "NOT invented, and a rule stated there is the rule to grade against. "
+        "They are context, not criteria — grade only the criteria you are given.\n"
+        "--- INSTRUCTIONS GIVEN TO THE AI ---\n"
+        f"{rules}\n"
+        "--- END INSTRUCTIONS ---"
+    )
+
+
 def judge_prompt(test_input: str, output: str, criteria: list[tuple[str, str]]) -> str:
     """The exact prompt the judge grades with.
 
@@ -87,9 +121,11 @@ def _judge(
     test_input: str,
     output: str,
     criteria: list[tuple[str, str]],
+    instructions: str | None = None,
 ) -> list[CriterionResult]:
     prompt = judge_prompt(test_input, output, criteria)
-    out = require_object(judge.complete(prompt, system=_JUDGE_SYSTEM, schema=JUDGE_SCHEMA), "judge")
+    out = require_object(
+        judge.complete(prompt, system=judge_system(instructions), schema=JUDGE_SCHEMA), "judge")
     # Key only on string ids. A non-compliant judge can return criterion_id as a
     # list or dict, and an unhashable key raises TypeError here — destroying a
     # whole graded run over one bad row. Dropping the row instead leaves that
@@ -116,10 +152,11 @@ def _judge(
 
 
 def _judge_consensus(judge: Engine, test_input: str, output: str,
-                     criteria: list[tuple[str, str]], passes: int) -> list[CriterionResult]:
+                     criteria: list[tuple[str, str]], passes: int,
+                     instructions: str | None = None) -> list[CriterionResult]:
     """Grade with ``passes`` independent judge calls, majority-vote each criterion,
     and record agreement as ``confidence`` — self-consistency over a noisy judge."""
-    runs = [_judge(judge, test_input, output, criteria) for _ in range(passes)]
+    runs = [_judge(judge, test_input, output, criteria, instructions) for _ in range(passes)]
     results: list[CriterionResult] = []
     for idx, (cid, _) in enumerate(criteria):
         verdicts = [run[idx].passed for run in runs]
@@ -302,10 +339,11 @@ def run_eval(
                 judged = [(cid, crit_by_id[cid].description) for cid in expected
                           if crit_by_id[cid].check is None]
                 if judged and judge_passes > 1:
-                    for cr in _judge_consensus(judge, test.input, output, judged, judge_passes):
+                    for cr in _judge_consensus(judge, test.input, output, judged,
+                                              judge_passes, system):
                         graded[cr.criterion_id] = cr
                 elif judged:
-                    for cr in _judge(judge, test.input, output, judged):
+                    for cr in _judge(judge, test.input, output, judged, system):
                         graded[cr.criterion_id] = cr
 
             # Reassemble in requested order — test.expects is an ordered list, so the
