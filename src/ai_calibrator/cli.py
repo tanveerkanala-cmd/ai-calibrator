@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -62,6 +63,15 @@ def _scorecard_or_exit(path: Path, rid: str):
     except (OSError, ValueError, ValidationError) as exc:
         typer.secho(f"Could not read scorecard {rid!r}: {exc}", fg=typer.colors.RED)
         raise typer.Exit(code=1)
+
+
+def _duration(seconds: float) -> str:
+    """A rough human duration for a progress estimate — never more precise than
+    the guess deserves."""
+    if seconds < 60:
+        return f"{max(1, round(seconds))}s"
+    minutes = seconds / 60
+    return f"{round(minutes)} min" if minutes >= 2 else "a minute"
 
 
 def _lock_wait_notice() -> None:
@@ -621,13 +631,23 @@ def interview(
             # Persist after each gap so an engine timeout mid-interview keeps the
             # questions already drafted instead of discarding the whole run.
             drafted = 0
+            started = time.monotonic()
 
             def _progress(items, done, total):
                 nonlocal drafted
                 drafted = done  # gaps reached, not items held: a snapshot also carries the answers
                 project.interview = list(items)
                 save_project(project, path)
-                typer.echo(f"  · drafted {done}/{total} gap(s) …")
+                # One engine call per gap, and on a reasoning model each can take
+                # tens of seconds — long enough that a bare counter reads as a
+                # hang. Project the finish from the pace so far, so the wait is a
+                # known quantity rather than an open question.
+                elapsed = time.monotonic() - started
+                eta = ""
+                if done and done < total:
+                    remaining = elapsed / done * (total - done)
+                    eta = f" — about {_duration(remaining)} left"
+                typer.echo(f"  · drafted {done}/{total} gap(s){eta}")
 
             try:
                 project.interview = generate_questions(project, engine, on_progress=_progress)

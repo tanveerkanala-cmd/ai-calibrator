@@ -557,3 +557,14 @@ def test_an_answer_from_before_the_field_existed_is_not_called_engine_written(tm
 
     item = InterviewItem(id="q1", dimension="tone", question="?", answer="Warm.")
     assert item.answer_source is None and not item.unratified
+
+
+@pytest.mark.parametrize("seconds,expected", [
+    (0.4, "1s"), (12.0, "12s"), (59.4, "59s"), (75.0, "a minute"), (400.0, "7 min"),
+])
+def test_a_progress_estimate_is_never_more_precise_than_it_deserves(seconds, expected):
+    """The estimate is extrapolated from a handful of calls, so it rounds — a
+    to-the-second countdown would imply a confidence it does not have."""
+    from ai_calibrator.cli import _duration
+
+    assert _duration(seconds) == expected
