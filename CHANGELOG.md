@@ -29,6 +29,29 @@ versions follow [SemVer](https://semver.org/).
   rebinding against the local server.
 
 ### Changed
+- **`calibrate serve` reads the current directory.** It used to keep its own
+  registry under `~/.ai-calibrator/projects` while every other command takes a
+  path, so `calibrate init my-ai && calibrate serve` — the documented quickstart
+  — ended at an empty list. A project is a directory of plain files you keep in
+  your repo; the server no longer holds a second opinion about where they live.
+  Running it inside a project serves that project. `--projects DIR` still points
+  anywhere, and the startup banner names the root it read and what it found. If
+  your projects are still in the old location, it says so and gives the command.
+- **A deterministic `regex` check exports to promptfoo only when both engines
+  read it alike.** promptfoo compiles the pattern with JavaScript's `RegExp`;
+  outside the dialects' common subset (named groups, `\A`/`\Z`, inline flags,
+  possessive quantifiers, Unicode properties) JS either throws or matches
+  something else, so the exported suite graded a different rule. Patterns outside
+  that subset now take the documented `llm-rubric` downgrade instead.
+- **`CALIBRATOR_ANTHROPIC_MAX_TOKENS` is clamped to 21333**, the most one
+  non-streaming request can carry, and says so on stderr. The truncation error
+  previously suggested doubling the value, which produced a number the SDK
+  rejects before sending — turning one truncated call into every call failing.
+- **mypy is a gate, not advice.** The tree is clean and CI enforces it.
+- **A judge-check label now corrects the logged judge row even for a criterion
+  that has since gained a deterministic check.** No new row is minted for it (the
+  judge is never asked again), but the call recorded before the check was
+  attached still carries the verdict the human overturned.
 - Renamed the import package `calibrator` → `ai_calibrator` (the `calibrate`
   command is unchanged) to avoid a top-level import clash with existing PyPI
   packages.
@@ -36,6 +59,79 @@ versions follow [SemVer](https://semver.org/).
   architecture section references (`§9`) into user-facing text.
 
 ### Fixed
+- **`interview --regenerate` no longer destroys ratified answers.** It saved
+  after each gap, and the payload it saved was a prefix of the interview —
+  answered items are folded back in lazily — so a failure partway (a timeout, a
+  429) left `project.yaml` holding only the gaps reached so far, and every answer
+  belonging to a later gap was gone. The CLI then said "Progress was saved", and
+  the re-run it advertised refilled those slots with model drafts and exited 0.
+- **Material ingestion no longer reads hidden directories.** `rglob` yields a
+  hidden folder's children as paths of their own, so skipping `.git` by its leaf
+  name still read `.git/config` — a remote URL with a token in it — into the
+  spec, the index, and every served prompt.
+- **A test id is no longer treated as a test's identity.** `compile` mints
+  `t1..tN` positionally and regenerates the whole range, so the ordinary loop
+  (compile, eval, answer more questions, compile again) replaces every probe with
+  different text under the same id — and the report credited the old run's
+  verdicts to tests that had never been executed. A run now records a hash of
+  what it asked; scorecards written before this field are still matched by id, so
+  existing projects report exactly as they did.
+- **`POST /v1/feedback` can no longer hang the served AI.** It took the project
+  lock with no deadline while running in a threadpool, and that lock is held
+  across whole engine runs by `calibrate eval` / `ci` — so parked feedback
+  requests exhausted the worker slots the process shares and the server stopped
+  answering anything. Both feedback routes now wait the same bounded window as
+  every other mutating route and answer `423`.
+- **The fine-tune prove-it gate cannot accept on evidence it does not have.**
+  Every comparability check sat inside the "some tests were training prompts"
+  branch, so a project with no overlap took an unguarded path; and the check that
+  did run compared how MANY held-out tests each run graded, not which ones. Both
+  rates are now computed over the tests the two runs actually share, and no
+  shared test means it refuses to judge.
+- **The promptfoo export cannot be made to execute by the spec.** The system
+  prompt was wrapped in `{% raw %}`, whose terminator a spec can contain in any
+  of several spellings; promptfoo registers `process.env` as a template global,
+  so the region after it could read the operator's keys into a prompt sent to a
+  third-party model. The delimiters are escaped instead.
+- **Request bodies are bounded on both servers.** The cap lived in `calibrate
+  serve` only, so `calibrate run` — same guard, same `--host` exposure, no
+  authentication — accepted unbounded bodies. It belongs to `install_guard` now,
+  which both servers call, and an announced oversize body is refused at the ASGI
+  boundary before the application is entered.
+- **An ingest that could read nothing leaves the project alone.** It reported a
+  green ✓ and exit 0 while replacing the materials, facts, gaps and index with
+  emptiness; a populated source that yields no text is a failure, and the project
+  is untouched.
+- **Text is decoded in the encoding it was written in.** UTF-32's byte-order mark
+  begins with UTF-16's, NUL is valid UTF-8 (so BOM-less UTF-16 "decoded" fine),
+  the wrong endianness of ASCII text is valid CJK, and cp1252 maps almost every
+  byte — so a single damaged character turned a whole document into mojibake.
+  Each of those ingested garbage as your corpus.
+- **A corrupt `golden.json` fails the gate instead of skipping it.** The loader
+  answers "absent" and "unreadable" alike so a hand-edit cannot traceback, and
+  the gate could not tell them apart — so an unresolved merge conflict silently
+  disabled the pinned snapshot check and the stage reported `skip`.
+- **Deleting a project no longer destroys the lock providing its own mutual
+  exclusion.** On POSIX the tree is renamed aside while the lock is held, so a
+  waiter cannot acquire a fresh lock at the same path mid-delete; on Windows,
+  where that rename is refused, the open handle is exactly what keeps the
+  exclusion intact.
+- **A rewrite keeps the permissions its owner set.** Every artifact went out
+  through a temp file carrying `mkstemp`'s private 0600, so a `chmod` made to
+  serve a report or let a CI user read a scorecard was reverted by the next
+  command that rewrote it.
+- **The calibration report cannot overstate.** `calibrate report` printed a
+  confidence computed differently from the report and certificate it wrote in the
+  same breath; duplicate test ids let one passing result satisfy two suite rows;
+  and deleting a test the run failed raises the headline, which is allowed but is
+  now named in the report.
+- **`calibrate examples --import` and `--dedup` re-check the spec against the
+  load they mutate**, `teach` no longer writes a build bundle without one, and
+  `import` validates its derived project name before spending an engine call.
+- Unparsable lines in the feedback inbox are kept rather than truncated away with
+  the records that were absorbed — they were the only copy of what someone sent.
+- Both feedback size caps count `reason`, which was outside the limit and became
+  a permanent test input.
 - **An empty answer is no longer scored as a red-team "hold".** A subject that
   said nothing was counted as having withstood the probe, inflating the hold rate,
   while `eval` fails every criterion on that same empty output. It is now ungraded

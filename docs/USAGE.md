@@ -74,8 +74,12 @@ Reasoning roles default to `claude-opus-4-8`; the high-volume judge to
 `calibrate engines` to see each role's binding (§5 shows how to change them).
 
 Claude replies are capped at 16000 output tokens. A long compile or export can
-hit that ceiling — the error says so; raise it with
-`CALIBRATOR_ANTHROPIC_MAX_TOKENS=32000` (tokens) in the environment.
+hit that ceiling — the error says so, and names a limit you can actually use.
+Raise it with `CALIBRATOR_ANTHROPIC_MAX_TOKENS` (tokens) in the environment, up
+to **21333**: these are non-streaming requests, and the SDK refuses one whose
+budget implies more than ten minutes of generation, so a larger number is not a
+larger budget but a guaranteed failure on every call. A value above the ceiling
+is clamped, and says so on stderr. If 21333 is not enough, split the input.
 
 ### Option B — OpenAI
 ```bash
