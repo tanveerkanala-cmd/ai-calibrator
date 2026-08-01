@@ -42,16 +42,16 @@ async function loadProjects() {
   const names = await api("GET", "/projects");
   const ul = $("#projects");
   ul.innerHTML = "";
-  // An empty list is ambiguous, and the likeliest cause is not "no projects yet":
-  // `calibrate init` writes into the CURRENT directory, while the server reads
-  // one fixed root. Saying which root it read turns a dead end into a next step.
+  // An empty list is ambiguous on its own, so name the directory that was read —
+  // the server and `calibrate init` share it, so this is also where a project
+  // created below will appear on disk.
   if (names.length === 0) {
     const li = document.createElement("li");
     li.className = "empty";
     let root = "";
     try { root = (await api("GET", "/health")).projects_root || ""; } catch { /* ignore */ }
     li.textContent = root
-      ? `No projects in ${root} — projects made by \`calibrate init\` live in the directory you ran it from. Restart with \`calibrate serve --projects <that directory>\`, or create one below.`
+      ? `No projects in ${root} — create one below, or start the server in another directory (\`calibrate serve --projects <dir>\`).`
       : "No projects yet — create one below.";
     ul.appendChild(li);
     return;

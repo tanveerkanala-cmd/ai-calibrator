@@ -33,15 +33,40 @@ except ImportError as exc:  # pragma: no cover - depends on optional extra
 
 from .auth import all_status
 from .models import EngineBinding, Project, TaskType
-from .store import load_project, project_lock, save_project, write_project_gitignore
+from .store import PROJECT_FILE, load_project, project_lock, save_project, write_project_gitignore
 from .webguard import MAX_BODY_BYTES, install_guard
 
 WEB_DIR = Path(__file__).parent / "web"
 
 
-def default_projects_root() -> Path:
+def legacy_projects_root() -> Path:
+    """The home-directory registry `calibrate serve` used to default to.
+
+    Kept only so the CLI can point at it by name when someone's projects are
+    still there. Nothing defaults to it any more: a project is a directory, and
+    the server now reads the directory you are standing in, like every other
+    command."""
     base = os.getenv("CALIBRATOR_HOME") or (Path.home() / ".ai-calibrator")
     return Path(base) / "projects"
+
+
+def default_projects_root(cwd: Path | None = None) -> Path:
+    """Where the server looks for projects: the current directory.
+
+    `calibrate init my-ai` writes ./my-ai, every other command takes a path, and
+    a project is a directory of plain files you keep in your repo. A server with
+    its own separate home-directory registry meant the documented quickstart —
+    init, then serve — ended at an empty list, and it could not be fixed by
+    scanning both: routes address projects by name (`/api/projects/{name}`), so
+    two roots make a name ambiguous, which is no identifier at all.
+
+    Standing INSIDE a project is the common case (`cd my-ai && calibrate serve`),
+    so a directory that is itself a project resolves to its parent — otherwise
+    the listing, which looks one level down, would find nothing."""
+    here = (cwd or Path.cwd()).resolve()
+    if (here / PROJECT_FILE).exists():
+        return here.parent
+    return here
 
 
 class CreateProjectBody(BaseModel):

@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from ai_calibrator import api
-from ai_calibrator.api import create_app
+from ai_calibrator.api import create_app, default_projects_root
 from ai_calibrator.models import BehaviorSpec, Check, EvalCriterion, Project, Weight
 from ai_calibrator.runtime import create_ai_app
 from ai_calibrator.store import save_project
@@ -370,3 +370,46 @@ def test_the_feedback_cap_counts_every_field_that_lands_in_the_record(tmp_path, 
             field: "x" * (MAX_CHAT_CHARS + 1)}
     r = c.post("/api/projects/p/feedback", json=body)
     assert r.status_code == 400 and "too large" in r.text
+
+
+# --- the server reads the directory you are standing in --------------------
+
+def test_the_projects_root_is_the_directory_you_are_in(tmp_path):
+    """`calibrate init my-ai` writes ./my-ai and every other command takes a path.
+    A server with its own home-directory registry made the documented quickstart
+    — init, then serve — end at an empty list."""
+    from ai_calibrator.api import default_projects_root
+
+    (tmp_path / "my-ai").mkdir()
+    (tmp_path / "my-ai" / "project.yaml").write_text("name: my-ai\ngoal: g\n", encoding="utf-8")
+
+    assert default_projects_root(tmp_path) == tmp_path.resolve()
+
+    c = TestClient(create_app(default_projects_root(tmp_path)))
+    assert c.get("/api/projects").json() == ["my-ai"]
+
+
+def test_standing_inside_a_project_serves_that_project(tmp_path):
+    """`cd my-ai && calibrate serve` is the common case, and the listing looks one
+    level down — so a directory that is itself a project resolves to its parent."""
+    from ai_calibrator.api import default_projects_root
+
+    project = tmp_path / "my-ai"
+    project.mkdir()
+    (project / "project.yaml").write_text("name: my-ai\ngoal: g\n", encoding="utf-8")
+
+    assert default_projects_root(project) == tmp_path.resolve()
+
+    c = TestClient(create_app(default_projects_root(project)))
+    assert c.get("/api/projects").json() == ["my-ai"]
+
+
+def test_a_project_made_in_the_ui_is_addressable_by_path_from_the_cli(tmp_path):
+    """The point of one root: what the UI creates, the CLI can operate on with an
+    ordinary relative path — no home-directory detour."""
+    from ai_calibrator.store import load_project
+
+    c = TestClient(create_app(default_projects_root(tmp_path)))
+    assert c.post("/api/projects", json={"name": "from-ui", "goal": "be helpful"}).status_code == 200
+
+    assert load_project(tmp_path / "from-ui").goal == "be helpful"

@@ -430,16 +430,17 @@ pip install -e '.[api]'
 calibrate serve                 # → http://127.0.0.1:8765
 calibrate serve --port 9000     # if 8765 is taken
 ```
-> **The UI reads one fixed directory; `calibrate init` writes to the one you are
-> standing in.** A project you made with `calibrate init my-ai` therefore will not
-> appear in the list until you point the server at it — `calibrate serve
-> --projects .` from the directory holding it. The startup banner and the empty
-> list both name the root the server actually read. Projects created *in* the UI
-> land in that root, and the CLI reaches them by path:
-> `calibrate eval ~/.ai-calibrator/projects/my-ai`.
+> **The UI and the CLI share one root: the directory you are standing in.**
+> `calibrate init my-ai` writes `./my-ai`, and `calibrate serve` lists the
+> projects in that same directory — so the quickstart works with no detour. If
+> you run it from *inside* a project, it serves that project (the listing looks
+> one level down, so the root resolves to the parent). A project created in the
+> UI is an ordinary directory the CLI operates on by path: `calibrate eval ./my-ai`.
+> Point somewhere else with `--projects DIR`; the startup banner always names the
+> root it actually read, and what it found there.
 
 Flags: `--port PORT` (default `8765`), `--projects DIR` (where projects live;
-default `~/.ai-calibrator/projects`), and `--host HOST` (default `127.0.0.1`,
+default: the current directory), and `--host HOST` (default `127.0.0.1`,
 i.e. reachable only from your machine — binding anything else prints a warning,
 since the API has no authentication).
 

@@ -2158,14 +2158,14 @@ def serve(
     host: str = typer.Option("127.0.0.1", "--host", help="Bind host (localhost by default)."),
     port: int = typer.Option(8765, "--port", help="Port."),
     projects: Optional[Path] = typer.Option(
-        None, "--projects", help="Projects root dir (default: ~/.ai-calibrator/projects)."
+        None, "--projects", help="Projects root dir (default: the current directory)."
     ),
 ) -> None:
     """Run the local API + web UI; open the printed URL in your browser."""
     _validate_port(port)  # 1..65535 (port 0 would print a wrong URL for a random bind)
     try:
         import uvicorn
-        from .api import create_app, default_projects_root
+        from .api import create_app, default_projects_root, legacy_projects_root
     except (ImportError, RuntimeError):
         typer.secho("The API needs the `api` extra:  pip install -e '.[api]'  (in your ai-calibrator clone)",
                     fg=typer.colors.RED)
@@ -2186,7 +2186,21 @@ def serve(
         )
     application = create_app(root, allowed_hosts=None if is_local else [host])
     typer.secho(f"AI Calibrator → http://{host}:{port}", fg=typer.colors.GREEN)
-    typer.echo(f"  projects in {root}")
+    found = sorted(d.name for d in root.iterdir() if (d / "project.yaml").exists()) if root.is_dir() else []
+    typer.echo(f"  projects in {root}" + (f" — {', '.join(found[:6])}"
+                                          + (f" (+{len(found) - 6} more)" if len(found) > 6 else "")
+                                          if found else " — none yet"))
+    # Versions before this one served a home-directory registry. If that is where
+    # someone's projects actually are, an empty list here is confusing in a way
+    # only this message can fix.
+    if not found and projects is None:
+        legacy = legacy_projects_root()
+        stranded = sorted(d.name for d in legacy.iterdir()
+                          if (d / "project.yaml").exists()) if legacy.is_dir() else []
+        if stranded:
+            typer.secho(f"  ⚠ {len(stranded)} project(s) are in {legacy} — the directory earlier "
+                        "versions served. Serve them with:", fg=typer.colors.YELLOW)
+            typer.echo(f"      calibrate serve --projects {legacy}")
     try:
         uvicorn.run(application, host=host, port=port, log_level="warning")
     except OSError as exc:  # e.g. EADDRINUSE — friendly, not a raw traceback
