@@ -484,3 +484,42 @@ def test_a_ratified_spec_carries_no_such_warning(tmp_path):
     assert report_dict(project, cov, None)["unratified_answers"] == []
     assert "nobody reviewed" not in render_report(project, cov, None)
     assert "Spec provenance" not in render_html_report(project, cov, None, tmp_path)
+
+
+# --- a criterion the judge cannot grade ------------------------------------
+
+def test_lint_flags_a_criterion_that_defers_to_something_the_judge_never_sees():
+    """`judge_prompt` shows the judge the test input, the AI's output and the
+    criterion text — not the spec. A criterion that defers to the spec asks a
+    question the judge cannot answer, and the answer it invents looks
+    authoritative: in a live run, "cites only figures stated in this spec" failed
+    outputs for repeating policy the materials really did contain."""
+    from ai_calibrator.lint import lint_spec
+    from ai_calibrator.models import BehaviorSpec, Check, EvalCriterion, Weight
+
+    spec = BehaviorSpec(goal="g", standards=["Always cite the documented 30-day window."],
+                        eval_criteria=[
+        EvalCriterion(id="spec_ref", weight=Weight.HIGH,
+                      description="Cites only policies and figures stated in this spec."),
+        EvalCriterion(id="self_contained", weight=Weight.HIGH,
+                      description="States the 30-day return window explicitly."),
+        # A deterministic check grades by code, so it never reaches the judge.
+        EvalCriterion(id="code_graded", weight=Weight.HIGH,
+                      description="Mentions the policy document verbatim.",
+                      check=Check(kind="contains", value="30-day")),
+    ])
+
+    flagged = {i.where for i in lint_spec(spec, []).issues if i.code == "ungradeable_reference"}
+    assert flagged == {"spec_ref"}
+
+
+def test_the_judge_prompt_still_carries_only_what_the_lint_rule_assumes():
+    """The rule exists because of what judge_prompt omits. If that ever changes,
+    this test should fail and the rule should be revisited rather than left
+    warning about something no longer true."""
+    from ai_calibrator.eval import judge_prompt
+
+    prompt = judge_prompt("a question", "an answer", [("c1", "a criterion")])
+    assert "a question" in prompt and "an answer" in prompt and "a criterion" in prompt
+    for absent in ("STANDARDS", "SYSTEM PROMPT", "SPEC"):
+        assert absent not in prompt.upper().replace("CRITERIA", "")

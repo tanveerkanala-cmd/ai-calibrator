@@ -62,6 +62,19 @@ def _weasel(text: str) -> str | None:
     return next(iter(hit)) if hit else None
 
 
+# Things a criterion can point at that the judge is never shown. It receives the
+# test input, the AI's output, and the criterion text — nothing else.
+_UNSEEN = ("this spec", "the spec", "the standards", "the system prompt",
+           "the materials", "the policy document", "the provided policy",
+           "the knowledge base", "the documents")
+
+
+def _unseen_reference(description: str) -> str | None:
+    """The first thing this criterion defers to that the judge cannot see."""
+    low = description.lower()
+    return next((phrase for phrase in _UNSEEN if phrase in low), None)
+
+
 def lint_spec(spec: BehaviorSpec, tests: list[TestCase]) -> LintReport:
     """Deterministic quality checks on a spec + its tests (no engine)."""
     issues: list[LintIssue] = []
@@ -93,6 +106,20 @@ def lint_spec(spec: BehaviorSpec, tests: list[TestCase]) -> LintReport:
         if len(c.description.strip()) < _MIN_LEN:
             issues.append(LintIssue("vague_criterion", "warn",
                                     f"Criterion {c.id!r} description is too short to grade reliably.", c.id))
+        elif c.check is None and (ref := _unseen_reference(c.description)):
+            # The judge is shown the test input, the AI's output, and the
+            # criterion text — NOT the spec, the standards, or the system prompt
+            # (see eval.judge_prompt). A criterion that defers to one of those is
+            # asking a question the judge has no way to answer, and the answer it
+            # invents looks authoritative: in a live run, criteria phrased "cites
+            # only figures stated in this spec" failed outputs for repeating
+            # policy the materials really did contain. State the rule in the
+            # criterion itself, or give it a deterministic `check`.
+            issues.append(LintIssue(
+                "ungradeable_reference", "warn",
+                f"Criterion {c.id!r} defers to {ref!r}, which the judge never sees — it grades "
+                "against the criterion text alone. Spell the rule out in the description, or "
+                "attach a deterministic check.", c.id))
 
     # Duplicate TEST ids. drift.compare_scorecards and snapshot.outputs_of both key
     # results by test_id, so a duplicate makes one of the two invisible to
