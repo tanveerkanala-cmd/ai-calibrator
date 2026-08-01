@@ -33,6 +33,18 @@ def calibration_confidence(coverage_rate: float, pass_rate: float, has_eval: boo
     return round(coverage_rate * pass_rate, 4)
 
 
+def _unratified_answers(project: Project) -> list[str]:
+    """Dimensions whose interview answer the tool wrote and nobody reviewed.
+
+    The spec is synthesized from these answers, so they are upstream of every
+    standard, criterion and test — and the tool cannot know what the materials
+    leave unstated, so a draft can assert policy nobody wrote. This report is the
+    artifact that gets shared as evidence the AI is calibrated; a spec built on
+    unreviewed guesses is a different claim from one built on ratified answers,
+    and the difference has to be visible here."""
+    return [it.dimension for it in project.interview if it.unratified]
+
+
 def _matches(test, result) -> bool:
     """Does ``result`` record a run of ``test``?
 
@@ -129,6 +141,7 @@ def report_dict(project: Project, coverage: CoverageReport, latest: Scorecard | 
         "criteria": len(spec.eval_criteria) if spec else 0,
         "tests": len(project.tests),
         "uncovered_criteria": [c.id for c in coverage.uncovered_criteria],
+        "unratified_answers": _unratified_answers(project),
         "ungraded_tests": _ungraded_tests(project, latest),
         "dropped_tests": _dropped_tests(project, latest),
         "warnings": coverage.warnings,
@@ -153,6 +166,16 @@ def render_report(project: Project, coverage: CoverageReport, latest: Scorecard 
     L += [f"**Goal:** {project.goal}  ", f"**Task type:** {project.task_type.value}", ""]
 
     L += [f"## Calibration Confidence: {pct(conf)}", ""]
+    unratified = _unratified_answers(project)
+    if unratified:
+        L += [f"> ⚠ **This spec was built from {len(unratified)} interview answer(s) the tool "
+              "wrote and nobody reviewed** "
+              f"({', '.join(unratified[:5])}{', …' if len(unratified) > 5 else ''}). It cannot "
+              "know what your materials leave unstated, so anything those answers assert is "
+              "policy that may never have been yours — and it is now a standard the AI follows "
+              "and a criterion it is graded against. A high score below measures agreement with "
+              "those answers, not with your materials. Re-run `calibrate interview` to review "
+              "them.", ""]
     L += [f"- Behavioral coverage: **{pct(coverage.coverage_rate)}** "
           f"({len(coverage.covered_criteria)}/{coverage.total_criteria} criteria targeted by a test)"]
     if latest:
@@ -374,6 +397,14 @@ def render_html_report(project: Project, coverage: CoverageReport, latest: Score
                           + (f", {n_failed} of which this run FAILED" if n_failed else ""))]
     else:
         measures += [("Pass rate", "— (no eval yet)")]
+    # The certificate is what gets shared as evidence. A spec synthesized from
+    # answers nobody reviewed is a materially different claim, so it belongs
+    # beside the score rather than in a footnote.
+    unratified = _unratified_answers(project)
+    if unratified:
+        measures += [("Spec provenance",
+                      f"⚠ built from {len(unratified)} unreviewed drafted answer(s) — "
+                      "may assert policy your materials never stated")]
     measures += [("Certification", f"{status} — {detail}")]
     measure_rows = "\n".join(f"<tr><td>{_esc(k)}</td><td>{_esc(v)}</td></tr>" for k, v in measures)
 

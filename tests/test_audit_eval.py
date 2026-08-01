@@ -442,3 +442,45 @@ def test_no_golden_at_all_still_skips(tmp_path):
                     project_dir=tmp_path, threshold=0.8)
     stage = next(s for s in result.stages if s.name == "snapshot")
     assert stage.status == "skip" and result.ok
+
+
+# --- the report must not launder an unreviewed guess as calibration --------
+
+def _project_with_interview(sources):
+    from ai_calibrator.models import BehaviorSpec, EvalCriterion, InterviewItem, Project, Weight
+
+    p = Project(name="p", goal="g")
+    p.spec = BehaviorSpec(goal="g", eval_criteria=[
+        EvalCriterion(id="c1", description="on policy", weight=Weight.HIGH)])
+    p.interview = [InterviewItem(id=f"q{i}", dimension=f"dim{i}", question="?",
+                                 answer="an answer", answer_source=src)
+                   for i, src in enumerate(sources, start=1)]
+    return p
+
+
+def test_a_spec_built_from_unreviewed_drafts_says_so_on_every_surface(tmp_path):
+    """The tool cannot know what the materials leave unstated, so an auto-accepted
+    draft can assert policy nobody wrote — and compile turns it into a standard
+    and a graded criterion. A high score then measures agreement with the guess."""
+    project = _project_with_interview(["engine", "engine", "human"])
+    cov = analyze_coverage(project.spec, project.tests)
+
+    d = report_dict(project, cov, None)
+    assert d["unratified_answers"] == ["dim1", "dim2"]
+
+    md = render_report(project, cov, None)
+    assert "nobody reviewed" in md and "dim1" in md
+
+    html = render_html_report(project, cov, None, tmp_path)
+    assert "Spec provenance" in html and "unreviewed" in html
+
+
+def test_a_ratified_spec_carries_no_such_warning(tmp_path):
+    """Typing your own answer and accepting a draft you read are both decisions a
+    person made; neither is the tool answering itself."""
+    project = _project_with_interview(["human", "human_ratified", None])
+    cov = analyze_coverage(project.spec, project.tests)
+
+    assert report_dict(project, cov, None)["unratified_answers"] == []
+    assert "nobody reviewed" not in render_report(project, cov, None)
+    assert "Spec provenance" not in render_html_report(project, cov, None, tmp_path)
