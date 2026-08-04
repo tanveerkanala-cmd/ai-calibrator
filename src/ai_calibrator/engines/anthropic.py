@@ -79,7 +79,26 @@ def _friendly_anthropic_error(exc: Exception, name: str) -> EngineError | None:
     # raw jargon a keyless first run used to hit. Treat it as missing credentials.
     if isinstance(exc, anthropic.AnthropicError):
         return EngineAuthError(missing_credentials_message("anthropic", name))
+    # Belt and braces: the SDK signals an unresolvable credential with a plain
+    # builtin TypeError, which no isinstance check above can catch. Match on what
+    # it is about rather than on its class.
+    if isinstance(exc, TypeError) and any(
+        token in str(exc).lower() for token in ("authentication", "api_key", "auth_token")
+    ):
+        return EngineAuthError(missing_credentials_message("anthropic", name))
     return None
+
+
+def _credentials_available() -> bool:
+    """Is there any credential the SDK could authenticate with?
+
+    Mirrors what `calibrate auth` reports, so the two never disagree about
+    whether Claude is usable."""
+    import os
+    if os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_AUTH_TOKEN"):
+        return True
+    from ..auth import _anthropic_cli  # the verified Anthropic CLI, not Apache Ant
+    return _anthropic_cli() is not None
 
 
 class AnthropicEngine(Engine):
@@ -95,6 +114,14 @@ class AnthropicEngine(Engine):
         self.name = f"{model}@anthropic"
         self.model = model
         self.max_tokens = max_tokens if max_tokens is not None else _default_max_tokens()
+        # Resolve credentials HERE rather than letting the SDK fail later. The
+        # client constructor succeeds without a key and defers the failure to the
+        # first request, where the SDK raises a plain builtin (not an
+        # AnthropicError) — so the friendly-error mapper below never saw it and a
+        # keyless first run on the DEFAULT engine got raw SDK jargon. Anthropic is
+        # the default binding, so this is the single most likely first experience.
+        if not api_key and not _credentials_available():
+            raise EngineAuthError(missing_credentials_message("anthropic", self.name))
         try:
             self._client = (
                 anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()

@@ -64,6 +64,12 @@ def _matches(test, result) -> bool:
     return result.input_hash is None or result.input_hash == test_input_hash(test)
 
 
+# NOTE: drift.py answers the same question for two RESULTS (models.same_question).
+# Both are statements of one rule — "an id names a slot, not a question" — and when
+# only this one existed, `calibrate drift` compared recompiled suites as if the
+# tests had not changed. Keep them in step.
+
+
 def _graded(latest: Scorecard | None) -> list:
     return [r for r in latest.results if r.criteria] if latest else []
 

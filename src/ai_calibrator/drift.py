@@ -14,12 +14,12 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .engines.base import Engine
 from .eval import next_run_id, run_eval, save_scorecard
-from .models import Scorecard
+from .models import Scorecard, same_question
 
 
 @dataclass
@@ -31,6 +31,11 @@ class DriftReport:
     regressed_tests: list[str]  # passed in baseline, failed in candidate
     fixed_tests: list[str]      # failed in baseline, passed in candidate
     tolerance: float
+    # Ids both runs graded whose recorded question CHANGED between them (a
+    # recompile rewrites t1..tN under the same ids). Their verdicts are not
+    # comparable and are excluded from the counts above rather than being
+    # silently treated as the same test.
+    incomparable_tests: list[str] = field(default_factory=list)
 
     @property
     def delta(self) -> float:
@@ -49,11 +54,23 @@ def compare_scorecards(baseline: Scorecard, candidate: Scorecard, *, tolerance: 
     if isinstance(tolerance, bool) or not isinstance(tolerance, (int, float)) \
             or not math.isfinite(tolerance) or tolerance < 0:
         raise ValueError(f"tolerance must be a finite number >= 0 (got {tolerance!r})")
-    before = {r.test_id: r.passed for r in baseline.results}
-    after = {r.test_id: r.passed for r in candidate.results}
-    shared = before.keys() & after.keys()
-    regressed = sorted(t for t in shared if before[t] and not after[t])
-    fixed = sorted(t for t in shared if not before[t] and after[t])
+    # Match on the QUESTION, not just the slot — see models.same_question. Keying
+    # on the id alone compared an old run's verdicts to tests that now ask
+    # something else, and reported the difference as a regression or a fix.
+    by_id_before = {r.test_id: r for r in baseline.results}
+    regressed, fixed, incomparable = [], [], []
+    for cand in candidate.results:
+        base = by_id_before.get(cand.test_id)
+        if base is None:
+            continue
+        if not same_question(base, cand):
+            incomparable.append(cand.test_id)
+            continue
+        if base.passed and not cand.passed:
+            regressed.append(cand.test_id)
+        elif not base.passed and cand.passed:
+            fixed.append(cand.test_id)
+    regressed, fixed, incomparable = sorted(regressed), sorted(fixed), sorted(set(incomparable))
     return DriftReport(
         baseline_run=baseline.run_id,
         candidate_run=candidate.run_id,
@@ -62,6 +79,7 @@ def compare_scorecards(baseline: Scorecard, candidate: Scorecard, *, tolerance: 
         regressed_tests=regressed,
         fixed_tests=fixed,
         tolerance=tolerance,
+        incomparable_tests=incomparable,
     )
 
 
@@ -102,5 +120,6 @@ def drift_dict(report: DriftReport) -> dict:
         "regressed": report.regressed,
         "regressed_tests": report.regressed_tests,
         "fixed_tests": report.fixed_tests,
+        "incomparable_tests": report.incomparable_tests,
         "tolerance": report.tolerance,
     }

@@ -152,7 +152,17 @@ def _drift_stage(project_dir: str | Path, baseline_id: str | None, card: Scoreca
                        f"baseline {baseline_id} is a PARTIAL run (interrupted, or --max-tests) — "
                        "not comparable; run a full eval to set a baseline")
     d = compare_scorecards(base, card, tolerance=tolerance)
+    if d.incomparable_tests and not d.regressed_tests and not d.fixed_tests:
+        # Same reasoning as the PARTIAL baseline above: a comparison the tool
+        # cannot make must not be reported as a passing stage. Every shared id now
+        # asks a different question, so there is nothing to compare.
+        return CiStage("drift", "skip",
+                       f"vs {baseline_id}: {len(d.incomparable_tests)} test(s) changed content "
+                       "since that run (a recompile rewrites the probes under the same ids) — "
+                       "not comparable; re-baseline with `calibrate eval`")
     detail = f"vs {baseline_id}: Δ {pct_delta(d.delta)}"
+    if d.incomparable_tests:
+        detail += f", {len(d.incomparable_tests)} not comparable (content changed)"
     if d.regressed:
         what = f", regressed: {', '.join(d.regressed_tests)}" if d.regressed_tests else ""
         return CiStage("drift", "fail", detail + what)

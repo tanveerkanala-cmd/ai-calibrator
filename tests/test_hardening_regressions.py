@@ -505,3 +505,173 @@ def test_recompile_keeps_the_owners_example_over_a_synthesized_one():
     kept = {e.input: e for e in p.spec.examples}
     assert kept["q1"].good_output == "the owner wrote this"
     assert kept["q1"].source == "human"
+
+
+# --- an id names a slot, not a question — on BOTH consumers of that rule ------
+
+def _res(tid, passed, h):
+    return ResultModel(test_id=tid, output="o", input_hash=h,
+                       criteria=[CriterionResult(criterion_id="c1", passed=passed,
+                                                 score=1.0 if passed else 0.0)])
+
+
+def test_drift_will_not_compare_a_recompiled_suite():
+    """`compile` regenerates t1..tN under the same ids, so matching on the id alone
+    compared verdicts on different questions and called it "no regressions" — even
+    announcing a phantom "fixed". report.py learned this rule; drift did not."""
+    from ai_calibrator.drift import compare_scorecards, drift_dict
+
+    base = Scorecard(run_id="run-1", results=[_res("t1", False, "aaaa"), _res("t2", True, "bbbb")])
+    cand = Scorecard(run_id="run-2", results=[_res("t1", True, "zzzz"), _res("t2", True, "yyyy")])
+    d = drift_dict(compare_scorecards(base, cand))
+
+    assert d["fixed_tests"] == [] and d["regressed_tests"] == []
+    assert d["incomparable_tests"] == ["t1", "t2"]
+
+
+def test_drift_still_catches_a_real_regression_on_the_same_question():
+    from ai_calibrator.drift import compare_scorecards
+
+    base = Scorecard(run_id="run-1", results=[_res("t1", True, "aaaa")])
+    cand = Scorecard(run_id="run-2", results=[_res("t1", False, "aaaa")])
+    assert compare_scorecards(base, cand).regressed_tests == ["t1"]
+
+
+def test_drift_compares_legacy_scorecards_that_predate_the_hash():
+    """A result with no hash is matched on id, so existing scorecards keep
+    comparing exactly as they did."""
+    from ai_calibrator.drift import compare_scorecards
+
+    base = Scorecard(run_id="run-1", results=[_res("t1", True, None)])
+    cand = Scorecard(run_id="run-2", results=[_res("t1", False, None)])
+    assert compare_scorecards(base, cand).regressed_tests == ["t1"]
+
+
+# --- judge-check may only offer verdicts the judge actually made --------------
+
+def test_judge_check_offers_only_judge_graded_criteria():
+    """A criterion with a deterministic check is graded by code, and an empty answer
+    is failed by the harness — neither is a judgment the judge made. Offering them
+    asked the owner to calibrate a grader that never ran."""
+    from ai_calibrator.judge_check import gradings
+    from ai_calibrator.models import Check
+
+    spec = BehaviorSpec(goal="g", eval_criteria=[
+        EvalCriterion(id="det", description="makes no medical claim", weight=Weight.HIGH,
+                      check=Check(kind="not_contains", value="cure")),
+        EvalCriterion(id="judged", description="is helpful and clear", weight=Weight.MEDIUM)])
+    card = Scorecard(run_id="r", results=[ResultModel(test_id="t1", output="ok", criteria=[
+        CriterionResult(criterion_id="det", passed=True, score=1.0, rationale="absent 'cure'"),
+        CriterionResult(criterion_id="judged", passed=True, score=1.0, rationale="reads well")])])
+
+    assert [g["criterion_id"] for g in gradings(card, spec)] == ["judged"]
+
+
+def test_judge_check_has_nothing_to_offer_when_the_judge_never_ran():
+    from ai_calibrator.judge_check import gradings
+    from ai_calibrator.models import Check
+
+    spec = BehaviorSpec(goal="g", eval_criteria=[
+        EvalCriterion(id="det", description="makes no medical claim", weight=Weight.HIGH,
+                      check=Check(kind="not_contains", value="cure"))])
+    card = Scorecard(run_id="r", results=[ResultModel(test_id="t1", output="", criteria=[
+        CriterionResult(criterion_id="det", passed=False, score=0.0, rationale="empty output")])])
+    assert gradings(card, spec) == []
+
+
+# --- a source directory the tool cannot read is never an emptying -------------
+
+def test_a_materials_dir_of_only_skipped_entries_does_not_wipe_the_corpus(tmp_path):
+    """Symlinks and hidden files are excluded by POLICY and deliberately kept out of
+    the skip report, so a directory made only of those produced docs=[] AND
+    skipped=[] — slipping past the "populated but unreadable" veto and emptying the
+    project while reporting success."""
+    from ai_calibrator.ingest import ingest_project
+    from ai_calibrator.models import Gap, Material
+
+    mats = tmp_path / "materials"
+    mats.mkdir()
+    (mats / ".env").write_text("API_KEY=x", encoding="utf-8")
+    (mats / "link.txt").symlink_to(mats / "missing.txt")
+
+    class Boom:
+        name = "e@test"
+
+        def complete(self, *a, **k):
+            raise AssertionError("no engine call on an unreadable corpus")
+
+    p = Project(name="p", goal="g")
+    p.materials, p.facts, p.gaps = [Material(path="old.txt")], ["a fact"], [Gap(dimension="tone")]
+    result = ingest_project(p, str(mats), Boom(), project_dir=tmp_path, build_index=False)
+
+    assert result.unreadable
+    assert p.materials and p.facts and p.gaps      # nothing was destroyed
+
+
+def test_a_deliberately_emptied_dir_still_clears_the_corpus(tmp_path):
+    """The other half of the contract: an owner who really did remove everything
+    must still be able to clear it."""
+    from ai_calibrator.ingest import ingest_project
+    from ai_calibrator.models import Material
+
+    mats = tmp_path / "materials"
+    mats.mkdir()
+
+    class Boom:
+        name = "e@test"
+
+        def complete(self, *a, **k):
+            raise AssertionError("no engine call on an empty corpus")
+
+    p = Project(name="p", goal="g")
+    p.materials = [Material(path="old.txt")]
+    result = ingest_project(p, str(mats), Boom(), project_dir=tmp_path, build_index=False)
+    assert not result.unreadable and p.materials == []
+
+
+# --- a rejection must never evict the human's answer --------------------------
+
+def test_dedup_keeps_the_good_answer_over_a_later_rejection():
+    """`teach` writes bad_output-only for a thumbs-down, so "newest with any output
+    wins" let a rejection delete the correction it was meant to protect."""
+    from ai_calibrator.examples_io import dedup_examples
+
+    spec = BehaviorSpec(goal="g", examples=[
+        Example(input="q", good_output="corrected", source="human_ratified"),
+        Example(input="q", bad_output="rejected", source="human_ratified")])
+    dedup_examples(spec)
+
+    assert len(spec.examples) == 1
+    assert spec.examples[0].good_output == "corrected"
+    assert spec.examples[0].bad_output == "rejected"   # both survive as one example
+
+
+# --- the feedback inbox survives a bad byte -----------------------------------
+
+def test_one_malformed_byte_does_not_strand_the_feedback_inbox(tmp_path):
+    """read_text() raised UnicodeDecodeError out through absorb, and since the inbox
+    could then never be rewritten, every good record behind it was stranded."""
+    from ai_calibrator.flywheel import absorb_feedback
+
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "feedback.jsonl").write_bytes(
+        b'{"turns":["q"],"output":"a","verdict":"up"}\n\xff\xfe not utf-8\n')
+
+    p = Project(name="p", goal="g")
+    p.spec = BehaviorSpec(goal="g")
+    result = absorb_feedback(p, tmp_path)
+
+    assert result.ups == 1          # the good record still absorbed
+    assert result.unparsed == 1     # and the bad line reported, not destroyed
+
+
+def test_an_inbox_of_only_unreadable_lines_is_not_nothing_waiting(tmp_path):
+    from ai_calibrator.flywheel import absorb_feedback
+
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "feedback.jsonl").write_bytes(b"\xff\xfe only bad\n")
+    p = Project(name="p", goal="g")
+    p.spec = BehaviorSpec(goal="g")
+    assert absorb_feedback(p, tmp_path).unparsed == 1

@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .coerce import as_bool
-from .models import Scorecard
+from .models import BehaviorSpec, Scorecard
 from .store import atomic_write_text
 
 LABELS_FILE = "human-labels.json"
@@ -125,12 +125,30 @@ class JudgeAgreement:
         return sorted(cid for cid, (a, t) in self.by_criterion.items() if t and a / t < threshold)
 
 
-def gradings(card: Scorecard) -> list[dict]:
-    """Every (test_id, criterion_id, output, judge verdict) in a scorecard — the
-    judgments a human can confirm or correct."""
+# Rationales minted by run_eval's own short-circuits rather than by the judge.
+# A verdict carrying one was decided by code, so it is not the judge's to defend.
+_NOT_JUDGE_RATIONALES = frozenset({"empty output"})
+
+
+def gradings(card: Scorecard, spec: "BehaviorSpec | None" = None) -> list[dict]:
+    """The judge's verdicts in a scorecard — the judgments a human can confirm.
+
+    ONLY the judge's. A criterion carrying a deterministic ``check`` is graded by
+    ``run_check``, and an empty answer is failed by the harness before any judge
+    call, so neither is a judgment the judge made. Presenting them here asked the
+    owner to calibrate a grader that never ran and then reported the result as
+    "judge agreement" — on a project whose criteria all carry checks, a 100%
+    agreement rate could be printed for a judge that was never invoked.
+
+    ``spec`` supplies which criteria are judge-graded. Omitting it keeps the old
+    permissive behaviour for callers that have no spec to hand; every shipped
+    caller passes one."""
+    code_graded = {c.id for c in spec.eval_criteria if c.check is not None} if spec else set()
     return [{"test_id": r.test_id, "criterion_id": c.criterion_id, "output": r.output,
              "judge_passed": c.passed, "rationale": c.rationale}
-            for r in card.results for c in r.criteria]
+            for r in card.results for c in r.criteria
+            if c.criterion_id not in code_graded
+            and (c.rationale or "") not in _NOT_JUDGE_RATIONALES]
 
 
 def judge_agreement(card: Scorecard, human_labels: list[dict]) -> JudgeAgreement:

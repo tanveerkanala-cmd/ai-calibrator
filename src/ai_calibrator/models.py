@@ -110,7 +110,11 @@ class InterviewItem(PreservingModel):
     @property
     def unratified(self) -> bool:
         """True if this answer is the tool's own guess, accepted without review."""
-        return self.answer is not None and self.answer_source == "engine"
+        # bool(), not `is not None`: --accept-drafts stores `draft_answer or ""`,
+        # so a question the engine gave no draft for yields answer="" — which every
+        # other consumer (`if it.answer`) treats as unanswered. Disagreeing made the
+        # compile warning count "2 of 1 answer(s)".
+        return bool(self.answer) and self.answer_source == "engine"
 
 
 # --- The compiled behavior spec (source of truth) --------------------------
@@ -325,6 +329,23 @@ def test_input_hash(test: "TestCase") -> str:
 
     payload = "\x00".join([test.input, *test.follow_ups])
     return hashlib.sha256(payload.encode("utf-8", "surrogatepass")).hexdigest()[:16]
+
+
+def same_question(a: "TestResult", b: "TestResult") -> bool:
+    """Do two results record runs of the SAME question?
+
+    An id names a slot, not a question: `compile` regenerates t1..tN positionally,
+    so the ordinary workflow puts different text under the same id. Two results
+    match only when the id agrees AND their recorded content hashes do not
+    disagree. A result with no hash predates the field and is matched on id alone,
+    so existing scorecards keep comparing exactly as they did.
+
+    Shared deliberately: report.py and drift.py are two consumers of one rule, and
+    when only the first learned it, `calibrate drift` went on comparing verdicts
+    across recompiled suites and calling the result "no regressions"."""
+    if a.test_id != b.test_id:
+        return False
+    return a.input_hash is None or b.input_hash is None or a.input_hash == b.input_hash
 
 
 def validate_project_name(v: object) -> str:
