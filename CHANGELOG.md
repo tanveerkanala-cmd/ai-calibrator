@@ -7,6 +7,15 @@ versions follow [SemVer](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Commands that scale with your data say what they will spend, first.**
+  `interview` makes one engine call per gap, `rightsize` runs the whole suite
+  once per model and grades every answer, and `eval --refine` repeats the suite
+  up to `--rounds` times. Each of those numbers is knowable in advance and none
+  of them was shown, so pointing this at a large folder with a metered API key
+  cost whatever it cost. A printed estimate, not a confirmation prompt: these
+  run in scripts and over the API, where a blocking prompt would hang them.
+  The estimates are covered by tests that check them against the calls actually
+  made, because a wrong estimate is worse than none.
 - **`lint` warns when the judge is the subject.** One model answering and
   grading measures its own opinion of itself: the blind spots are shared by
   construction, so the failures it cannot see are exactly the ones it cannot

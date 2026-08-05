@@ -111,6 +111,29 @@ def _cleanup_empty_project_dir(path: Path, we_created: bool) -> None:
         pass  # cleanup is best-effort; never mask the original failure
 
 
+def _spend_notice(calls: int, engines: str, *, what: str, cap_hint: str | None = None) -> None:
+    """Say how many billed engine calls are about to be made, before making them.
+
+    Every command that scales with the user's data — one call per gap, the suite
+    once per model, the suite once per refine round — could spend an unbounded
+    amount against a metered API without ever showing a number. The cost is
+    knowable in advance in each case, and a first-time user pointing this at a
+    folder of documents has no way to guess it.
+
+    A printed estimate rather than a confirmation prompt: these commands run in
+    scripts and over the API, and a blocking prompt would either hang them or
+    have to be suppressed by a flag nobody sets in time. The number is the part
+    that was missing. `local` engines are named too — the count still predicts
+    how long it will take.
+    """
+    if calls <= 0:
+        return
+    line = f"  ~{calls} engine call(s) for {what}, against {engines}."
+    if cap_hint:
+        line += f" {cap_hint}"
+    typer.secho(line, fg=typer.colors.BRIGHT_BLACK)
+
+
 def _require_project(path: Path, on_error=None) -> None:
     """Exit friendly if there's no project here — WITHOUT creating anything.
 
@@ -635,6 +658,11 @@ def interview(
                 raise typer.Exit(code=1)
             typer.echo(f"Drafting one question per gap with {engine.name} "
                        f"({len(project.gaps)} gap(s)) …")
+            # The gap list comes from the extractor and grows with the materials,
+            # so this is the first place the size of the corpus turns into billed
+            # calls. Say the number before spending it.
+            _spend_notice(len(project.gaps), engine.name, what="one question per gap",
+                          cap_hint="Ctrl-C stops it; the questions drafted so far are kept.")
 
             # Persist after each gap so an engine timeout mid-interview keeps the
             # questions already drafted instead of discarding the whole run.
@@ -920,6 +948,17 @@ def eval_(
             + (f", refiner={refiner.name}" if refiner else "")
             + (f"  (--max-tests {max_tests})" if max_tests else "") + " …"
         )
+        # Each test is answered once and graded `judge_passes` times; --refine
+        # repeats the whole thing up to `rounds` times and spends a compiler call
+        # per round on top. The default is modest, but --rounds accepts up to 100
+        # and multiplies everything under it.
+        per_round = n_tests * (1 + judge_passes)
+        _spend_notice(per_round * (rounds if refine else 1) + (rounds if refine else 0),
+                      f"subject={subject.name}, judge={judge.name}"
+                      + (f", refiner={refiner.name}" if refiner else ""),
+                      what=(f"{n_tests} test(s) × {rounds} refine round(s)" if refine
+                            else f"{n_tests} test(s)")
+                           + (f", judged {judge_passes}× each" if judge_passes > 1 else ""))
         # If the project has documents but no usable retrieval index, we're grading
         # a prompt-only bot — say so, so a high pass rate isn't read as "it can use
         # my docs" when it can't (the exported bot would answer blind). A project
@@ -1565,6 +1604,12 @@ def rightsize(
         raise typer.Exit(code=1)
 
     typer.echo(f"Rightsizing across {len(specs)} model(s), judge={judge.name} (this runs your tests N× — may take a while) …")
+    # The most expensive command in the tool: the whole suite, once per model,
+    # each answer then graded. Two calls per test per model, and the model list
+    # is whatever the user passed.
+    _spend_notice(len(specs) * len(project.tests) * 2,
+                  f"{len(specs)} model(s) + judge {judge.name}",
+                  what=f"{len(project.tests)} test(s) × {len(specs)} model(s), answered and graded")
     report = run_rightsize(project, specs, judge, get_engine, threshold=threshold, project_dir=path)
 
     typer.secho(f"\n  {'model':<28}{'pass':>6}  {'$ in/out':>10}  note", bold=True)

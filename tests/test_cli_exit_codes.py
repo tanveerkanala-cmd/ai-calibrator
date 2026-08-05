@@ -428,3 +428,91 @@ def test_every_project_command_survives_a_corrupt_project(tmp_path, name):
     r = runner.invoke(app, [name, str(tmp_path)])
     assert _no_crash(r), f"{name} crashed on a corrupt project: {r.exception!r}"
     assert r.exit_code != 0, f"{name} exited 0 on a corrupt project"
+
+
+# --- the number of billed calls, before they are billed ---------------------
+
+class _CountingEngine:
+    """Counts every call, so an estimate can be checked against reality."""
+
+    name = "counter@test"
+    calls = 0
+
+    def complete(self, prompt, *, system=None, schema=None):
+        type(self).calls += 1
+        import re
+        ids = re.findall(r"^- (\S+):", prompt, re.M)
+        if ids:
+            return {"results": [{"criterion_id": i, "passed": True, "score": 1.0,
+                                 "rationale": "r"} for i in ids]}
+        return "please, here is the answer"
+
+
+def test_eval_states_its_call_count_and_the_estimate_is_right(tmp_path, monkeypatch):
+    """A first user pointing this at a folder of documents has no way to guess
+    what a command will spend. The estimate is worth nothing if it is wrong, so
+    this checks it against the calls actually made."""
+    import ai_calibrator.engines as engines
+
+    p = _project(tmp_path)
+    p.tests = [CaseModel(id=f"t{i}", input=f"q{i}", expects=["c1"]) for i in range(3)]
+    save_project(p, tmp_path)
+
+    _CountingEngine.calls = 0
+    monkeypatch.setattr(engines, "get_engine", lambda spec: _CountingEngine())
+
+    r = runner.invoke(app, ["eval", str(tmp_path)])
+    assert r.exit_code == 0, r.output
+
+    # The notice is printed BEFORE the work, and names a number.
+    import re
+    m = re.search(r"~(\d+) engine call\(s\)", r.output)
+    assert m, r.output
+    estimated = int(m.group(1))
+
+    # 3 tests, answered once each. The criterion is a deterministic `check`, so
+    # the judge is never called — the estimate is an upper bound, and must not
+    # be an under-count.
+    assert estimated >= _CountingEngine.calls, (estimated, _CountingEngine.calls)
+    assert estimated == 6      # 3 tests × (1 answer + 1 judge pass)
+
+
+def test_rightsize_states_the_cost_of_the_whole_matrix(tmp_path, monkeypatch):
+    import ai_calibrator.engines as engines
+
+    p = _project(tmp_path)
+    p.tests = [CaseModel(id=f"t{i}", input=f"q{i}", expects=["c1"]) for i in range(4)]
+    save_project(p, tmp_path)
+    monkeypatch.setattr(engines, "get_engine", lambda spec: _CountingEngine())
+
+    r = runner.invoke(app, ["rightsize", str(tmp_path), "--models", "a@ollama,b@ollama"])
+
+    import re
+    m = re.search(r"~(\d+) engine call\(s\)", r.output)
+    assert m, r.output
+    assert int(m.group(1)) == 4 * 2 * 2      # tests × models × (answer + grade)
+    assert "2 model(s)" in r.output
+
+
+def test_interview_states_one_call_per_gap(tmp_path, monkeypatch):
+    import ai_calibrator.engines as engines
+    from ai_calibrator.models import Gap
+
+    p = _project(tmp_path)
+    p.gaps = [Gap(dimension=d) for d in ("scope", "tone", "escalation")]
+    save_project(p, tmp_path)
+
+    class _Q:
+        name = "q@test"
+
+        def complete(self, prompt, *, system=None, schema=None):
+            return {"question": "?", "draft_answer": "d", "rationale": "r"}
+
+    monkeypatch.setattr(engines, "get_engine", lambda spec: _Q())
+
+    r = runner.invoke(app, ["interview", str(tmp_path)], input="")
+
+    import re
+    m = re.search(r"~(\d+) engine call\(s\)", r.output)
+    assert m, r.output
+    assert int(m.group(1)) == 3          # one per gap
