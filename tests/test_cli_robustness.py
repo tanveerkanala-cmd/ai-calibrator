@@ -14,8 +14,18 @@ from ai_calibrator.cli import app
 runner = CliRunner()
 
 
-def _has_no_traceback(output: str) -> bool:
-    return "Traceback (most recent call last)" not in output
+def _has_no_traceback(result) -> bool:
+    """Whether the command handled its own error instead of crashing.
+
+    Must be asked of the RESULT, not of ``result.output``: CliRunner catches an
+    unhandled exception and stores it on ``result.exception``, writing nothing
+    to the output. Checking the output for "Traceback" could therefore never be
+    False — a command that printed a friendly message and then crashed passed
+    every assertion in this file. ``SystemExit`` is how ``typer.Exit`` signals
+    an ordinary non-zero exit, so it is not a crash.
+    """
+    exc = result.exception
+    return exc is None or isinstance(exc, SystemExit)
 
 
 def test_status_on_malformed_yaml_is_friendly(tmp_path):
@@ -23,7 +33,7 @@ def test_status_on_malformed_yaml_is_friendly(tmp_path):
     result = runner.invoke(app, ["status", str(tmp_path)])
     assert result.exit_code == 1
     assert "invalid or corrupted" in result.output
-    assert _has_no_traceback(result.output)
+    assert _has_no_traceback(result)
 
 
 def test_status_on_incomplete_project_is_friendly(tmp_path):
@@ -32,7 +42,7 @@ def test_status_on_incomplete_project_is_friendly(tmp_path):
     result = runner.invoke(app, ["status", str(tmp_path)])
     assert result.exit_code == 1
     assert "invalid or corrupted" in result.output
-    assert _has_no_traceback(result.output)
+    assert _has_no_traceback(result)
 
 
 def test_status_on_empty_project_file_is_friendly(tmp_path):
@@ -41,7 +51,7 @@ def test_status_on_empty_project_file_is_friendly(tmp_path):
     result = runner.invoke(app, ["status", str(tmp_path)])
     assert result.exit_code == 1
     assert "invalid or corrupted" in result.output
-    assert _has_no_traceback(result.output)
+    assert _has_no_traceback(result)
 
 
 def test_compile_on_corrupt_project_is_friendly(tmp_path):
@@ -49,7 +59,7 @@ def test_compile_on_corrupt_project_is_friendly(tmp_path):
     (tmp_path / "project.yaml").write_text(": : :\n  - broken")
     result = runner.invoke(app, ["compile", str(tmp_path)])
     assert result.exit_code == 1
-    assert _has_no_traceback(result.output)
+    assert _has_no_traceback(result)
 
 
 def test_serve_rejects_out_of_range_port(tmp_path):
@@ -57,7 +67,7 @@ def test_serve_rejects_out_of_range_port(tmp_path):
         result = runner.invoke(app, ["serve", f"--port={bad}"])
         assert result.exit_code == 1, f"port {bad} should be rejected"
         assert "between 1 and 65535" in result.output
-        assert _has_no_traceback(result.output)
+        assert _has_no_traceback(result)
 
 
 def test_serve_help_works():
@@ -77,7 +87,7 @@ def test_redteam_rejects_out_of_range_max_probes(tmp_path):
         result = runner.invoke(app, ["redteam", str(tmp_path), f"--max-probes={bad}"])
         assert result.exit_code == 1
         assert "between 1 and 50" in result.output
-        assert _has_no_traceback(result.output)
+        assert _has_no_traceback(result)
 
 
 def test_teach_rejects_out_of_range_n(tmp_path):
@@ -85,19 +95,19 @@ def test_teach_rejects_out_of_range_n(tmp_path):
         result = runner.invoke(app, ["teach", str(tmp_path), f"--n={bad}"])
         assert result.exit_code == 1
         assert "between 1 and 20" in result.output
-        assert _has_no_traceback(result.output)
+        assert _has_no_traceback(result)
 
 
 def test_init_rejects_path_like_name():
     # The positional is a NAME (folder name); separators/traversal → friendly error.
     for bad in ["../evil", "a/b", "..", "/abs"]:
         r = runner.invoke(app, ["init", bad, "--goal", "g"])
-        assert r.exit_code == 1 and "simple folder name" in r.output and _has_no_traceback(r.output)
+        assert r.exit_code == 1 and "simple folder name" in r.output and _has_no_traceback(r)
 
 
 def test_init_rejects_empty_name():
     r = runner.invoke(app, ["init", "", "--goal", "g"])
-    assert r.exit_code == 1 and "must not be empty" in r.output and _has_no_traceback(r.output)
+    assert r.exit_code == 1 and "must not be empty" in r.output and _has_no_traceback(r)
 
 
 def test_init_accepts_plain_name_and_explicit_path(tmp_path):
@@ -126,7 +136,7 @@ def test_init_writes_gitignore_and_honest_engines_line(tmp_path):
 
 def test_init_rejects_overlong_name():
     r = runner.invoke(app, ["init", "a" * 1000, "--goal", "g"])
-    assert r.exit_code == 1 and "too long" in r.output and _has_no_traceback(r.output)
+    assert r.exit_code == 1 and "too long" in r.output and _has_no_traceback(r)
 
 
 def test_help_survives_ascii_and_cp1252_terminals():
@@ -156,7 +166,7 @@ def test_snapshot_on_corrupt_scorecard_is_friendly(tmp_path):
     run.mkdir(parents=True)
     (run / "scorecard.json").write_text("{ truncated json")
     r = runner.invoke(app, ["snapshot", str(d)])
-    assert r.exit_code == 1 and "Could not read scorecard" in r.output and _has_no_traceback(r.output)
+    assert r.exit_code == 1 and "Could not read scorecard" in r.output and _has_no_traceback(r)
 
 
 def test_eval_rounds_bounds_validated_before_project(tmp_path):
@@ -166,13 +176,13 @@ def test_eval_rounds_bounds_validated_before_project(tmp_path):
     (d / "project.yaml").write_text("name: p\ngoal: g\n")   # no spec/tests
     for bad in ("0", "101"):
         r = runner.invoke(app, ["eval", str(d), f"--rounds={bad}"])
-        assert r.exit_code == 1 and "between 1 and 100" in r.output and _has_no_traceback(r.output)
+        assert r.exit_code == 1 and "between 1 and 100" in r.output and _has_no_traceback(r)
 
 
 def test_train_requires_a_compiled_spec(tmp_path):
     (tmp_path / "project.yaml").write_text("name: p\ngoal: g\n")   # no spec
     r = runner.invoke(app, ["train", str(tmp_path)])
-    assert r.exit_code == 1 and "compile" in r.output and _has_no_traceback(r.output)
+    assert r.exit_code == 1 and "compile" in r.output and _has_no_traceback(r)
 
 
 def test_train_requires_examples(tmp_path):
@@ -183,7 +193,7 @@ def test_train_requires_examples(tmp_path):
         "spec": {"goal": "g", "eval_criteria": [{"id": "c1", "description": "d", "weight": "high"}]},
     }))
     r = runner.invoke(app, ["train", str(tmp_path)])
-    assert r.exit_code == 1 and "training examples" in r.output.lower() and _has_no_traceback(r.output)
+    assert r.exit_code == 1 and "training examples" in r.output.lower() and _has_no_traceback(r)
 
 
 def test_train_offers_deps_and_respects_decline(tmp_path, monkeypatch):
@@ -202,14 +212,14 @@ def test_train_offers_deps_and_respects_decline(tmp_path, monkeypatch):
     r = runner.invoke(app, ["train", str(tmp_path)], input="n\n")   # decline the install prompt
     assert r.exit_code == 1
     assert "torch" in r.output and "-e '.[train]'" in r.output   # guided, not silent
-    assert _has_no_traceback(r.output)
+    assert _has_no_traceback(r)
 
 
 def test_examples_requires_spec_then_imports(tmp_path):
     import yaml
     (tmp_path / "project.yaml").write_text("name: p\ngoal: g\n")   # no spec
     r = runner.invoke(app, ["examples", str(tmp_path)])
-    assert r.exit_code == 1 and "compile" in r.output and _has_no_traceback(r.output)
+    assert r.exit_code == 1 and "compile" in r.output and _has_no_traceback(r)
     # give it a spec, then import a CSV through the command
     (tmp_path / "project.yaml").write_text(yaml.safe_dump({"name": "p", "goal": "g", "spec": {"goal": "g"}}))
     csv = tmp_path / "qa.csv"; csv.write_text("question,answer\nHi?,Hello!\nBye?,See ya!\n")
@@ -245,18 +255,18 @@ def test_version_flag_prints_version_and_exits():
         result = runner.invoke(app, [flag])
         assert result.exit_code == 0, flag
         assert __version__ in result.output, flag
-        assert _has_no_traceback(result.output)
+        assert _has_no_traceback(result)
 
 
 def test_init_rejects_empty_goal(tmp_path):
     r = runner.invoke(app, ["init", "p", "--goal", "  ", "--path", str(tmp_path / "p")])
-    assert r.exit_code == 1 and "goal" in r.output.lower() and _has_no_traceback(r.output)
+    assert r.exit_code == 1 and "goal" in r.output.lower() and _has_no_traceback(r)
 
 
 def test_init_onto_existing_file_is_friendly(tmp_path):
     (tmp_path / "taken").write_text("i am a file")
     r = runner.invoke(app, ["init", "x", "--goal", "g", "--path", str(tmp_path / "taken")])
-    assert r.exit_code == 1 and "already exists" in r.output and _has_no_traceback(r.output)
+    assert r.exit_code == 1 and "already exists" in r.output and _has_no_traceback(r)
 
 
 def test_command_on_missing_project_leaves_no_junk_dir(tmp_path):
@@ -373,7 +383,7 @@ def test_merge_report_only_works_when_the_destination_exists(tmp_path, monkeypat
 
     r = runner.invoke(app, ["merge", str(out), "--from", str(a), "--from", str(b), "--report-only"])
     assert r.exit_code == 0, r.output
-    assert "report only" in r.output and _has_no_traceback(r.output)
+    assert "report only" in r.output and _has_no_traceback(r)
 
 
 
@@ -436,7 +446,7 @@ def test_add_check_rejects_an_empty_needle(tmp_path):
     for kind in ("contains", "not_contains", "regex"):
         r = runner.invoke(app, ["add-check", str(tmp_path), "c1", kind])
         assert r.exit_code == 1, (kind, r.output)
-        assert "needs a value" in r.output and _has_no_traceback(r.output)
+        assert "needs a value" in r.output and _has_no_traceback(r)
     assert load_project(tmp_path).spec.eval_criteria[0].check is None
     # kinds that take no value, and a real needle, still work
     assert runner.invoke(app, ["add-check", str(tmp_path), "c1", "non_empty"]).exit_code == 0
@@ -474,7 +484,7 @@ def test_ingest_of_an_emptied_materials_dir_clears_the_old_corpus(tmp_path, monk
     result = runner.invoke(app, ["ingest", str(tmp_path)])
     assert result.exit_code == 0, result.output
     assert "clearing" in result.output
-    assert _has_no_traceback(result.output)
+    assert _has_no_traceback(result)
 
     after = load_project(tmp_path)
     assert after.materials == [] and after.facts == [] and after.gaps == []
@@ -489,7 +499,7 @@ def test_ingest_still_guides_a_project_that_never_had_materials(tmp_path):
     result = runner.invoke(app, ["ingest", str(tmp_path)])
     assert result.exit_code == 1
     assert "No materials found" in result.output
-    assert _has_no_traceback(result.output)
+    assert _has_no_traceback(result)
 
 
 def test_ingest_warns_when_only_part_of_the_corpus_was_analyzed(tmp_path, monkeypatch):
@@ -521,7 +531,7 @@ def test_ingest_warns_when_only_part_of_the_corpus_was_analyzed(tmp_path, monkey
     # extractor. Counting a partially-read file as analyzed is what let a single
     # oversized material report "1 of 1" and suppress this warning entirely.
     assert "0 of 2 file(s) fit" in result.output
-    assert _has_no_traceback(result.output)
+    assert _has_no_traceback(result)
 
 
 def test_merge_writes_the_protective_gitignore(tmp_path, monkeypatch):

@@ -22,6 +22,7 @@ import yaml
 
 from .coerce import safe_token
 from .compile import render_system_prompt
+from .identity import result_matches_test
 from .models import Example, Project, Scorecard
 from .store import atomic_write_text
 
@@ -304,14 +305,24 @@ def training_overlap(project: Project, card: Scorecard) -> list[str]:
 
     Uses the SAME predicate as ``assemble_dataset`` — an example the dataset
     excludes was never trained on, so a test using its input is genuinely held
-    out and must stay in the comparison."""
+    out and must stay in the comparison.
+
+    The card may predate the current suite, and `compile` re-mints t1..tN, so an
+    id in the card can name a different question than the id in ``project``
+    does now. Reading the memorization check off the CURRENT input for that id
+    would answer the question about a prompt the run never sent, so a result
+    whose recorded content no longer matches its test is skipped."""
     trained = {
         ex.input for ex in (project.spec.examples if project.spec else [])
         if is_training_row(ex)
     }
-    by_id = {t.id: t.input for t in project.tests}
-    return sorted(r.test_id for r in card.results
-                  if by_id.get(r.test_id) in trained)
+    by_id = {t.id: t for t in project.tests}
+    out = []
+    for r in card.results:
+        t = by_id.get(r.test_id)
+        if t is not None and result_matches_test(r, t) and t.input in trained:
+            out.append(r.test_id)
+    return sorted(out)
 
 
 def _readme(recipe: dict, n: int) -> str:

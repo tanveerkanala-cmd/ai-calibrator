@@ -83,6 +83,35 @@ def test_ci_accepts_engine_factories(tmp_path):
     assert r.ok and calls == ["subject", "judge"]
 
 
+def test_drift_stage_does_not_report_pass_when_the_suite_was_recompiled(tmp_path):
+    """The documented loop is compile -> eval -> answer more questions -> compile
+    -> ci, and `compile` re-mints t1..tN positionally. The baseline then graded a
+    different question under the same id, so there is nothing to compare — and
+    "no regressions" would certify a comparison that never happened."""
+    p = _project()
+    save_scorecard(tmp_path, run_eval(p, Subject("GOOD baseline"), Judge(), run_id="run-0001"))
+
+    # `compile` re-mints t1 onto a different question, exactly as it does in the
+    # real workflow; the id is unchanged.
+    p.tests = [CaseModel(id="t1", input="a COMPLETELY different question", expects=["c1"])]
+
+    r = run_ci(p, Subject("BAD now"), Judge(), project_dir=tmp_path, threshold=0.0)
+    drift = next(s for s in r.stages if s.name == "drift")
+    assert drift.status == "skip"                      # not "pass"
+    assert "not comparable" in drift.detail and "re-minted" in drift.detail
+    assert "no regressions" not in drift.detail
+
+
+def test_drift_stage_still_compares_when_the_suite_is_unchanged(tmp_path):
+    """The fix must not make every ordinary run incomparable: an unchanged suite
+    re-evaluated still drifts against its baseline the way it always did."""
+    p = _project()
+    save_scorecard(tmp_path, run_eval(p, Subject("GOOD baseline"), Judge(), run_id="run-0001"))
+    r = run_ci(p, Subject("BAD now"), Judge(), project_dir=tmp_path, threshold=0.0)
+    drift = next(s for s in r.stages if s.name == "drift")
+    assert drift.status == "fail" and "t1" in drift.detail
+
+
 def test_ci_eval_below_threshold_fails_but_later_stages_still_run(tmp_path):
     p = _project()
     save_scorecard(tmp_path, run_eval(p, Subject("GOOD baseline"), Judge(), run_id="run-0001"))

@@ -18,7 +18,8 @@ from collections import Counter
 from .coerce import as_str
 from .coverage import CoverageReport
 from .fmt import pct
-from .models import BehaviorSpec, Project, Scorecard, test_input_hash
+from .identity import result_matches_test
+from .models import BehaviorSpec, Project, Scorecard
 from .store import atomic_write_text
 
 
@@ -58,10 +59,11 @@ def _matches(test, result) -> bool:
     A result with no recorded hash predates the field. It is matched by id, so
     existing scorecards keep reporting exactly as they did; every run from here
     on records the content and gets the stricter check.
+
+    Defers to `identity`, which is where every surface that compares a run to
+    the suite — or to another run — reads the same rule from.
     """
-    if result.test_id != test.id:
-        return False
-    return result.input_hash is None or result.input_hash == test_input_hash(test)
+    return result_matches_test(result, test)
 
 
 def _graded(latest: Scorecard | None) -> list:

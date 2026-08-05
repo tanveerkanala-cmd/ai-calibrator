@@ -59,6 +59,35 @@ versions follow [SemVer](https://semver.org/).
   architecture section references (`§9`) into user-facing text.
 
 ### Fixed
+- **The regression gate no longer certifies a comparison of different
+  questions.** A test id names a slot, not a question, and `compile` re-mints
+  `t1..tN` positionally on every run — so after the ordinary loop (compile →
+  eval → answer more questions → compile → ci) two scorecards could share every
+  id while grading two different exams. `drift` reported `Δ ±0%, no
+  regressions` over a suite whose questions had all been replaced, hiding a real
+  regression whose probe was gone; in the other direction it announced
+  `✓ 1 improved (fail→pass)` for a failing question that had simply been
+  deleted. `finetune --gate` accepted on the same false difference, `snapshot`
+  compared a golden against a question it was never pinned to, `finetune`'s
+  memorization check read the current suite's input for an old run, and
+  `train_engine` paired the current question with an old answer and stamped a
+  human's verdict on it as judge training data. The content check that already
+  guarded `report` now lives in `identity` and governs all six. Results that
+  are no longer comparable are reported as such — `drift` skips with a reason
+  instead of passing, `ci` names how many ids were re-minted, `snapshot`
+  distinguishes a *replaced* pin from a *removed* test, and `--gate` refuses.
+  Scorecards and goldens written before the content was recorded still compare
+  by id exactly as they did.
+- **`snapshot --check` no longer reports drift for an interrupted run.** It
+  resolved the newest run without excluding partial ones, so every test a
+  `--max-tests` or interrupted run never graded read as `removed` — exit 2 under
+  the self-contradicting summary "0 output(s) changed vs golden". Pinning
+  already refused partial runs; checking now does too, in the CLI and the API.
+- **A corrupt `golden.json` is no longer reported as "No golden yet".**
+  `load_golden` answers `None` for both, and the CLI printed re-pin
+  instructions — advice that would overwrite the only copy of the pinned
+  outputs with the current run's. `ci` already told the two apart; the CLI now
+  does, and says the check is not running.
 - **`interview --regenerate` no longer destroys ratified answers.** It saved
   after each gap, and the payload it saved was a prefix of the interview —
   answered items are folded back in lazily — so a failure partway (a timeout, a

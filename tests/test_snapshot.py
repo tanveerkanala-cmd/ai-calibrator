@@ -10,7 +10,34 @@ def _card(run_id, outs):
 
 
 def test_outputs_of():
-    assert outputs_of(_card("r", {"t1": "x", "t2": "y"})) == {"t1": "x", "t2": "y"}
+    # Each pin carries the question it answered, not just the answer: a test id
+    # is a slot `compile` re-mints, so the output alone cannot say what was asked.
+    assert outputs_of(_card("r", {"t1": "x", "t2": "y"})) == {
+        "t1": {"output": "x", "input_hash": None},
+        "t2": {"output": "y", "input_hash": None},
+    }
+
+
+def test_golden_distinguishes_a_replaced_test_from_a_removed_one():
+    """`compile` re-minted t1 onto a different question. The pinned answer
+    belongs to text this run never sent, so the pin has stopped checking
+    anything — that is neither a clean match nor a `removed` test."""
+    golden = {"t1": {"output": "Our policy is 30 days.", "input_hash": "aaaa000000000000"}}
+    latest = {"t1": {"output": "Our policy is 30 days.", "input_hash": "bbbb111111111111"}}
+    d = compare(golden, latest)
+    # Identical text, so the old comparison saw no drift at all and passed.
+    assert d.changed == [] and d.removed == [] and d.added == []
+    assert d.replaced == ["t1"]
+    assert d.drifted is True
+
+
+def test_compare_still_matches_by_id_when_either_hash_is_none():
+    """A golden pinned before the question was recorded is a bare string, and a
+    result from a pre-hash scorecard records None. Unknown never blocks: these
+    keep comparing by id exactly as they always did."""
+    assert compare({"t1": "same"}, {"t1": {"output": "same", "input_hash": "aaaa000000000000"}}).drifted is False
+    assert compare({"t1": {"output": "same", "input_hash": "aaaa000000000000"}}, {"t1": "same"}).drifted is False
+    assert compare({"t1": "same"}, {"t1": "changed"}).changed == ["t1"]
 
 
 def test_compare_detects_changed_added_removed():

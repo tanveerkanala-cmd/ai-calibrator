@@ -152,7 +152,20 @@ def _drift_stage(project_dir: str | Path, baseline_id: str | None, card: Scoreca
                        f"baseline {baseline_id} is a PARTIAL run (interrupted, or --max-tests) — "
                        "not comparable; run a full eval to set a baseline")
     d = compare_scorecards(base, card, tolerance=tolerance)
+    if not d.comparable:
+        # `compile` re-minted every shared probe between the two runs, so the two
+        # scorecards grade different questions under the same ids. Same reason
+        # the partial baseline above skips: there is nothing to compare. Saying
+        # "no regressions" here would certify a comparison that never happened.
+        return CiStage("drift", "skip",
+                       f"baseline {baseline_id} graded a different set of questions "
+                       f"({len(d.changed_tests)} id(s) re-minted by `compile`) — not comparable; "
+                       "this run becomes the new baseline")
     detail = f"vs {baseline_id}: Δ {pct_delta(d.delta)}"
+    if d.changed_tests:
+        # Partially comparable: report what was excluded, so the delta is read
+        # as covering the subset it actually covers.
+        detail += f" over {d.compared} shared test(s), {len(d.changed_tests)} re-minted and excluded"
     if d.regressed:
         what = f", regressed: {', '.join(d.regressed_tests)}" if d.regressed_tests else ""
         return CiStage("drift", "fail", detail + what)
@@ -180,6 +193,11 @@ def _snapshot_stage(project_dir: str | Path, card: Scorecard) -> CiStage:
         parts = []
         if diff.changed:
             parts.append(f"changed: {', '.join(diff.changed)}")
+        if diff.replaced:
+            # The pin is intact but no longer describes the current suite, so it
+            # has silently stopped checking anything. Re-pin, don't ignore.
+            parts.append(f"re-minted by `compile` (pin no longer applies, re-pin): "
+                         f"{', '.join(diff.replaced)}")
         if diff.removed:
             parts.append(f"removed: {', '.join(diff.removed)}")
         return CiStage("snapshot", "fail", "; ".join(parts))

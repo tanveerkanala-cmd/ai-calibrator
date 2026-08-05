@@ -872,6 +872,12 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             card = load_scorecard(d, rid)
         except (FileNotFoundError, ValueError, ValidationError) as exc:
             raise HTTPException(409, f"scorecard {rid!r} is unreadable: {exc}")
+        if card.partial:
+            # Its ungraded tests would report as missing from the golden — drift
+            # the model never caused. Pinning already refuses partial runs.
+            raise HTTPException(409, f"run {rid} is PARTIAL (interrupted, or capped) — the tests "
+                                     "it never graded would report as missing from the golden; "
+                                     "run a full eval first")
         return snapshot_dict(compare(golden, outputs_of(card)))
 
     @app.get("/api/projects/{name}/lint")

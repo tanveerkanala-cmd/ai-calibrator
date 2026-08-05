@@ -15,8 +15,12 @@ from ai_calibrator.cli import app
 runner = CliRunner()
 
 
-def _has_no_traceback(output: str) -> bool:
-    return "Traceback (most recent call last)" not in output
+def _has_no_traceback(result) -> bool:
+    """See the twin in ``test_cli_robustness``: asked of the RESULT, because
+    CliRunner stores an unhandled exception on ``result.exception`` and writes
+    nothing to the output, which made the old output-string check unfalsifiable."""
+    exc = result.exception
+    return exc is None or isinstance(exc, SystemExit)
 
 
 # --- interview: ratified answers survive a mid-run engine failure ----------
@@ -78,7 +82,7 @@ def test_regenerate_keeps_answers_when_the_engine_fails(tmp_path, monkeypatch):
 
     result = runner.invoke(app, ["interview", str(tmp_path), "--regenerate"])
     assert result.exit_code == 1, result.output
-    assert _has_no_traceback(result.output)
+    assert _has_no_traceback(result)
 
     after = load_project(tmp_path)
     assert {it.answer for it in after.interview if it.answer} == {
@@ -142,7 +146,7 @@ def test_ingest_refuses_a_source_directory_that_does_not_exist(tmp_path, monkeyp
     result = runner.invoke(app, ["ingest", str(tmp_path), "--source", str(tmp_path / "matrials")])
     assert result.exit_code == 1, result.output
     assert "does not exist" in result.output
-    assert _has_no_traceback(result.output)
+    assert _has_no_traceback(result)
 
     after = load_project(tmp_path)
     assert len(after.materials) == 1 and after.facts and after.gaps
@@ -178,7 +182,7 @@ def test_ingest_no_index_says_an_earlier_index_is_still_being_queried(tmp_path, 
     assert result.exit_code == 0, result.output
     assert "skipped (--no-index)" in result.output
     assert "still in place and still feeds every eval" in result.output
-    assert _has_no_traceback(result.output)
+    assert _has_no_traceback(result)
 
 
 def test_ingest_no_index_stays_quiet_when_no_index_was_ever_built(tmp_path, monkeypatch):
@@ -228,7 +232,7 @@ def test_eval_reports_the_tests_it_could_not_grade(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     assert "5/5" in result.output
     assert "3 of 8" in result.output and "not graded" in result.output
-    assert _has_no_traceback(result.output)
+    assert _has_no_traceback(result)
 
 
 # --- merge: a relative destination is the CLI's own idiom for "here" -------
@@ -269,7 +273,7 @@ def test_merge_into_a_relative_destination_keeps_the_rulings(tmp_path, monkeypat
         os.chdir(here)
 
     assert r.exit_code == 0, r.output
-    assert _has_no_traceback(r.output)
+    assert _has_no_traceback(r)
     assert load_project(out).name == "merged"
     audit = yaml.safe_load((out / "reconciliation.yaml").read_text(encoding="utf-8"))
     assert audit["conflicts"][0]["rationale"] == "legal overruled support"
@@ -296,7 +300,7 @@ def test_merge_rejects_an_unusable_destination_before_reconciling(tmp_path, monk
     assert r.exit_code == 1, r.output
     assert "reserved device name" in r.output
     assert "Analyzing" not in r.output  # bailed before any reconciliation work
-    assert _has_no_traceback(r.output)
+    assert _has_no_traceback(r)
 
 
 # --- finetune --gate: a comparison that never happened is not a win -------
@@ -346,7 +350,7 @@ def test_gate_refuses_a_baseline_that_never_ran_the_held_out_tests(tmp_path):
     assert "CANNOT JUDGE" in result.output
     assert "ACCEPT" not in result.output
     assert "baseline 0%" not in result.output
-    assert _has_no_traceback(result.output)
+    assert _has_no_traceback(result)
 
 
 def test_gate_still_rejects_a_candidate_that_loses_on_the_held_out_tests(tmp_path):
@@ -359,7 +363,7 @@ def test_gate_still_rejects_a_candidate_that_loses_on_the_held_out_tests(tmp_pat
     assert result.exit_code == 2, result.output
     assert "REJECT" in result.output
     assert "baseline 100% → candidate 50%" in result.output
-    assert _has_no_traceback(result.output)
+    assert _has_no_traceback(result)
 
 
 def _gate_project_pair(tmp_path, baseline_outcomes, candidate_outcomes):
@@ -406,7 +410,7 @@ def test_gate_refuses_two_runs_whose_held_out_tests_do_not_overlap(tmp_path):
     assert result.exit_code == 2, result.output
     assert "CANNOT JUDGE" in result.output
     assert "ACCEPT" not in result.output
-    assert _has_no_traceback(result.output)
+    assert _has_no_traceback(result)
 
 
 def test_gate_scores_only_the_held_out_tests_both_runs_graded(tmp_path):
@@ -423,7 +427,7 @@ def test_gate_scores_only_the_held_out_tests_both_runs_graded(tmp_path):
     assert "gating on the 1 test(s) both runs graded and held out of training" in result.output
     assert "baseline 0% → candidate 100%" in result.output
     assert "graded different tests" in result.output   # and says so
-    assert _has_no_traceback(result.output)
+    assert _has_no_traceback(result)
 
 
 # --- an ingest that read nothing is not a successful ingest ---------------
@@ -454,7 +458,7 @@ def test_ingest_fails_when_no_file_in_a_populated_source_could_be_read(tmp_path,
     assert result.exit_code == 1, result.output
     assert "✓ Ingested" not in result.output
     assert "prices.xlsx" in result.output and "logo.png" in result.output
-    assert _has_no_traceback(result.output)
+    assert _has_no_traceback(result)
 
 
 def test_import_refuses_a_destination_that_cannot_name_a_project(tmp_path):
@@ -471,7 +475,68 @@ def test_import_refuses_a_destination_that_cannot_name_a_project(tmp_path):
 
     assert result.exit_code == 1, result.output
     assert "Can't name a project after" in result.output
-    assert _has_no_traceback(result.output)
+    assert _has_no_traceback(result)
+
+
+def test_gate_refuses_same_ids_asking_different_questions(tmp_path):
+    """The last comparability hole: matching ids.
+
+    Every existing guard here is an id-set or count check — both runs graded
+    something, they share tests, the judges match, neither is partial. All of
+    them pass when `compile` re-mints t1..tN between the two evals, because the
+    IDS are identical and only the questions changed. The gate then reads
+    "baseline 0% → candidate 100%" off two different exams and says ACCEPT.
+    """
+    from ai_calibrator.eval import save_scorecard
+    from ai_calibrator.models import (BehaviorSpec, CriterionResult, EvalCriterion, Project,
+                                      Scorecard, TestResult)
+    from ai_calibrator.models import TestCase as CaseModel
+    from ai_calibrator.store import save_project
+
+    project = Project(name="p", goal="g")
+    project.spec = BehaviorSpec(goal="g", eval_criteria=[EvalCriterion(id="c1", description="d")],
+                                examples=[])          # nothing memorized: no overlap path
+    project.tests = [CaseModel(id="t1", input="a question", expects=["c1"]),
+                     CaseModel(id="t2", input="another question", expects=["c1"])]
+    save_project(project, tmp_path)
+
+    def _card(run_id, outcomes):
+        return Scorecard(run_id=run_id, subject="subject@test", judge="judge@test", results=[
+            TestResult(test_id=tid, output="o", input_hash=h,
+                       criteria=[CriterionResult(criterion_id="c1", passed=ok,
+                                                 score=1.0 if ok else 0.0)])
+            for tid, ok, h in outcomes])
+
+    # Same ids, same count, same judge — different questions behind them.
+    save_scorecard(tmp_path, _card("run-0001", [("t1", False, "aaaa000000000000"),
+                                                ("t2", False, "cccc222222222222")]))
+    save_scorecard(tmp_path, _card("run-0002", [("t1", True, "bbbb111111111111"),
+                                                ("t2", True, "dddd333333333333")]))
+
+    result = runner.invoke(app, ["finetune", str(tmp_path), "--gate",
+                                 "--baseline", "run-0001", "--candidate", "run-0002"])
+
+    assert result.exit_code == 2, result.output
+    assert "CANNOT JUDGE" in result.output
+    assert "re-minted" in result.output
+    assert "ACCEPT" not in result.output          # a 0% → 100% "win" off two exams
+    assert _has_no_traceback(result)
+
+
+def test_gate_still_judges_two_runs_that_asked_the_same_questions(tmp_path):
+    """The refusal must not swallow the ordinary case: identical questions in
+    both runs still gate, and back-compat scorecards (no recorded hash) still
+    compare by id exactly as they did before the field existed."""
+    _gate_project_pair(tmp_path,
+                       baseline_outcomes=[("ex_1", True), ("rt_1", False)],
+                       candidate_outcomes=[("ex_1", True), ("rt_1", True)])
+
+    result = runner.invoke(app, ["finetune", str(tmp_path), "--gate",
+                                 "--baseline", "run-0001", "--candidate", "run-0002"])
+
+    assert "CANNOT JUDGE" not in result.output
+    assert "re-minted" not in result.output
+    assert _has_no_traceback(result)
 
 
 def test_gate_refuses_non_comparable_runs_even_with_no_training_overlap(tmp_path):
@@ -492,7 +557,7 @@ def test_gate_refuses_non_comparable_runs_even_with_no_training_overlap(tmp_path
 
     assert result.exit_code == 2, result.output
     assert "CANNOT JUDGE" in result.output and "ACCEPT" not in result.output
-    assert _has_no_traceback(result.output)
+    assert _has_no_traceback(result)
 
 
 # --- an answer the tool wrote is not an answer a person gave ---------------

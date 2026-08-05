@@ -1652,7 +1652,7 @@ def snapshot(
 ) -> None:
     """Pin or check golden outputs — catch output changes the pass/fail rubric misses. (no engine)"""
     from .eval import latest_run_id
-    from .snapshot import compare, load_golden, outputs_of, save_golden
+    from .snapshot import GOLDEN_FILE, compare, load_golden, outputs_of, save_golden
 
     _load(path)  # validate project
     # Resolve the newest run either way, so a corrupt scorecard still surfaces
@@ -1677,22 +1677,53 @@ def snapshot(
         typer.secho(f"✓ Pinned {len(latest)} golden output(s) from {rid} → golden.json.", fg=typer.colors.GREEN)
         return
 
+    # A partial run graded a subset of the suite, so every test it never reached
+    # would read as "missing from the latest run" — drift the model never caused.
+    # Pinning already refuses partial runs; checking against one has to as well.
+    if card.partial:
+        typer.secho(f"{rid} is a PARTIAL run (interrupted, or --max-tests) — the tests it never "
+                    "graded would report as missing from the golden. Run a full `calibrate eval`, "
+                    "then check again.", fg=typer.colors.YELLOW)
+        raise typer.Exit(code=1)
+
     golden = load_golden(path)
     if golden is None:
+        # load_golden answers None for "absent" AND for "present but unreadable".
+        # Telling a user whose golden is corrupt to re-pin would have them
+        # overwrite the only copy of their pinned outputs with this run's.
+        if (Path(path) / GOLDEN_FILE).exists():
+            typer.secho(f"{GOLDEN_FILE} exists but could not be read as pinned outputs — the "
+                        "snapshot check is NOT running.", fg=typer.colors.RED, bold=True)
+            typer.echo("  Fix the file (a bad hand-edit, an unresolved merge conflict, a "
+                       "truncated write). Re-pinning with `calibrate snapshot` would replace "
+                       "your pinned outputs with this run's.")
+            raise typer.Exit(code=2)
         typer.secho("No golden yet — run `calibrate snapshot` (without --check) to pin one.", fg=typer.colors.YELLOW)
         raise typer.Exit(code=1)
     d = compare(golden, latest)
-    if not (d.changed or d.added or d.removed):
+    if not (d.changed or d.added or d.removed or d.replaced):
         typer.secho("✓ Outputs match the golden.", fg=typer.colors.GREEN)
         return
     for t in d.changed:
         typer.secho(f"  ~ {t}: output changed", fg=typer.colors.YELLOW)
+    for t in d.replaced:
+        typer.secho(f"  ! {t}: asks a different question than the golden pinned "
+                    "— that pin is no longer checking anything", fg=typer.colors.RED)
     for t in d.removed:
         typer.secho(f"  - {t}: test missing from the latest run", fg=typer.colors.RED)
     for t in d.added:
         typer.echo(f"  + {t}: new test (not in golden)")
     if d.drifted:
-        typer.secho(f"\n⚠ {len(d.changed)} output(s) changed vs golden.", fg=typer.colors.YELLOW)
+        parts = []
+        if d.changed:
+            parts.append(f"{len(d.changed)} output(s) changed")
+        if d.replaced:
+            parts.append(f"{len(d.replaced)} pin(s) re-minted by `compile`")
+        if d.removed:
+            parts.append(f"{len(d.removed)} test(s) missing")
+        typer.secho(f"\n⚠ {', '.join(parts)} vs golden.", fg=typer.colors.YELLOW)
+        if d.replaced:
+            typer.echo("  Re-pin with `calibrate snapshot` once the suite is where you want it.")
         raise typer.Exit(code=2)
 
 
@@ -2324,6 +2355,20 @@ def finetune(
         # graded the same NUMBER of different tests passed the old count check
         # silently, and the gate accepted on the difference.
         common = cand_ids & base_ids
+        # A shared id is not shared ground. `compile` re-mints t1..tN positionally
+        # on every run, so two scorecards can share every id and still have graded
+        # different questions — which passes every count check above, because the
+        # ids match. Compare only the ids that asked the same thing in both runs.
+        from .identity import restrict_to_comparable
+        common, recompiled = restrict_to_comparable(base_card, cand_card, common)
+        if recompiled and not common:
+            typer.secho(f"✗ CANNOT JUDGE — `compile` ran between these two runs and re-minted "
+                        f"all {len(recompiled)} shared test id(s): each one asks a different "
+                        "question in the baseline than in the candidate, so the two rates are "
+                        "scores on different exams.", fg=typer.colors.RED, bold=True)
+            typer.echo(f"  Re-run the baseline eval ({baseline}) on the CURRENT test suite, "
+                       "then gate again.")
+            raise typer.Exit(code=2)
         if not common:
             typer.secho("✗ CANNOT JUDGE — the baseline and candidate runs share no "
                         "test, so there is no common ground to compare them on.",
@@ -2331,6 +2376,11 @@ def finetune(
             typer.echo(f"  Re-run the baseline eval ({baseline}) on the CURRENT test suite, "
                        "then gate again.")
             raise typer.Exit(code=2)
+        if recompiled:
+            typer.secho(f"⚠ {len(recompiled)} shared test id(s) ask a different question in each "
+                        f"run (`compile` re-minted them) and are excluded from the gate: "
+                        f"{', '.join(recompiled[:5])}{', …' if len(recompiled) > 5 else ''}.",
+                        fg=typer.colors.YELLOW)
         cand_held, _ = rate_over(cand_card, common)
         base_held, n_common = rate_over(base_card, common)
         if len(common) != n_held or len(common) != n_base:

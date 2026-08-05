@@ -316,15 +316,25 @@ _WINDOWS_RESERVED_NAMES = frozenset(
 )
 
 
+def content_hash(*parts: str) -> str:
+    """Content fingerprint of an ordered sequence of turns.
+
+    NUL-joined so two different turn splits cannot collide, and
+    ``surrogatepass`` so a lone surrogate from a bad decode hashes instead of
+    raising. Truncated to 16 hex chars: this identifies content, it does not
+    authenticate it."""
+    import hashlib
+
+    payload = "\x00".join(parts)
+    return hashlib.sha256(payload.encode("utf-8", "surrogatepass")).hexdigest()[:16]
+
+
 def test_input_hash(test: "TestCase") -> str:
     """Content fingerprint of what a test actually asks.
 
     Covers the follow-ups as well as the opening turn: a multi-turn test whose
     later turns changed is a different question, however stable its id."""
-    import hashlib
-
-    payload = "\x00".join([test.input, *test.follow_ups])
-    return hashlib.sha256(payload.encode("utf-8", "surrogatepass")).hexdigest()[:16]
+    return content_hash(test.input, *test.follow_ups)
 
 
 def validate_project_name(v: object) -> str:

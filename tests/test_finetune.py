@@ -109,3 +109,37 @@ def test_emitted_install_lines_match_the_declared_trl_floor(tmp_path):
         body = (ft / fn).read_text(encoding="utf-8")
         assert "trl>=1.0" in body and "trl>=0.12" not in body
         assert "pyyaml" in body  # train.py reads recipe.yaml at run time
+
+
+def test_training_overlap_matches_by_recorded_input_not_current_suite():
+    """The memorization check reads the CURRENT suite's input for an id, but the
+    card is an OLD run. `compile` re-mints t1..tN, so an id that names a
+    memorized training prompt today may have named a genuinely held-out
+    question when the run happened — and answering the question about a prompt
+    the run never sent either invents an overlap or hides one."""
+    from ai_calibrator.finetune import training_overlap
+    from ai_calibrator.models import TestCase, test_input_hash
+
+    p = _project_with_examples()
+    memorized = TestCase(id="ex_1", input="Can I return this?", expects=["c1"])
+    held_out = TestCase(id="ex_1", input="something never trained on", expects=["c1"])
+    p.tests = [memorized]
+
+    # A run that graded THIS test really did send a memorized prompt.
+    same = Scorecard(run_id="run-0001", results=[ResultRow(
+        test_id="ex_1", output="o", input_hash=test_input_hash(memorized),
+        criteria=[CriterionResult(criterion_id="c1", passed=True)])])
+    assert training_overlap(p, same) == ["ex_1"]
+
+    # A run from before the re-mint asked something else under that id. Reading
+    # today's input for it would report an overlap the run never had.
+    stale = Scorecard(run_id="run-0000", results=[ResultRow(
+        test_id="ex_1", output="o", input_hash=test_input_hash(held_out),
+        criteria=[CriterionResult(criterion_id="c1", passed=True)])])
+    assert training_overlap(p, stale) == []
+
+    # Back-compat: a pre-hash scorecard records None and still matches by id.
+    legacy = Scorecard(run_id="run-0000", results=[ResultRow(
+        test_id="ex_1", output="o",
+        criteria=[CriterionResult(criterion_id="c1", passed=True)])])
+    assert training_overlap(p, legacy) == ["ex_1"]

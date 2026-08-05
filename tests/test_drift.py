@@ -25,6 +25,49 @@ def _card(run_id, results):
     ])
 
 
+def _hashed_card(run_id, results):
+    """Like `_card`, but each result records WHAT was asked — (id, passed, hash)."""
+    return Scorecard(run_id=run_id, results=[
+        Result(test_id=tid, output="o", input_hash=h,
+               criteria=[CriterionResult(criterion_id="c", passed=p)])
+        for tid, p, h in results
+    ])
+
+
+def test_compare_excludes_results_whose_input_hash_differs():
+    """`compile` re-mints t1..tN positionally, so a shared id can name two
+    different questions. Flipping a verdict across that pair invents a
+    regression the model never caused — or, worse, hides a real one and
+    reports a deleted failure as a fix."""
+    base = _hashed_card("run-0001", [("t1", False, "aaaa000000000000"), ("t2", True, "cccc222222222222")])
+    cand = _hashed_card("run-0002", [("t1", True, "bbbb111111111111"), ("t2", True, "cccc222222222222")])
+    r = compare_scorecards(base, cand)
+    # t1 asked a different question in each run: not a fix, not a regression.
+    assert r.fixed_tests == [] and r.regressed_tests == []
+    assert r.changed_tests == ["t1"]
+    assert r.compared == 1          # only t2 was actually compared
+    assert r.comparable is True
+
+
+def test_compare_reports_nothing_comparable_when_the_whole_suite_was_reminted():
+    base = _hashed_card("run-0001", [("t1", True, "aaaa000000000000")])
+    cand = _hashed_card("run-0002", [("t1", False, "bbbb111111111111")])
+    r = compare_scorecards(base, cand)
+    assert r.changed_tests == ["t1"] and r.compared == 0
+    assert r.comparable is False
+    # The rate moved, but across two different exams — that is not a regression.
+    assert r.regressed is False
+
+
+def test_compare_still_matches_by_id_when_either_hash_is_none():
+    """Back-compat: scorecards written before the field records None, which
+    means "unknown", never "matches". Those keep comparing exactly as before."""
+    base = _hashed_card("run-0001", [("t1", True, None)])
+    cand = _hashed_card("run-0002", [("t1", False, "bbbb111111111111")])
+    r = compare_scorecards(base, cand)
+    assert r.regressed_tests == ["t1"] and r.changed_tests == []
+
+
 def test_compare_detects_regression_and_fix():
     base = _card("run-0001", [("t1", True), ("t2", True), ("t3", False)])
     cand = _card("run-0002", [("t1", True), ("t2", False), ("t3", True)])

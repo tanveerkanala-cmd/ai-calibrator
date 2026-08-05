@@ -24,6 +24,7 @@ import yaml
 from .coerce import as_bool
 from .engines.base import Engine
 from .finetune import recommend_recipe, render_train_py
+from .identity import result_matches_test
 from .store import atomic_write_text
 
 TRAINABLE_ROLES = {"extractor", "interviewer", "predictor", "compiler", "judge"}
@@ -170,21 +171,29 @@ def _ground_truth(project_dir: str | Path) -> list[tuple[str, str, bool, dict | 
     system = judge_system(render_system_prompt(project.spec))
     desc_by_id = {c.id: c.description for c in project.spec.eval_criteria}
     judged_ids = {c.id for c in project.spec.eval_criteria if c.check is None}
-    input_by_test = {t.id: t.input for t in project.tests}
+    test_by_id = {t.id: t for t in project.tests}
 
     truth: list[tuple[str, str, bool, dict | None]] = []
     seen: set[tuple] = set()
     for run_id, labels in all_labels(project_dir):
         try:
-            outputs = {r.test_id: r.output for r in load_scorecard(project_dir, run_id).results}
+            results = {r.test_id: r for r in load_scorecard(project_dir, run_id).results}
         except (FileNotFoundError, ValueError, ValidationError):
             continue
         for label in labels:
             tid, cid = label.get("test_id"), label.get("criterion_id")
-            if tid not in outputs or cid not in desc_by_id or tid not in input_by_test:
+            if tid not in results or cid not in desc_by_id or tid not in test_by_id:
+                continue
+            # The saved run holds the ANSWER; the current suite holds the
+            # QUESTION. `compile` re-mints t1..tN, so pairing them by id alone
+            # can ask the model to grade an answer to a question that was never
+            # put to it — and then stamp a human's verdict on that invented
+            # pair as ground truth. A label whose test no longer asks what the
+            # run asked is not recoverable, so it is dropped.
+            if not result_matches_test(results[tid], test_by_id[tid]):
                 continue
             passed = as_bool(label.get("passed"))
-            prompt = judge_prompt(input_by_test[tid], outputs[tid], [(cid, desc_by_id[cid])])
+            prompt = judge_prompt(test_by_id[tid].input, results[tid].output, [(cid, desc_by_id[cid])])
             target = json.dumps({"results": [_ground_truth_result(cid, passed)]}, sort_keys=True)
             key = (system, prompt)
             if key in seen:
@@ -199,7 +208,7 @@ def _ground_truth(project_dir: str | Path) -> list[tuple[str, str, bool, dict | 
                 {"role": "user", "content": prompt},
                 {"role": "assistant", "content": target},
             ]} if cid in judged_ids else None
-            truth.append((_graded_item(input_by_test[tid], outputs[tid]), cid, passed, row))
+            truth.append((_graded_item(test_by_id[tid].input, results[tid].output), cid, passed, row))
     return truth
 
 

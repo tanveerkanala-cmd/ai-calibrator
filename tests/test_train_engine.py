@@ -197,8 +197,13 @@ def _seed_labeled_project(tmp_path):
     p.tests = [TestCase(id="t1", input="can I return this?", expects=["c1"])]
     save_project(p, tmp_path)
 
-    card = Scorecard(run_id="run-0001", results=[TestResult(test_id="t1", output="the answer", criteria=[
-        CriterionResult(criterion_id="c1", passed=True, score=1.0)])])   # judge said PASS
+    # Stamp the content hash the way `run_eval` does, so this fixture is a run
+    # THIS version recorded — a hand-built card with no hash is a pre-field
+    # scorecard and silently takes the back-compat path instead.
+    from ai_calibrator.models import test_input_hash
+    card = Scorecard(run_id="run-0001", results=[TestResult(
+        test_id="t1", output="the answer", input_hash=test_input_hash(p.tests[0]),
+        criteria=[CriterionResult(criterion_id="c1", passed=True, score=1.0)])])   # judge said PASS
     save_scorecard(tmp_path, card)
     save_labels(tmp_path, "run-0001", [{"test_id": "t1", "criterion_id": "c1", "passed": False}])  # human: FAIL
 
@@ -246,6 +251,49 @@ def test_export_bundle_skips_stale_labels(tmp_path):
     ])
     result = export_engine_bundle(tmp_path, "judge")
     assert result.human_examples == 1  # still just the valid label
+
+
+def test_human_judge_rows_skip_labels_whose_test_input_changed(tmp_path):
+    """The saved run holds the ANSWER; the current suite holds the QUESTION.
+
+    `compile` re-mints t1..tN, so joining them by id alone asks the model to
+    grade an answer to a question that was never put to it — and then stamps a
+    human's verdict on that invented pair as ground truth, which is the worst
+    kind of training row: confidently mislabeled."""
+    from ai_calibrator.models import TestCase
+    from ai_calibrator.store import load_project, save_project
+    from ai_calibrator.train_engine import human_judge_rows
+
+    _seed_labeled_project(tmp_path)
+    assert len(human_judge_rows(tmp_path)) == 1        # the honest pair, before the recompile
+
+    # `compile` re-mints t1 onto a different question. The run's answer ("the
+    # answer") was a reply to "can I return this?", not to this.
+    p = load_project(tmp_path)
+    p.tests = [TestCase(id="t1", input="what are your hours?", expects=["c1"])]
+    save_project(p, tmp_path)
+
+    rows = human_judge_rows(tmp_path)
+    assert rows == []
+    # Specifically: no row pairs the NEW question with the OLD answer.
+    assert not any("what are your hours?" in m["content"]
+                   for row in rows for m in row["messages"])
+
+
+def test_human_judge_rows_still_built_from_a_pre_hash_scorecard(tmp_path):
+    """Back-compat: a scorecard written before the field records None, which
+    means "unknown", never "matches" — those keep pairing by id as they always
+    did, so upgrading does not silently empty an existing training set."""
+    from ai_calibrator.eval import save_scorecard
+    from ai_calibrator.models import CriterionResult, Scorecard, TestResult
+    from ai_calibrator.train_engine import human_judge_rows
+
+    _seed_labeled_project(tmp_path)
+    save_scorecard(tmp_path, Scorecard(run_id="run-0001", results=[TestResult(
+        test_id="t1", output="the answer",                        # no input_hash
+        criteria=[CriterionResult(criterion_id="c1", passed=True, score=1.0)])]))
+
+    assert len(human_judge_rows(tmp_path)) == 1
 
 
 

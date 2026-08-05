@@ -95,10 +95,13 @@ def lint_spec(spec: BehaviorSpec, tests: list[TestCase]) -> LintReport:
                                     f"Criterion {c.id!r} description is too short to grade reliably.", c.id))
 
 
-    # Duplicate TEST ids. drift.compare_scorecards and snapshot.outputs_of both key
-    # results by test_id, so a duplicate makes one of the two invisible to
-    # regression and golden-output checking — a pinned anchor that can no longer
-    # fail the gate. An error, so `ci` refuses to certify the suite.
+    # Duplicate TEST ids. Every surface that compares a run to the suite — or to
+    # another run — collapses results into a dict keyed by test_id (see
+    # `identity`), so a duplicate makes one of the two invisible to regression
+    # and golden-output checking: a pinned anchor that can no longer fail the
+    # gate. The content check in `identity` narrows which results may be
+    # compared; it does not make two tests sharing an id distinguishable. An
+    # error, so `ci` refuses to certify the suite.
     seen_tests: set[str] = set()
     dupe_tests: set[str] = set()
     for t in tests:

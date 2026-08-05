@@ -987,7 +987,15 @@ def test_api_snapshot_refuses_to_pin_a_partial_run(tmp_path):
                                              results=[TestResult(test_id="t1", output="one")]))
     r = c.post("/api/projects/p/snapshot")
     assert r.status_code == 409 and "PARTIAL" in r.json()["detail"]
-    assert c.get("/api/projects/p/snapshot").json()["removed"] == ["t2"]  # golden still covers both
+
+    # The golden still covers both — read it directly rather than inferring it
+    # from a check against the partial run. CHECKING against a partial run is
+    # refused for the same reason PINNING is: t2 is ungraded, not missing, and
+    # reporting it as `removed` is drift the model never caused.
+    import json as _json
+    assert set(_json.loads((tmp_path / "p" / "golden.json").read_text())) == {"t1", "t2"}
+    r = c.get("/api/projects/p/snapshot")
+    assert r.status_code == 409 and "PARTIAL" in r.json()["detail"]
 
 
 def test_merge_detect_reports_the_persona_apply_really_keeps(tmp_path):
