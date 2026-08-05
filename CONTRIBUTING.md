@@ -33,8 +33,19 @@ pytest -q                 # must be all green — and runs in a few seconds
 ```
 
 These three are what CI enforces (CI also runs the suite once with `[all,dev]`
-so the retrieval/OpenAI/DOCX paths are exercised on every push, and once under
-`LC_ALL=C` so an encoding assumption cannot hide behind a UTF-8 locale).
+so the retrieval/OpenAI/DOCX paths are exercised on every push, once under
+`LC_ALL=C` so an encoding assumption cannot hide behind a UTF-8 locale, and
+once with a coverage floor on `cli.py`).
+
+That last one needs a word, because it is the only percentage in the build.
+`cli.py` is the whole user-facing surface, and every contract a pipeline reads
+— `ci`'s 0/1/2, `run`'s refusal to serve a failed gate, the exit-2 signals of
+`lint`, `drift` and `snapshot --check` — lives in it. Those paths were reached
+by no test at all: each could be deleted or inverted with the suite green. If
+you add a command or a flag, give it at least the smoke coverage in
+`tests/test_cli_exit_codes.py`, which walks every registered command. The floor
+sits below the current number deliberately — it is there to stop a slide, not
+to make an honest refactor argue with the build.
 
 `mypy` is a gate, not advice. It reports zero errors today, and the value of
 that is not tidiness: the checks it makes are exactly the ones that catch an

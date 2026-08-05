@@ -98,6 +98,14 @@ jobs:
       # checker nobody reads, and a real None-crash hides in the noise.
       - name: mypy
         run: mypy
+      # cli.py is 2,670 lines and the entire user-facing surface, and every gate
+      # contract a pipeline depends on (`ci` 0/1/2, `run`'s refusal to serve,
+      # the exit-2 signals of lint/drift/snapshot) lives in it. It sat at 47%
+      # with 11 of 12 mutations surviving the whole suite. The floor is set
+      # below the current number on purpose — it exists to stop a slide back,
+      # not to make an honest refactor fight the build. Raise it as it climbs.
+      - name: Coverage floor for the CLI surface
+        run: pytest -q --cov=ai_calibrator.cli --cov-report=term-missing --cov-fail-under=55
 
   package:
     # Every other job installs with `pip install -e`, which imports straight from

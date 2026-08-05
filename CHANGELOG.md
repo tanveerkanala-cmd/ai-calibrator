@@ -7,6 +7,15 @@ versions follow [SemVer](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **A regression net under the CLI surface, and a coverage floor to keep it.**
+  Every contract a pipeline reads — `ci`'s 0/1/2, `run`'s refusal to serve a
+  failed gate and the `--force` override, the exit-2 signals of `lint`, `drift`
+  and `snapshot --check`, the refusal to pin a golden from a partial run, the
+  two guards on the one function that removes a user's directory, and the
+  coverage percentage itself — was reached by no test: each could be deleted or
+  inverted with the suite green. `tests/test_cli_exit_codes.py` pins all of
+  them and walks every registered command against a missing and a corrupt
+  project, and CI now holds `cli.py` to a coverage floor.
 - **Example provenance.** Every `Example` records its `source` (`human`,
   `human_ratified`, or `engine`), and only human-authored or human-ratified rows
   become fine-tuning targets. The "never self-distill" rule was previously advice
@@ -59,6 +68,15 @@ versions follow [SemVer](https://semver.org/).
   architecture section references (`§9`) into user-facing text.
 
 ### Fixed
+- **Three assertions that could not fail.** `_has_no_traceback` — 37 uses across
+  two files — checked `result.output` for "Traceback", which typer's CliRunner
+  never writes there (it stores the exception on `result.exception`), so a
+  command that printed a friendly message and then crashed passed every one of
+  them; it now asks the result. A lock-parallelism test used `or` where the
+  property needs `and`, and so passed under total serialization — the exact
+  thing it existed to rule out. A stateful invariant compared `config_hash` to
+  itself in the same process, which only rejects internal randomness; it is now
+  the save/load round trip the certification gate actually depends on.
 - **The regression gate no longer certifies a comparison of different
   questions.** A test id names a slot, not a question, and `compile` re-mints
   `t1..tN` positionally on every run — so after the ordinary loop (compile →

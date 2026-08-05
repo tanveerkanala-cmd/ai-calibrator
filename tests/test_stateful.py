@@ -101,9 +101,20 @@ class ProjectLifecycle(RuleBasedStateMachine):
         assert first == second
 
     @invariant()
-    def config_hash_is_deterministic(self):
+    def config_hash_survives_a_save_load_round_trip(self):
+        """The certification fingerprint must not move when nothing changed.
+
+        Comparing `config_hash(p)` to `config_hash(p)` on the same object in the
+        same process could only fail for a function with internal randomness or
+        a clock read — not the property the gate depends on. What matters is
+        that persisting the project and reading it back yields the same
+        fingerprint: if it did not, every `calibrate ci` would certify a config
+        the next command would call stale, and the gate would never stay green.
+        """
         p = self._load()
-        assert config_hash(p, self.dir) == config_hash(p, self.dir)
+        before = config_hash(p, self.dir)
+        self._save(p)
+        assert config_hash(self._load(), self.dir) == before
 
     @invariant()
     def criterion_ids_are_unique(self):

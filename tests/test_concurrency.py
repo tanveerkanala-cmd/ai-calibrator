@@ -94,7 +94,14 @@ def test_lock_allows_parallelism_across_different_projects(tmp_path):
     t1.join()
     t2.join()
     # Both entered before either exited → they ran in parallel.
-    assert order.index("b-in") < order.index("a-out") or order.index("a-in") < order.index("b-out")
+    #
+    # AND, not OR. `a-in` always precedes `a-out` and `b-in` always precedes
+    # `b-out`, so at least one disjunct is true for EVERY possible interleaving
+    # — including total serialization, which is exactly what this test exists to
+    # rule out. With `or` it passed even when both projects shared one global
+    # lock. Both orderings have to hold for the two sections to have overlapped.
+    assert order.index("b-in") < order.index("a-out")
+    assert order.index("a-in") < order.index("b-out")
 
 
 # --- API-level concurrency (needs the `api` extra) --------------------------
