@@ -10,9 +10,12 @@ one into the project:
 - the conversation becomes a **pinned regression test** (multi-turn feedback
   keeps its follow-ups), so the exact exchange someone flagged can never
   silently regress;
-- absorbing changes the certification fingerprint (see :func:`calibrator.ci.config_hash`),
-  so the gate goes **stale** until `calibrate ci` re-proves the AI against the
-  suite that now includes what it just learned.
+- absorbing a new TEST changes the certification fingerprint (see
+  :func:`calibrator.ci.config_hash`), so the gate goes **stale** until
+  `calibrate ci` re-proves the AI against the suite that now includes what it
+  just learned. An examples-only absorb does NOT: the fingerprint covers the
+  rendered system prompt, bindings, criteria, tests and the RAG index, not
+  ``spec.examples``, so the gate keeps meaning what it meant.
 
 Use → flag → absorb → re-certify: the AI gets measurably more reliable the more
 it's used, with receipts. Deterministic; no engine.

@@ -86,6 +86,34 @@ def _check_assert(check: Check) -> dict | None:
     return None
 
 
+def _nunjucks_literal(text: str) -> str:
+    """Escape ``text`` so promptfoo renders it back byte for byte.
+
+    promptfoo runs Nunjucks over every field it substitutes into — the prompt,
+    each test's ``vars``, and an assertion's ``value`` — and registers
+    ``process.env`` as a template global. So a `{{ ... }}` reaching ANY of those
+    fields is not a rendering quirk: it reads the operator's environment,
+    including their API keys, into text sent to a third-party model. The content
+    here is untrusted by construction — ingested documents, model-authored
+    criteria, and end-user feedback promoted to a test by `absorb`.
+
+    Escaping the delimiters beats wrapping in `{% raw %}`: a raw block has a
+    terminator to guess, Nunjucks accepts every spelling of it, and a value
+    containing one would close the block early and get the remainder EXECUTED.
+    An escaped delimiter has no terminator.
+
+    `#}` must be replaced LAST — the three openers above emit `}}` and never
+    `#}`, so escaping it after them is safe while escaping it first is not.
+    It has to be escaped at all because Nunjucks' lexer throws "unexpected end
+    of comment" on a bare `#}`, which would make promptfoo refuse the file.
+    """
+    return (text
+            .replace("{{", "{{ '{{' }}")
+            .replace("{%", "{{ '{%' }}")
+            .replace("{#", "{{ '{#' }}")
+            .replace("#}", "{{ '#}' }}"))
+
+
 def to_promptfoo(project: Project) -> str:
     """Render a promptfoo config (YAML) from the project's spec + tests."""
     spec = project.spec
@@ -101,7 +129,12 @@ def to_promptfoo(project: Project) -> str:
         native = _check_assert(c.check) if c.check is not None else None
         if c.check is not None and native is None and c.id not in downgraded:
             downgraded.append(c.id)
-        return native or {"type": "llm-rubric", "value": c.description}
+        # Native assertions are left as authored. promptfoo renders the prompt,
+        # `vars`, and an llm-rubric's value through Nunjucks — those are escaped
+        # below. Whether it also renders a deterministic assertion's value is
+        # not established here, and escaping one that is NOT rendered would make
+        # the check search for the escape sequence instead of the owner's text.
+        return native or {"type": "llm-rubric", "value": _nunjucks_literal(c.description)}
 
     for t in project.tests:
         # A multi-turn test's later turns are what the eval harness actually sends.
@@ -114,39 +147,23 @@ def to_promptfoo(project: Project) -> str:
         targeted = [cid for cid in (t.expects or list(crit)) if cid in crit]
         asserts = [_assertion(crit[cid]) for cid in targeted]
         if not asserts:  # no criteria → grade against the goal so the test still runs
-            asserts = [{"type": "llm-rubric", "value": f"Satisfies the goal: {project.goal}"}]
+            asserts = [{"type": "llm-rubric",
+                        "value": _nunjucks_literal(f"Satisfies the goal: {project.goal}")}]
         tests.append({
             "description": t.id + (f" — {t.notes}" if t.notes else ""),
-            "vars": {"input": t.input},
+            # The test input is the most reliably attacker-reachable field in the
+            # file: `absorb` promotes an end user's flagged message straight into
+            # a pinned test, and this is where it lands.
+            "vars": {"input": _nunjucks_literal(t.input)},
             "assert": asserts,
         })
 
-    # promptfoo renders prompts through Nunjucks — that is the only reason
-    # `{{input}}` substitutes at all. Anything else the spec happens to contain
-    # ("Hi {{first_name}}" from a support macro, a `{% if %}` block) would render
-    # too, silently blanking it, so promptfoo would grade a prompt `calibrate
-    # eval` never scored.
-    #
-    # Escape the three delimiters rather than wrapping the body in `{% raw %}`.
-    # A raw block has a terminator to guess, and Nunjucks accepts every spelling
-    # of it — `{%endraw%}`, `{%   endraw   %}`, tabs — so a spec containing one
-    # closes the block early and the rest of the spec is EXECUTED as a template.
-    # promptfoo registers process.env as a template global, so that is not merely
-    # a rendering bug: it can read the operator's API keys into a prompt that is
-    # then sent to a third-party model. Escaped delimiters have no terminator and
-    # render back to the spec text byte for byte.
-    #
-    # `#}` needs escaping too, and must be replaced LAST. Nunjucks' lexer throws
-    # "unexpected end of comment" on a `#}` found in template text — a spec that
-    # merely mentions one would make promptfoo refuse to lex the prompt at all.
-    # Last, because the three openers above emit `}}`, never `#}`, so escaping it
-    # first would leave the openers' output untouched but escaping it after is
-    # safe; reordering breaks that.
-    body = (render_system_prompt(spec)
-            .replace("{{", "{{ '{{' }}")
-            .replace("{%", "{{ '{%' }}")
-            .replace("{#", "{{ '{#' }}")
-            .replace("#}", "{{ '#}' }}"))
+    # `{{input}}` below is OURS and must stay a live tag — it is the only reason
+    # promptfoo substitutes the test input at all. Everything the spec carries is
+    # escaped: see `_nunjucks_literal`. ("Hi {{first_name}}" from a support macro
+    # would otherwise render to nothing, and promptfoo would grade a prompt
+    # `calibrate eval` never scored.)
+    body = _nunjucks_literal(render_system_prompt(spec))
 
     config = {
         "description": project.goal,

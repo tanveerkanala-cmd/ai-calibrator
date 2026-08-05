@@ -283,6 +283,14 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         import time
 
         from .locking import LockBusy
+        # project_lock() mkdirs the project directory, which raises a raw
+        # FileExistsError when a plain FILE occupies that path — an unhandled
+        # 500 on every creating route (create, import, merge). The CLI guards
+        # this in three places by name; the API inherits the guard here so all
+        # of its routes get it at once.
+        if d.exists() and not d.is_dir():
+            raise HTTPException(409, f"a file named {d.name!r} already exists where project "
+                                     f"{name!r} would live — pick another name")
         lock = project_lock(d, blocking=False)
         deadline = time.monotonic() + _LOCK_WAIT_SECONDS
         while True:
@@ -482,6 +490,12 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
                 os.replace(tmp, target)
             except OSError as exc:  # name the filesystem still rejects → 4xx, not a 500
                 raise HTTPException(400, f"could not store {base!r}: {exc.strerror or exc}") from exc
+            except ValueError as exc:
+                # A NUL byte in the name raises ValueError("embedded null byte")
+                # from the syscall wrapper, BEFORE the OS sees it — so it is not
+                # an OSError and escaped the handler above as a 500, while every
+                # other bad filename on this route answers with a clean 400.
+                raise HTTPException(400, f"could not store {base!r}: {exc}") from exc
             ours = False
         finally:
             if ours:
@@ -824,7 +838,12 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             raise HTTPException(400, f"no scorecard — POST /api/projects/{name}/eval first")
         try:
             card = load_scorecard(d, rid)
-            save_labels(d, rid, body.labels)  # persist: feeds train-engine as ground truth
+            # save_labels reloads the file and rewrites it whole, so its stated
+            # concurrency contract is not optional: two unserialized posts each
+            # merge onto a stale read and the loser's human labels are gone —
+            # silently, because the write is atomic and both requests succeed.
+            with _held(d, name):
+                save_labels(d, rid, body.labels)  # feeds train-engine as ground truth
         except (FileNotFoundError, ValueError, ValidationError) as exc:
             raise HTTPException(400, str(exc))
         out = agreement_dict(judge_agreement(card, body.labels))

@@ -561,3 +561,133 @@ def test_merge_writes_the_protective_gitignore(tmp_path, monkeypatch):
     assert gitignore.is_file(), "merged project has no .gitignore"
     body = gitignore.read_text(encoding="utf-8")
     assert "logs/" in body and ".env" in body
+
+
+# --- a person's typed work survives an abort -------------------------------
+
+def _interview_ready(tmp_path):
+    """A project with gaps and two already-generated, unanswered questions, so
+    `interview` goes straight to the prompt loop without an engine call."""
+    from ai_calibrator.models import Gap, InterviewItem, Project
+    from ai_calibrator.store import save_project
+
+    p = Project(name="p", goal="answer support questions")
+    p.gaps = [Gap(dimension="scope"), Gap(dimension="tone")]
+    p.interview = [
+        InterviewItem(id="i1", dimension="scope", question="Who do you serve?", draft_answer="d1"),
+        InterviewItem(id="i2", dimension="tone", question="How formal?", draft_answer="d2"),
+    ]
+    save_project(p, tmp_path)
+    return p
+
+
+def test_interview_keeps_answers_typed_before_an_abort(tmp_path):
+    """Answers accumulated in memory and were written only after the LAST
+    question, so a Ctrl-C at question 2 of 2 destroyed the answer to question 1.
+    An answer a person typed is their work."""
+    from ai_calibrator.store import load_project
+
+    _interview_ready(tmp_path)
+    # Answer the first question, then send EOF at the second.
+    result = runner.invoke(app, ["interview", str(tmp_path)], input="small businesses\n")
+
+    assert result.exit_code == 1
+    assert "Stopped early" in result.output
+    assert _has_no_traceback(result)
+
+    saved = load_project(tmp_path)
+    by_id = {it.id: it for it in saved.interview}
+    assert by_id["i1"].answer == "small businesses"      # kept, not discarded
+    assert by_id["i1"].answer_source == "human"
+    assert not by_id["i2"].answer                        # never reached
+
+
+def test_interview_aborted_before_any_answer_saves_nothing(tmp_path):
+    from ai_calibrator.store import load_project
+
+    _interview_ready(tmp_path)
+    result = runner.invoke(app, ["interview", str(tmp_path)], input="")
+
+    assert result.exit_code == 1
+    assert "nothing to save" in result.output
+    assert _has_no_traceback(result)
+    assert not any(it.answer for it in load_project(tmp_path).interview)
+
+
+def _project_with_criterion(tmp_path):
+    from ai_calibrator.models import BehaviorSpec, EvalCriterion, Project, Weight
+    from ai_calibrator.store import save_project
+
+    p = Project(name="p", goal="g")
+    p.spec = BehaviorSpec(goal="g", eval_criteria=[
+        EvalCriterion(id="c1", description="cites the policy", weight=Weight.HIGH)])
+    save_project(p, tmp_path)
+    return p
+
+
+def test_add_check_rejects_an_uncompilable_regex(tmp_path):
+    """A pattern that cannot compile was stored with a green success message and
+    then failed its criterion on every eval, every CI gate, and — under
+    `run --guard` — every live answer. The integer kinds were already validated
+    here; this one was not."""
+    from ai_calibrator.store import load_project
+
+    _project_with_criterion(tmp_path)
+    r = runner.invoke(app, ["add-check", str(tmp_path), "c1", "regex", "(unclosed"])
+
+    assert r.exit_code == 1
+    assert "does not compile" in r.output
+    assert "✓" not in r.output                     # no success line
+    assert _has_no_traceback(r)
+    assert load_project(tmp_path).spec.eval_criteria[0].check is None   # nothing stored
+
+
+def test_add_check_still_accepts_a_valid_regex(tmp_path):
+    from ai_calibrator.store import load_project
+
+    _project_with_criterion(tmp_path)
+    r = runner.invoke(app, ["add-check", str(tmp_path), "c1", "regex", r"\d+ days?"])
+
+    assert r.exit_code == 0 and _has_no_traceback(r)
+    check = load_project(tmp_path).spec.eval_criteria[0].check
+    assert check.kind == "regex" and check.value == r"\d+ days?"
+
+
+def test_finetune_refuses_gate_flags_without_gate(tmp_path):
+    """--baseline/--candidate were read only inside `if gate:`, so omitting
+    --gate silently discarded them and ran the BUILD path instead, rewriting
+    <project>/finetune/ and exiting 0."""
+    _project_with_criterion(tmp_path)
+    r = runner.invoke(app, ["finetune", str(tmp_path),
+                            "--baseline", "run-0001", "--candidate", "run-0002"])
+
+    assert r.exit_code == 1
+    assert "only applies with --gate" in r.output
+    assert _has_no_traceback(r)
+    assert not (tmp_path / "finetune").exists()    # the build path did not run
+
+
+def test_train_engine_refuses_candidate_without_prove(tmp_path):
+    _project_with_criterion(tmp_path)
+    r = runner.invoke(app, ["train-engine", "judge", str(tmp_path),
+                            "--candidate", "qwen2.5:7b@ollama"])
+
+    assert r.exit_code == 1
+    assert "only applies with --prove" in r.output
+    assert _has_no_traceback(r)
+
+
+def test_import_rejects_an_empty_goal(tmp_path):
+    """`init` rejects an empty goal with a message explaining why the pipeline
+    needs it. `import` fed it straight into the extraction prompt and into
+    BehaviorSpec.goal — after a billed engine call."""
+    prompt_file = tmp_path / "prompt.txt"
+    prompt_file.write_text("You are a support agent.", encoding="utf-8")
+
+    r = runner.invoke(app, ["import", str(tmp_path / "proj"),
+                            "--prompt", str(prompt_file), "--goal", "   "])
+
+    assert r.exit_code == 1
+    assert "must not be empty" in r.output
+    assert _has_no_traceback(r)
+    assert not (tmp_path / "proj").exists()        # nothing created, nothing billed

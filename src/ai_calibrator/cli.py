@@ -266,6 +266,14 @@ def import_(
         typer.secho("The prompt file is empty.", fg=typer.colors.YELLOW)
         raise typer.Exit(code=1)
 
+    # The goal feeds the reverse-extraction prompt and becomes BehaviorSpec.goal,
+    # so it seeds everything downstream exactly as it does for `init` — which
+    # rejects an empty one. Checked here, before the billed engine call.
+    if not goal or not goal.strip():
+        typer.secho("--goal must not be empty: one sentence on what this AI should do.",
+                    fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
     # project_lock() mkdirs the destination, which raises a raw FileExistsError
     # when the path is an existing FILE. `init` guards this; import must too.
     if path.exists() and not path.is_dir():
@@ -696,22 +704,36 @@ def interview(
     # the tool wrote and nobody read must stay distinguishable from one a person
     # decided — see InterviewItem.answer_source.
     answers: dict[str, tuple[str, AnswerSource]] = {}
-    for item in pending:
-        if accept_drafts:
-            answers[item.id] = (item.draft_answer or "", "engine")
-        else:
-            typer.secho(f"[{item.dimension}] {item.question}", bold=True)
-            if item.rationale:
-                typer.echo(f"  why: {item.rationale}")
-            typer.echo(f"  draft: {item.draft_answer}")
-            resp = typer.prompt("  your answer (Enter to accept draft)",
-                                default="", show_default=False)
-            typed = resp.strip()
-            # Enter on a draft a person just read IS ratification; typing their
-            # own answer is authorship. Both are human decisions.
-            source: AnswerSource = "human" if typed else "human_ratified"
-            answers[item.id] = (typed or (item.draft_answer or ""), source)
-            typer.echo("")
+    # An answer a person typed is their work — the same principle `interview.py`
+    # states and `--regenerate` was fixed to honour. These answers lived only in
+    # this dict until the last question was reached, so a Ctrl-C, an EOF, or a
+    # closed pipe at question 9 of 10 destroyed all nine. On an abort, fall
+    # through to the SAME apply block a completed interview uses.
+    aborted = False
+    try:
+        for item in pending:
+            if accept_drafts:
+                answers[item.id] = (item.draft_answer or "", "engine")
+            else:
+                typer.secho(f"[{item.dimension}] {item.question}", bold=True)
+                if item.rationale:
+                    typer.echo(f"  why: {item.rationale}")
+                typer.echo(f"  draft: {item.draft_answer}")
+                resp = typer.prompt("  your answer (Enter to accept draft)",
+                                    default="", show_default=False)
+                typed = resp.strip()
+                # Enter on a draft a person just read IS ratification; typing their
+                # own answer is authorship. Both are human decisions.
+                source: AnswerSource = "human" if typed else "human_ratified"
+                answers[item.id] = (typed or (item.draft_answer or ""), source)
+                typer.echo("")
+    except (typer.Abort, EOFError, KeyboardInterrupt):
+        aborted = True
+        typer.echo("")
+
+    if aborted and not answers:
+        typer.secho("⏹ Stopped before the first answer — nothing to save.", fg=typer.colors.YELLOW)
+        raise typer.Exit(code=1)
 
     # Apply under the lock against a FRESH load, so a concurrent edit isn't
     # clobbered by our stale in-memory copy (store.py load→mutate→save contract).
@@ -727,6 +749,12 @@ def interview(
         save_project(project, path)
         answered = sum(1 for it in project.interview if it.answer)
         total = len(project.interview)
+
+    if aborted:
+        typer.secho(f"⏹ Stopped early — the {len(answers)} answer(s) you gave are saved "
+                    f"({answered}/{total} answered).", fg=typer.colors.YELLOW)
+        typer.echo("  Re-run `calibrate interview` to pick up where you left off.")
+        raise typer.Exit(code=1)
 
     typer.secho(f"✓ {answered}/{total} answered.", fg=typer.colors.GREEN)
     if accept_drafts:
@@ -1248,6 +1276,18 @@ def add_check(
                         f"`calibrate add-check <project> {criterion} {kind} '30-day'`.",
                         fg=typer.colors.RED)
             raise typer.Exit(code=1)
+        if kind == "regex":
+            # A pattern that cannot compile is stored with a green success
+            # message and then fails its criterion on every eval, every CI gate,
+            # and — under `run --guard` — every live answer. The integer kinds
+            # above are validated here for the same reason; this one was not.
+            try:
+                import regex as _regex
+                _regex.compile(value)
+            except Exception as exc:
+                typer.secho(f"That regex does not compile: {exc}", fg=typer.colors.RED)
+                typer.echo("  Nothing was changed. Fix the pattern and run add-check again.")
+                raise typer.Exit(code=1)
         try:
             # model_validate, not the constructor: `kind` is a Literal in the
             # model and an arbitrary CLI string is exactly what this line is
@@ -1290,16 +1330,38 @@ def judge_check(
 
     typer.echo(f"Reviewing {len(items)} of the judge's verdicts from {rid} — confirm or correct each:")
     labels = []
-    for it in items:
-        typer.secho(f"\n[{it['criterion_id']}]  judge said {'PASS' if it['judge_passed'] else 'FAIL'}", bold=True)
-        if it["rationale"]:
-            typer.echo(f"  judge's reason: {it['rationale']}")
-        typer.echo(f"  output: {it['output'][:200]}")
-        agree = typer.confirm("  Do you agree with the judge?", default=True)
-        human_passed = it["judge_passed"] if agree else (not it["judge_passed"])
-        labels.append({"test_id": it["test_id"], "criterion_id": it["criterion_id"], "passed": human_passed})
+    aborted = False
+    try:
+        for it in items:
+            typer.secho(f"\n[{it['criterion_id']}]  judge said {'PASS' if it['judge_passed'] else 'FAIL'}", bold=True)
+            if it["rationale"]:
+                typer.echo(f"  judge's reason: {it['rationale']}")
+            typer.echo(f"  output: {it['output'][:200]}")
+            agree = typer.confirm("  Do you agree with the judge?", default=True)
+            human_passed = it["judge_passed"] if agree else (not it["judge_passed"])
+            labels.append({"test_id": it["test_id"], "criterion_id": it["criterion_id"], "passed": human_passed})
+    except (typer.Abort, EOFError, KeyboardInterrupt):
+        # A human's verdict on a judge's verdict is ground truth, and the most
+        # expensive data this tool collects. It lived only in this list.
+        aborted = True
+        typer.echo("")
 
-    save_labels(path, rid, labels)  # ground truth is an asset: feeds train-engine
+    if aborted and not labels:
+        typer.secho("⏹ Stopped before the first judgment — nothing to save.", fg=typer.colors.YELLOW)
+        raise typer.Exit(code=1)
+
+    # save_labels reloads the file and rewrites it whole — its stated concurrency
+    # contract, which neither caller was honouring. Take the lock around the save
+    # only: it is not re-entrant, and holding it across the prompts above would
+    # block every other command for as long as a person takes to answer.
+    _require_project(path)  # no junk .lock dir for a typo'd name
+    with project_lock(path, on_wait=_lock_wait_notice):
+        save_labels(path, rid, labels)  # ground truth is an asset: feeds train-engine
+    if aborted:
+        typer.secho(f"⏹ Stopped early — the {len(labels)} judgment(s) you gave are saved.",
+                    fg=typer.colors.YELLOW)
+        typer.echo("  Re-run `calibrate judge-check` to continue.")
+        raise typer.Exit(code=1)
     ag = judge_agreement(card, labels)
     rate = ag.agreement_rate
     typer.secho(f"\nJudge agreement with you: {pct(rate)} ({ag.agreed}/{ag.total})",
@@ -1820,12 +1882,24 @@ def teach(
         raise typer.Exit(code=1)
 
     judged: list[Judged] = []
-    for c in candidates:
-        typer.secho(f"\nINPUT:  {c.input}", bold=True)
-        typer.echo(f"OUTPUT: {c.output}")
-        approved = typer.confirm("  Approve this output?", default=True)
-        reason = typer.prompt("  Why? (optional, Enter to skip)", default="", show_default=False).strip() or None
-        judged.append(Judged(input=c.input, output=c.output, approved=approved, reason=reason))
+    # The comment below already argues that an engine failure must not discard a
+    # person's judgments. A Ctrl-C or EOF partway through the loop discarded them
+    # just as completely, and for the same reason: they lived only in this list.
+    aborted = False
+    try:
+        for c in candidates:
+            typer.secho(f"\nINPUT:  {c.input}", bold=True)
+            typer.echo(f"OUTPUT: {c.output}")
+            approved = typer.confirm("  Approve this output?", default=True)
+            reason = typer.prompt("  Why? (optional, Enter to skip)", default="", show_default=False).strip() or None
+            judged.append(Judged(input=c.input, output=c.output, approved=approved, reason=reason))
+    except (typer.Abort, EOFError, KeyboardInterrupt):
+        aborted = True
+        typer.echo("")
+
+    if aborted and not judged:
+        typer.secho("⏹ Stopped before the first judgment — nothing to save.", fg=typer.colors.YELLOW)
+        raise typer.Exit(code=1)
 
     # Persist the human's judgments BEFORE the inference call. They are the
     # expensive part — minutes of a person's attention — and they do not depend on
@@ -1838,6 +1912,14 @@ def teach(
         save_project(project, path)
         if project.spec is not None and project.tests:
             write_build_bundle(project.spec, project.tests, path)
+
+    if aborted:
+        # Stop before the engine call: inferring standards from a partial session
+        # would present a conclusion drawn from judgments the user cut short.
+        typer.secho(f"⏹ Stopped early — the {saved} judgment(s) you gave are saved as examples.",
+                    fg=typer.colors.YELLOW)
+        typer.echo("  Re-run `calibrate teach` to continue and infer standards from them.")
+        raise typer.Exit(code=1)
 
     typer.echo("\nInferring your standards from these judgments …")
     try:
@@ -2089,6 +2171,15 @@ def train_engine_cmd(
         raise typer.Exit(code=1)
     _load(path)  # validate the project exists / is loadable
 
+    # Same shape as `finetune`: without --prove, --candidate is read by nothing
+    # and the command exports a training bundle instead of measuring agreement.
+    if not prove and candidate:
+        typer.secho("--candidate only applies with --prove.", fg=typer.colors.RED)
+        typer.echo(f"  To measure agreement: calibrate train-engine {role} <project> --prove "
+                   "--candidate <model@provider>")
+        typer.echo("  To export the training bundle: drop --candidate.")
+        raise typer.Exit(code=1)
+
     if prove:
         if not candidate:
             typer.secho("--prove needs --candidate <model@provider>.", fg=typer.colors.RED)
@@ -2298,6 +2389,18 @@ def finetune(
     """Advanced tier: build a fine-tuning dataset + recipe, or run the prove-it gate."""
 
     project = _load(path)
+
+    # Without --gate these are read by nothing, and the command runs the entirely
+    # different BUILD path: it rewrites <project>/finetune/ and exits 0, never
+    # mentioning that the two run ids were discarded. Someone who meant to gate
+    # gets a success message for the opposite operation.
+    if not gate and (baseline or candidate):
+        given = ", ".join(f"--{n}" for n, v in (("baseline", baseline), ("candidate", candidate)) if v)
+        typer.secho(f"{given} only applies with --gate.", fg=typer.colors.RED)
+        typer.echo("  To compare two runs:  calibrate finetune <project> --gate "
+                   "--baseline <run-id> --candidate <run-id>")
+        typer.echo("  To build the dataset: drop those flags.")
+        raise typer.Exit(code=1)
 
     if gate:
         if not (baseline and candidate):

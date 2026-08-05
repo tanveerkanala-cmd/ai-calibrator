@@ -413,3 +413,77 @@ def test_a_project_made_in_the_ui_is_addressable_by_path_from_the_cli(tmp_path):
     assert c.post("/api/projects", json={"name": "from-ui", "goal": "be helpful"}).status_code == 200
 
     assert load_project(tmp_path / "from-ui").goal == "be helpful"
+
+
+# --- the API answers with the same error CLASS the CLI does -----------------
+
+def test_create_project_over_a_plain_file_is_409(tmp_path):
+    """`project_lock` unconditionally mkdirs the project directory, which raises
+    a raw FileExistsError when a plain FILE occupies that path — an unhandled
+    500 on every creating route. The CLI guards this in three places by name."""
+    (tmp_path / "taken").write_text("not a directory", encoding="utf-8")
+    c = TestClient(create_app(tmp_path), base_url="http://localhost")
+
+    r = c.post("/api/projects", json={"name": "taken", "goal": "g"})
+
+    assert r.status_code == 409, r.text
+    assert "already exists" in r.json()["detail"]
+
+
+def test_upload_filename_with_a_nul_byte_is_400(tmp_path):
+    """`os.replace` raises ValueError("embedded null byte") — not an OSError —
+    from the syscall wrapper before the OS sees the name, so it escaped the
+    handler as a 500 while every other bad filename answers with a clean 400."""
+    c = TestClient(create_app(tmp_path), base_url="http://localhost")
+    assert c.post("/api/projects", json={"name": "p", "goal": "g"}).status_code in (200, 201)
+
+    # Hand-built body: httpx percent-encodes a NUL while building the multipart
+    # header, so `files=` cannot express this. A hostile client is not obliged to.
+    boundary = "----calibratortest"
+    body = (
+        f"--{boundary}\r\n"
+        'Content-Disposition: form-data; name="file"; filename="bad\x00name.txt"\r\n'
+        "Content-Type: text/plain\r\n\r\n"
+        "contents\r\n"
+        f"--{boundary}--\r\n"
+    ).encode("utf-8")
+
+    r = c.post("/api/projects/p/materials", content=body,
+               headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+
+    # Whether the parser rejects the name or it reaches os.replace, the contract
+    # is the one every other bad filename on this route honours: a clean 4xx.
+    assert 400 <= r.status_code < 500, r.text
+
+
+def test_judge_check_route_waits_for_the_project_lock(tmp_path):
+    """`save_labels` reloads and rewrites the file whole, and states that the
+    caller must hold the project lock. Neither caller did, so two unserialized
+    posts each merged onto a stale read and the loser's human labels were gone
+    — silently, because the write is atomic and both requests succeed."""
+    from ai_calibrator.eval import save_scorecard
+    from ai_calibrator.models import CriterionResult, Scorecard, TestResult
+
+    p = Project(name="p", goal="g")
+    p.spec = BehaviorSpec(goal="g", eval_criteria=[
+        EvalCriterion(id="c1", description="d", weight=Weight.HIGH)])
+    save_project(p, tmp_path / "p")
+    save_scorecard(tmp_path / "p", Scorecard(run_id="run-0001", results=[
+        TestResult(test_id="t1", output="o",
+                   criteria=[CriterionResult(criterion_id="c1", passed=True, score=1.0)])]))
+
+    c = TestClient(create_app(tmp_path), base_url="http://localhost")
+    body = {"labels": [{"test_id": "t1", "criterion_id": "c1", "passed": False}]}
+
+    # Mirrors the /log guard: while the lock is held, the route must not proceed.
+    from ai_calibrator.store import project_lock
+    lock = project_lock(tmp_path / "p", blocking=False)
+    lock.acquire()
+    try:
+        r = c.post("/api/projects/p/judge-check", json=body)
+    finally:
+        lock.release()
+    assert r.status_code == 423, r.text
+
+    # ...and succeeds once it is free.
+    assert c.post("/api/projects/p/judge-check", json=body).status_code == 200

@@ -419,9 +419,13 @@ folds every record into the project: the exchange becomes a spec **example**
 — the same asset that feeds fine-tuning — and the conversation becomes a
 **pinned regression test** (`fb_1`, `fb_2`, …; multi-turn feedback keeps its
 follow-ups), so the exact exchange someone flagged can never silently regress.
-Absorbing changes the certification fingerprint, so the gate goes **stale**
-until `calibrate ci` re-proves the AI against the suite that now includes what
-it just learned. Use → flag → absorb → re-certify: the AI gets measurably more
+Absorbing a new **test** changes the certification fingerprint, so the gate goes
+**stale** until `calibrate ci` re-proves the AI against the suite that now
+includes what it just learned. An absorb that adds only *examples* leaves the
+fingerprint where it was — it covers the rendered system prompt, bindings,
+criteria, tests and the RAG index, not `spec.examples` — so the gate still
+reflects what it certified, and you re-run `calibrate ci` when you want the new
+material graded. Use → flag → absorb → re-certify: the AI gets measurably more
 reliable the more it's used, with receipts.
 
 ---
@@ -478,9 +482,11 @@ my-support-ai/
   materials/        # the documents you upload
 ```
 
-Set engine bindings with `calibrate engines <role> <model@provider>` (or
-`--all <model@provider>` for every role at once). You can also edit the
-`engines:` block in `project.yaml` directly:
+Set engine bindings with `calibrate engines <project> <role> <model@provider>`
+(or `--all <model@provider>` for every role at once). The project path comes
+first, as it does for every other command — without it the role is read as the
+path, and the error says to give both a role and a model when you just did. You
+can also edit the `engines:` block in `project.yaml` directly:
 
 ```yaml
 engines:

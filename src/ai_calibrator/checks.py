@@ -54,6 +54,14 @@ def run_check(check: Check, output: str) -> tuple[bool, str]:
         except TimeoutError:
             return False, (f"regex {value!r} timed out (>{REGEX_TIMEOUT:g}s) — likely catastrophic "
                            "backtracking; simplify it (avoid nested quantifiers like (a+)+ or (a|aa)+)")
+        except Exception as exc:
+            # The timeout bounds TIME, not MEMORY. `regex`'s recursive patterns
+            # ((?R), (?1)) can allocate until the allocator gives up and raise
+            # MemoryError — an ordinary Exception that escaped both handlers
+            # above, every caller, and `run_eval`, destroying the whole graded
+            # run and 502-ing every answer under `calibrate run --guard`. One
+            # owner-authored pattern must fail its own criterion, not the run.
+            return False, f"regex {value!r} could not be evaluated: {type(exc).__name__}: {exc}"
         return ok, f"regex {value!r} {'matched' if ok else 'did not match'}"
     if kind == "max_chars":
         limit = _as_int(value)

@@ -55,3 +55,34 @@ def test_length_checks_exact_boundary():
     assert run_check(Check(kind="max_chars", value="5"), "123456")[0] is False
     assert run_check(Check(kind="min_chars", value="5"), "12345")[0] is True    # == limit passes
     assert run_check(Check(kind="min_chars", value="5"), "1234")[0] is False
+
+
+def test_run_check_fails_the_criterion_when_the_regex_engine_raises():
+    """The match timeout bounds TIME, not MEMORY.
+
+    A recursive pattern can allocate until the allocator gives up and raises
+    MemoryError — an ordinary Exception that escaped the `regex.error` and
+    `TimeoutError` handlers, every caller, and `run_eval`, taking the whole
+    graded run down with it and 502-ing every answer under `run --guard`. One
+    owner-authored pattern must fail its own criterion, not the run.
+
+    Monkeypatched rather than reproduced: the real trigger allocates ~550MB.
+    """
+    import regex as regex_mod
+
+    from ai_calibrator.checks import run_check
+    from ai_calibrator.models import Check
+
+    real_search = regex_mod.search
+
+    def _boom(*a, **kw):
+        raise MemoryError()
+
+    regex_mod.search = _boom
+    try:
+        ok, detail = run_check(Check(kind="regex", value="(?R)"), "some output")
+    finally:
+        regex_mod.search = real_search
+
+    assert ok is False
+    assert "MemoryError" in detail and "could not be evaluated" in detail
