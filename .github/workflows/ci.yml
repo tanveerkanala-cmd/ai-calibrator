@@ -94,6 +94,22 @@ jobs:
       - run: pip install -e '.[dev]'
       - name: Bandit (medium+ severity)
         run: bandit -r src/ai_calibrator --severity-level medium -q
+      # Bandit reads OUR code; this reads what we depend on. Nothing here is
+      # pinned — every job installs floating versions — so an advisory in a
+      # transitive dependency is the likeliest way a vulnerability reaches a
+      # user of this tool, and it would otherwise present as our bug. Exits
+      # non-zero when an advisory matches, so it gates.
+      #
+      # --skip-editable, and NOT --strict: the project itself is installed with
+      # `pip install -e`, and auditing it means looking it up on PyPI, which
+      # fails for a local build (and would audit our own source anyway — that is
+      # bandit's job). --strict turns any skip into an error, so the two cannot
+      # be combined. pip-audit prints the skip list, so what was not audited
+      # stays visible in the log rather than passing quietly.
+      - name: pip-audit (known advisories in the dependency tree)
+        run: |
+          pip install pip-audit
+          pip-audit --skip-editable --desc
       # Gated, not advisory. A type checker nobody can run clean is a type
       # checker nobody reads, and a real None-crash hides in the noise.
       - name: mypy

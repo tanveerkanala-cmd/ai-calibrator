@@ -1,0 +1,38 @@
+version: 2
+
+# Nothing in this project is pinned: every CI job installs floating versions, so
+# an upstream regression arrives silently and presents as our bug. Dependabot is
+# the other half of the `pip-audit` step in ci.yml — audit reports what is
+# already broken, this proposes the upgrade before it is.
+#
+# Weekly and grouped, deliberately. A daily per-package PR stream on a small
+# project is noise that gets muted, and a muted bot is worse than none.
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # One PR for the routine floor bumps. CI is the check that matters here:
+      # ruff + mypy + the suite on five platforms + the package job all run on
+      # the PR, so a breaking upgrade fails loudly rather than merging quietly.
+      dev-and-runtime:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+    # Majors stay separate: they are the ones that need a human to read a
+    # changelog, and burying one in a group of eight patch bumps is how it gets
+    # rubber-stamped.
+    labels:
+      - dependencies
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - ci

@@ -7,6 +7,28 @@ versions follow [SemVer](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **`lint` warns when the judge is the subject.** One model answering and
+  grading measures its own opinion of itself: the blind spots are shared by
+  construction, so the failures it cannot see are exactly the ones it cannot
+  report, and a shared idiosyncrasy reads as agreement. It is easy to reach by
+  accident — `calibrate engines <project> --all <model>` does it in one command,
+  and the README's local quickstart said to run precisely that. A warning, not
+  an error: it is a reasonable way to work when no second model is available,
+  and it is skipped entirely when every criterion is graded by a deterministic
+  `check`, since no judge is consulted then. The README now says it too.
+- **`schema_version` in `project.yaml` and `scorecard.json`.** Nothing reads it
+  yet, which is the point: when this ships, those files become a compatibility
+  contract with strangers, and a format with no version marker can only be
+  migrated by guessing what wrote it. It cannot be added retroactively to files
+  already on disk. A file written before the field loads as version 1; a file
+  from a newer calibrator is flagged by `lint`, because unknown *fields* were
+  already reported but a change in what an existing field MEANS reads as
+  ordinary data. Stamping it does not move `config_hash`, so no existing
+  certification goes stale on upgrade.
+- **`pip-audit` in CI, and Dependabot.** Nothing is pinned — every job installs
+  floating versions — so an advisory in a transitive dependency is the likeliest
+  way a vulnerability reaches a user, and it would otherwise present as our bug.
+  Bandit reads our code; this reads what we depend on.
 - **A regression net under the CLI surface, and a coverage floor to keep it.**
   Every contract a pipeline reads — `ci`'s 0/1/2, `run`'s refusal to serve a
   failed gate and the `--force` override, the exit-2 signals of `lint`, `drift`

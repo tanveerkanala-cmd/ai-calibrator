@@ -163,6 +163,69 @@ def lint_unknown_fields(project: Project) -> list[LintIssue]:
     ]
 
 
+def lint_schema_version(project: Project) -> list[LintIssue]:
+    """Flag a project.yaml written by a NEWER calibrator than this one.
+
+    `PreservingModel` keeps fields this build doesn't recognize, and
+    `lint_unknown_fields` names them — but only fields it has never heard of.
+    A change in what an EXISTING field means reads as ordinary data, so the
+    version marker is the only thing that can say "this file is from the
+    future". Loading continues: refusing outright would strand a user whose
+    file is fine in every way that matters to them.
+    """
+    from .models import SCHEMA_VERSION
+
+    version = getattr(project, "schema_version", SCHEMA_VERSION)
+    if not isinstance(version, int) or version <= SCHEMA_VERSION:
+        return []
+    return [LintIssue(
+        "future_schema_version", "warn",
+        f"project.yaml declares schema_version {version}, but this calibrator understands "
+        f"{SCHEMA_VERSION}. It was written by a newer version: fields this build does not "
+        "know are preserved, but anything whose MEANING changed is being read the old way. "
+        "Upgrade with `pip install -U ai-calibrator`.",
+        "schema_version")]
+
+
+def lint_engine_roles(project: Project) -> list[LintIssue]:
+    """Flag a judge that is the same model as the subject it grades.
+
+    The product's claim is that the AI is TESTED. When one model both answers
+    and grades, the pass rate measures that model's opinion of itself: its
+    blind spots are shared by construction, so the failures it cannot see are
+    exactly the ones it cannot report. A shared idiosyncrasy reads as agreement
+    and the certificate says 100%.
+
+    This is the most attackable number the tool produces, and it is easy to
+    reach by accident — `calibrate engines <project> --all <model>` points every
+    role at one model in a single command, and the local-model quickstart in the
+    README does precisely that. A warning, not an error: it is a real and
+    reasonable way to work when no second model is available (and for a
+    deterministic `check` the judge is not consulted at all), so it must not
+    block the gate. It must, however, be said out loud rather than discovered by
+    someone reading the config.
+    """
+    engines = project.engines
+    subject, judge = (engines.subject or "").strip(), (engines.judge or "").strip()
+    if not subject or not judge or subject.casefold() != judge.casefold():
+        return []
+    graded_by_judge = 0
+    if project.spec is not None:
+        graded_by_judge = sum(1 for c in project.spec.eval_criteria if c.check is None)
+    if not graded_by_judge:
+        # Every criterion is checked deterministically: no judge call is made,
+        # so the models being identical decides nothing.
+        return []
+    return [LintIssue(
+        "judge_is_subject", "warn",
+        f"The judge and the subject are the same model ({subject}) — it grades its own "
+        f"answers on {graded_by_judge} criterion/criteria, so the pass rate is that "
+        "model's opinion of itself and shares its blind spots. Bind a different model "
+        "with `calibrate engines <project> judge <model@provider>`, or convert the "
+        "criteria to deterministic checks with `calibrate add-check`.",
+        "engines.judge")]
+
+
 def lint_contradictions(spec: BehaviorSpec, engine: Engine) -> list[LintIssue]:
     """Engine pass: find rules within the spec that contradict each other.
 

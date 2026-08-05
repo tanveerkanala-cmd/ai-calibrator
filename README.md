@@ -68,6 +68,15 @@ no key, install [Ollama](https://ollama.com), pull a model (e.g.
 calibrate engines my-support-ai --all qwen2.5:7b@ollama
 ```
 
+`--all` points the **judge** at that model too, so it grades its own answers.
+That works, and it is often the only option locally — but the pass rate is then
+one model's opinion of itself, and the failures it cannot see are exactly the
+ones it cannot report. `calibrate lint` says so, and there are two ways to earn
+a stronger number: bind the judge to a different model
+(`calibrate engines my-support-ai judge <model@provider>`), or make the criteria
+that matter deterministic with `calibrate add-check`, which does not consult a
+judge at all.
+
 **📖 Full walkthrough:** [`docs/USAGE.md`](docs/USAGE.md) — engine setup for
 Claude / OpenAI / local, the step-by-step workflow, and current build status.
 License: MIT.

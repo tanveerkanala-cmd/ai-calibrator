@@ -31,6 +31,18 @@ def _normalize_yaml_text(v: object) -> object:
     return v
 
 
+# The on-disk format's version, stamped into project.yaml and scorecard.json.
+#
+# Nothing reads it yet, and that is the point: the day this ships publicly,
+# those files become a compatibility contract with strangers, and a format with
+# no version marker can only be migrated by guessing what wrote it. Stamping
+# costs one field now and cannot be added retroactively to files already on
+# disk. Bump it when a change would make an OLDER build misread a NEWER file —
+# not for additive fields, which `PreservingModel` already carries through
+# untouched.
+SCHEMA_VERSION = 1
+
+
 class PreservingModel(BaseModel):
     """Base for every model persisted to disk (project.yaml / scorecard.json).
 
@@ -237,6 +249,7 @@ class TestResult(PreservingModel):
 
 
 class Scorecard(PreservingModel):
+    schema_version: int = SCHEMA_VERSION
     run_id: str
     results: list[TestResult] = Field(default_factory=list)
     # Provenance — which models produced this run, and when. Recorded so the
@@ -374,6 +387,10 @@ def validate_project_name(v: object) -> str:
 
 
 class Project(PreservingModel):
+    # First, so it is the first line of project.yaml — a version marker nobody
+    # can find is not one. A file written before this field existed loads as
+    # version 1, which is what it is.
+    schema_version: int = SCHEMA_VERSION
     name: str
     goal: str
     task_type: TaskType = TaskType.ASSISTANT

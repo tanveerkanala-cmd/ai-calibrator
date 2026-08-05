@@ -901,12 +901,14 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
 
     @app.get("/api/projects/{name}/lint")
     def lint_(name: str):
-        from .lint import lint_dict, lint_spec, lint_unknown_fields
+        from .lint import lint_dict, lint_engine_roles, lint_schema_version, lint_spec, lint_unknown_fields
         project = _load(name)
         if project.spec is None:
             raise HTTPException(400, f"Nothing here yet — compile this project first (POST /api/projects/{name}/compile, or /import).")
         report = lint_spec(project.spec, project.tests)
         report.issues.extend(lint_unknown_fields(project))
+        report.issues.extend(lint_engine_roles(project))
+        report.issues.extend(lint_schema_version(project))
         return lint_dict(report)
 
     @app.get("/api/projects/{name}/coverage")

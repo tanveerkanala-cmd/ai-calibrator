@@ -1387,7 +1387,7 @@ def lint(
     deep: bool = typer.Option(False, "--deep", help="Also detect self-contradictions (uses an engine)."),
 ) -> None:
     """Lint the behavior spec for quality issues before you eval. Exits 1 on errors. (no engine unless --deep)"""
-    from .lint import lint_spec, lint_unknown_fields
+    from .lint import lint_engine_roles, lint_schema_version, lint_spec, lint_unknown_fields
 
     project = _load(path)
     if project.spec is None:
@@ -1396,6 +1396,8 @@ def lint(
 
     report = lint_spec(project.spec, project.tests)
     report.issues.extend(lint_unknown_fields(project))
+    report.issues.extend(lint_engine_roles(project))
+    report.issues.extend(lint_schema_version(project))
     if deep:
         from .engines import get_engine
         from .lint import lint_contradictions

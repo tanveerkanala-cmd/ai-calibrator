@@ -26,7 +26,7 @@ from .drift import compare_scorecards, load_scorecard
 from .engines.base import Engine
 from .eval import latest_run_id, next_run_id, run_eval, save_scorecard
 from .fmt import pct, pct_delta
-from .lint import lint_spec, lint_unknown_fields
+from .lint import lint_engine_roles, lint_schema_version, lint_spec, lint_unknown_fields
 from .models import Project, Scorecard
 from .snapshot import GOLDEN_FILE, compare, load_golden, outputs_of
 from .store import atomic_write_text
@@ -95,6 +95,8 @@ def run_ci(
     # 1. lint — free; errors mean the gate can't measure anything meaningful.
     report = lint_spec(spec, project.tests)
     report.issues.extend(lint_unknown_fields(project))
+    report.issues.extend(lint_engine_roles(project))
+    report.issues.extend(lint_schema_version(project))
     n_err, n_warn = len(report.errors), len(report.warnings)
     detail = f"{n_err} error(s), {n_warn} warning(s)"
     if n_err:
