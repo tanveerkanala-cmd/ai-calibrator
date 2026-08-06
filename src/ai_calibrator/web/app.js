@@ -276,10 +276,64 @@ async function showReport(name) {
   const width = Math.round((d.confidence || 0) * 100);
   card.insertAdjacentHTML("beforeend",
     `<div class="bar"><span style="width:${width}%"></span></div><p>Calibration Confidence: <b>${pctText(d.confidence)}</b></p>`);
-  const pre = document.createElement("pre");
-  pre.style.whiteSpace = "pre-wrap";
-  pre.textContent = d.markdown;
-  card.appendChild(pre);
+  const body = document.createElement("div");
+  body.className = "md";
+  body.innerHTML = renderMarkdown(d.markdown);
+  card.appendChild(body);
+}
+
+// The calibration report is the artifact this whole tool points at, and the one
+// a non-technical owner is most likely to read or share. It was written into a
+// <pre> as raw source, so the person the product is FOR saw `## Coverage`,
+// `**67%**` and backticks instead of a report.
+//
+// A deliberately small subset — headings, bold, italic, inline code, bullets —
+// rendered here rather than pulled from a library: the UI ships as three static
+// files with no build step, and a markdown dependency is a far larger surface
+// than the rules below.
+//
+// SECURITY: escape FIRST, then add markup. Everything in this document is
+// untrusted — the goal, the criteria descriptions and the judge's rationales
+// are written by a model from ingested documents — so by the time any rule
+// runs, every `<` is already `&lt;` and no rule can emit an element the report
+// author chose. Link syntax is deliberately NOT supported: it is the one
+// construct that would let untrusted text choose a URL (`javascript:`), and
+// the report contains no links.
+function renderMarkdown(src) {
+  const lines = escapeHtml(String(src || "")).split("\n");
+  const inline = (s) => s
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    // Single-asterisk italics AFTER bold, so `**x**` is already consumed and
+    // cannot be mistaken for two emphasis runs. The report uses both spellings.
+    .replace(/\*([^*\n]+)\*/g, "<em>$1</em>")
+    .replace(/(^|[\s(])_([^_\n]+)_/g, "$1<em>$2</em>");
+
+  const out = [];
+  let depth = 0;                                   // open <ul> count
+  const closeLists = () => { while (depth > 0) { out.push("</ul>"); depth--; } };
+
+  for (const line of lines) {
+    const heading = /^(#{1,4})\s+(.*)$/.exec(line);
+    if (heading) {
+      closeLists();
+      const level = Math.min(heading[1].length + 1, 5);   // `#` -> h2; the page owns h1
+      out.push(`<h${level}>${inline(heading[2])}</h${level}>`);
+      continue;
+    }
+    const bullet = /^(\s*)[-*]\s+(.*)$/.exec(line);
+    if (bullet) {
+      const want = bullet[1].length >= 2 ? 2 : 1;
+      while (depth < want) { out.push("<ul>"); depth++; }
+      while (depth > want) { out.push("</ul>"); depth--; }
+      out.push(`<li>${inline(bullet[2])}</li>`);
+      continue;
+    }
+    closeLists();
+    if (line.trim()) out.push(`<p>${inline(line)}</p>`);
+  }
+  closeLists();
+  return out.join("");
 }
 
 async function showRedteam(name) {

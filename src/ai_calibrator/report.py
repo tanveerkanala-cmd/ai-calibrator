@@ -231,7 +231,15 @@ def render_report(project: Project, coverage: CoverageReport, latest: Scorecard 
         if fails:
             L += ["- Weak spots:"]
             for r in fails[:10]:
-                why = "; ".join(c.rationale or c.criterion_id for c in r.criteria if not c.passed) or "—"
+                # Always name the criterion. `rationale or criterion_id` dropped
+                # the id whenever the judge supplied any text, so a test that
+                # failed two criteria read as two rationales joined by "; " with
+                # nothing saying which rule produced which — and two rationales
+                # from the same judge tend to sound alike. This list is the part
+                # of the certificate someone acts on, so it has to say what broke.
+                why = "; ".join(
+                    f"{c.criterion_id}: {c.rationale}" if c.rationale else c.criterion_id
+                    for c in r.criteria if not c.passed) or "—"
                 L += [f"  - `{r.test_id}`: {why}"]
         elif ungraded:
             # "No failing tests" would be a flat falsehood about the tests it skipped.

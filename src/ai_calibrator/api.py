@@ -1211,6 +1211,27 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
 
     # Static web UI last, so /api/* routes win.
     if WEB_DIR.exists():
-        app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="web")
+        class _RevalidatingStatics(StaticFiles):
+            """StaticFiles that makes the browser check before reusing a file.
+
+            The assets ship inside the package and change when the package is
+            upgraded, but the URLs never do — there is no build step and no
+            content hash in the filename. Served with only `etag` and
+            `last-modified`, a browser is free to reuse `app.js` without asking,
+            so upgrading the tool can leave a user's tab running the OLD UI
+            against the NEW API for as long as its heuristic cache lasts. That
+            is the same "the two halves drift apart" failure `test_web_contract`
+            guards against in the repo, arriving from the cache instead.
+
+            `no-cache` does not mean "do not store": it means revalidate first.
+            The etag still answers 304, so the bytes move once.
+            """
+
+            async def get_response(self, path: str, scope):
+                response = await super().get_response(path, scope)
+                response.headers.setdefault("Cache-Control", "no-cache")
+                return response
+
+        app.mount("/", _RevalidatingStatics(directory=str(WEB_DIR), html=True), name="web")
 
     return app

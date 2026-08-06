@@ -7,6 +7,13 @@ versions follow [SemVer](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **The web UI was opened in a browser for the first time, and three things it
+  found.** Every API test drives `api.py` through TestClient, which proves the
+  routes work and says nothing about whether the shipped UI calls the routes
+  that exist. `tests/test_web_contract.py` now checks that every endpoint
+  `app.js` calls is one `api.py` serves, that the report is rendered rather than
+  dumped, that the renderer escapes before it marks up, and that the assets are
+  served revalidating.
 - **Commands that scale with your data say what they will spend, first.**
   `interview` makes one engine call per gap, `rightsize` runs the whole suite
   once per model and grades every answer, and `eval --refine` repeats the suite
@@ -99,6 +106,24 @@ versions follow [SemVer](https://semver.org/).
   architecture section references (`§9`) into user-facing text.
 
 ### Fixed
+- **The calibration report was shown as raw markdown.** The UI wrote it into a
+  `<pre>` as source, so the non-technical owner the product is built for saw
+  `## Coverage`, `**67%**` and backticks instead of a report — on the one
+  artifact the whole tool points at. It is rendered now, by a small renderer
+  that escapes first and supports no link syntax, since every word in that
+  document was written by a model from ingested files.
+- **A failing test named its rationales but not its criteria.** The weak-spot
+  list used `rationale or criterion_id`, dropping the id whenever the judge
+  supplied any text, so a test that failed two criteria read as two rationales
+  joined by "; " — and two rationales from the same judge tend to sound alike.
+  It is the part of the certificate someone acts on, so it now says what broke.
+- **The UI could keep running against an API it no longer matches.** The asset
+  URLs never change (no build step, no content hash) and were served with only
+  an etag, leaving a browser free to reuse `app.js` without asking — so
+  upgrading could leave a tab running the old UI against the new API. Observed
+  in a real browser, where even a reload kept the stale file. They are served
+  `no-cache` now, which means revalidate, not "don't store": the etag still
+  answers 304.
 - **Three assertions that could not fail.** `_has_no_traceback` — 37 uses across
   two files — checked `result.output` for "Traceback", which typer's CliRunner
   never writes there (it stores the exception on `result.exception`), so a

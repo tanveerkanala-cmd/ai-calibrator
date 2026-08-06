@@ -47,3 +47,16 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .bar { height: 8px; background: var(--line); border-radius: 999px; overflow: hidden; }
 .bar > span { display: block; height: 100%; background: var(--good); }
 code { background: var(--panel); padding: 0.1rem 0.35rem; border-radius: 4px; }
+
+/* Rendered calibration report. Tight vertical rhythm: this sits inside a card,
+   so browser defaults leave it looking double-spaced against every sibling. */
+.md h2, .md h3, .md h4, .md h5 { margin: 1rem 0 0.4rem; line-height: 1.3; }
+.md h2 { font-size: 1.05rem; }
+.md h3 { font-size: 0.95rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.md h4, .md h5 { font-size: 0.9rem; }
+.md > *:first-child { margin-top: 0; }
+.md p { margin: 0.4rem 0; }
+.md ul { margin: 0.4rem 0; padding-left: 1.2rem; }
+.md li { margin: 0.15rem 0; }
+.md code { font-size: 0.85em; padding: 0.05rem 0.3rem; border-radius: 4px;
+           background: var(--line); }
