@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Refuse to force-push or delete the default branch.
+#
+# This is a stand-in, not the real thing. Server-side branch protection needs
+# GitHub Pro or a public repository, and this repo is private on the free plan,
+# so `main` currently has nothing stopping a `--force` from discarding history —
+# which has happened to this repo before. A pre-push hook only protects the
+# clone it is installed in, and anyone can bypass it with `--no-verify`. Delete
+# this file and turn on real protection the day the repo goes public.
+#
+# Enabled by `git config core.hooksPath .githooks` (already set in this clone;
+# undo with `git config --unset core.hooksPath`).
+
+set -euo pipefail
+
+protected="main"
+zero="0000000000000000000000000000000000000000"
+
+# stdin: <local ref> <local sha> <remote ref> <remote sha>, one line per ref.
+while read -r local_ref local_sha remote_ref remote_sha; do
+  branch="${remote_ref#refs/heads/}"
+  [ "$branch" = "$protected" ] || continue
+
+  if [ "$local_sha" = "$zero" ]; then
+    echo "pre-push: refusing to DELETE $protected on the remote." >&2
+    echo "          If you mean it: git push --no-verify --delete origin $protected" >&2
+    exit 1
+  fi
+
+  # A push is a fast-forward when the remote's current tip is an ancestor of
+  # what we are pushing. Anything else rewrites published history.
+  if [ "$remote_sha" != "$zero" ] && ! git merge-base --is-ancestor "$remote_sha" "$local_sha"; then
+    echo "pre-push: refusing to FORCE-PUSH $protected — this would discard commits" >&2
+    echo "          that are on the remote and not in what you are pushing:" >&2
+    git --no-pager log --oneline "$local_sha..$remote_sha" 2>/dev/null | sed 's/^/            /' >&2 || true
+    echo "          If you really mean it: git push --no-verify --force origin $protected" >&2
+    exit 1
+  fi
+done
+
+exit 0

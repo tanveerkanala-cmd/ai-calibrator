@@ -85,3 +85,19 @@ wrappers over Core. Tests mirror modules in `tests/`.
 Open an issue with the minimal reproduction (the CLI command or Core call and
 the observed vs expected output). For anything security-sensitive, see
 [`SECURITY.md`](SECURITY.md).
+
+## A note on `main`
+
+Server-side branch protection needs GitHub Pro or a public repository, and this
+repo is private on the free plan, so `main` has nothing on the server stopping a
+force-push — which has already cost this repo its history once. `.githooks/pre-push`
+refuses to force-push or delete `main` from a clone that has it enabled:
+
+```bash
+git config core.hooksPath .githooks     # once per clone
+```
+
+It is a stand-in, not protection: it guards only the clone it is installed in,
+and `--no-verify` bypasses it. Turn on real branch protection (and private
+vulnerability reporting, which is also public-repo-only) the day this goes
+public, and delete this section.
