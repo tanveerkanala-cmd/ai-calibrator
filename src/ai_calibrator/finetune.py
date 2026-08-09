@@ -22,8 +22,8 @@ import yaml
 
 from .coerce import safe_token
 from .compile import render_system_prompt
-from .identity import result_matches_test
-from .models import Example, Project, Scorecard
+
+from .models import Example, Project, Scorecard, result_matches_test
 from .store import atomic_write_text
 
 DEFAULT_BASE = "Qwen/Qwen2.5-7B-Instruct"  # an open base you can actually LoRA

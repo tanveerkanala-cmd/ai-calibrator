@@ -98,8 +98,31 @@ def test_drift_stage_does_not_report_pass_when_the_suite_was_recompiled(tmp_path
     r = run_ci(p, Subject("BAD now"), Judge(), project_dir=tmp_path, threshold=0.0)
     drift = next(s for s in r.stages if s.name == "drift")
     assert drift.status == "skip"                      # not "pass"
-    assert "not comparable" in drift.detail and "re-minted" in drift.detail
+    assert "not comparable" in drift.detail and "changed content" in drift.detail
     assert "no regressions" not in drift.detail
+
+
+def test_drift_stage_still_compares_the_subset_that_did_not_change(tmp_path):
+    """The skip is keyed on "nothing left to compare", NOT on "no test flipped".
+
+    One re-minted probe with the rest still holding is the ordinary state after
+    answering another interview question. Skipping there would mean the drift
+    stage never passes again until someone re-baselines, which is how a gate
+    teaches people to ignore it."""
+    p = _project()
+    p.tests = [CaseModel(id="t1", input="a question", expects=["c1"]),
+               CaseModel(id="t2", input="a second question", expects=["c1"])]
+    save_scorecard(tmp_path, run_eval(p, Subject("GOOD baseline"), Judge(), run_id="run-0001"))
+
+    # `compile` re-mints only t1; t2 still asks what it asked.
+    p.tests = [CaseModel(id="t1", input="a DIFFERENT question", expects=["c1"]),
+               CaseModel(id="t2", input="a second question", expects=["c1"])]
+
+    r = run_ci(p, Subject("GOOD still"), Judge(), project_dir=tmp_path, threshold=0.0)
+    drift = next(s for s in r.stages if s.name == "drift")
+    assert drift.status == "pass"                       # it DID compare something
+    assert "1 shared test(s)" in drift.detail           # and says how much
+    assert "1 not comparable" in drift.detail           # and what it left out
 
 
 def test_drift_stage_still_compares_when_the_suite_is_unchanged(tmp_path):

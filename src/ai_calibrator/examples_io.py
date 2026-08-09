@@ -199,15 +199,38 @@ def dedup_examples(spec: BehaviorSpec) -> int:
     and keep the answer a human already rejected. But a later occurrence can be an
     input-only row (a list of bare questions imported afterwards), which carries no
     ratified answer at all — so the newest occurrence WITH an output wins, and a
-    bare input only survives when no occurrence of that input has one."""
-    def _has_output(ex: Example) -> bool:
-        return is_str(ex.good_output) or is_str(ex.bad_output)
+    bare input only survives when no occurrence of that input has one.
+
+    A GOOD answer outranks a rejection. `teach` writes bad_output-only for a
+    thumbs-down and `absorb` does the same for a down-vote with no correction, so
+    treating "has any output" as one tier let a later rejection delete the human's
+    only good answer — the correction the earlier rule was written to protect. The
+    survivor also inherits the loser's complementary field, so a good answer and a
+    rejected one for the same input both survive as one example."""
+    def _rank(ex: Example) -> int:
+        # 2: carries the answer to give. 1: records only what was rejected. 0: bare input.
+        if is_str(ex.good_output):
+            return 2
+        return 1 if is_str(ex.bad_output) else 0
 
     last: dict[str, Example] = {}
     for ex in spec.examples:
         prior = last.get(ex.input)
-        if prior is None or _has_output(ex) or not _has_output(prior):
+        # Newest wins WITHIN a tier; a higher tier always wins across tiers.
+        if prior is None or _rank(ex) >= _rank(prior):
             last[ex.input] = ex
+    # Carry the complementary field onto the survivor: when a good answer and a
+    # rejection exist for one input, both are worth keeping and neither should
+    # cost the other its place.
+    for ex in spec.examples:
+        winner = last[ex.input]
+        if winner is ex:
+            continue
+        if winner.good_output is None and is_str(ex.good_output):
+            winner.good_output = ex.good_output
+        if winner.bad_output is None and is_str(ex.bad_output):
+            winner.bad_output = ex.bad_output
+
     seen: set[str] = set()
     kept: list[Example] = []
     for ex in spec.examples:

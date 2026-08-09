@@ -33,7 +33,8 @@ except ImportError as exc:  # pragma: no cover - depends on optional extra
 
 from .auth import all_status
 from .models import EngineBinding, Project, TaskType
-from .store import PROJECT_FILE, load_project, project_lock, save_project, write_project_gitignore
+from .store import (LOCK_FILE, PROJECT_FILE, load_project, project_lock, save_project,
+                    write_project_gitignore)
 from .webguard import MAX_BODY_BYTES, install_guard
 
 WEB_DIR = Path(__file__).parent / "web"
@@ -370,15 +371,42 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         # wrong. The in-lock re-check below is what makes the create atomic.
         if (d / "project.yaml").exists():
             raise HTTPException(409, "project already exists")
+        # Never ADOPT a directory the tool did not create. The served root is now
+        # the user's working directory, so it is full of ordinary folders — and
+        # DELETE removes a project's whole tree. Writing project.yaml into an
+        # existing `Documents/` would make it deletable through this API.
+        # `.lock` is OUR artifact — a concurrent create on this same name leaves one
+        # behind, and that must reach the lock below and answer 423 (busy), not be
+        # mistaken for a user's folder.
+        #
+        # The non-directory case comes FIRST: `iterdir()` on a plain file raises
+        # NotADirectoryError, which is not an OSError this route handles and so
+        # escaped as a 500 — the one input shape where the adopt-guard itself
+        # crashed instead of refusing.
+        if d.exists() and not d.is_dir():
+            raise HTTPException(409, f"a file named {name!r} already exists where that project "
+                                     "would live — pick another name")
+        foreign = [f.name for f in d.iterdir() if f.name != LOCK_FILE] if d.exists() else []
+        if foreign:
+            raise HTTPException(409, f"a directory named {name!r} already exists here and is not "
+                                     "a calibrator project — pick another name, or serve a "
+                                     "different root with `calibrate serve --projects DIR`")
         # Atomic create: hold the project lock across the exists-check + write so
         # two concurrent POSTs for the same name can't both pass the check (one
         # wins with 200, the other deterministically gets 409 — never a partial
         # write or a 500).
-        with _held(d, name):
-            if (d / "project.yaml").exists():
-                raise HTTPException(409, "project already exists")
-            save_project(project, d)
-            write_project_gitignore(d)
+        try:
+            with _held(d, name):
+                if (d / "project.yaml").exists():
+                    raise HTTPException(409, "project already exists")
+                save_project(project, d)
+                write_project_gitignore(d)
+        except OSError as exc:
+            # The served root is now the user's working directory, which they may
+            # not own. Say which directory and what to do, rather than a traceback.
+            raise HTTPException(400, f"could not create {name!r} in {root}: {exc.strerror or exc}. "
+                                     "Check permissions, or restart with "
+                                     "`calibrate serve --projects DIR` pointing somewhere writable.")
         return _state(project, name)
 
     @app.get("/api/projects/{name}")
@@ -521,6 +549,14 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
                 raise
             except Exception as exc:
                 raise _engine_http_error(exc)
+            if result.unreadable:
+                # Parity with the CLI, which refuses this with exit 1. ingest_project
+                # made it a no-op, so nothing was mutated and this is a clean
+                # refusal — returning 200 here reported the project's PREVIOUS
+                # counts as if the ingest had succeeded.
+                raise HTTPException(422, "none of the file(s) in materials/ could be read, so "
+                                         "nothing was ingested and the project is unchanged: "
+                                         + "; ".join(f"{n} — {why}" for n, why in result.skipped[:5]))
             save_project(project, d)
         return {
             "materials": result.materials, "gaps": result.gaps,
@@ -815,7 +851,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         from .drift import load_scorecard
         from .eval import latest_run_id
         from .judge_check import gradings
-        _load(name)
+        project = _load(name)
         d = _dir(name)
         rid = latest_run_id(d)
         if not rid:
@@ -824,7 +860,9 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             card = load_scorecard(d, rid)
         except (FileNotFoundError, ValueError, ValidationError) as exc:
             raise HTTPException(409, f"scorecard {rid!r} is unreadable: {exc}")
-        return {"run_id": rid, "gradings": gradings(card)}
+        # Judge verdicts only — a deterministically-graded criterion is not a
+        # judgment the judge made, so it must not be offered for calibration.
+        return {"run_id": rid, "gradings": gradings(card, project.spec)}
 
     @app.post("/api/projects/{name}/judge-check")
     def judge_check_score_(name: str, body: JudgeLabelsBody):
@@ -832,20 +870,20 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         from .eval import latest_run_id
         from .judge_check import agreement_dict, judge_agreement, save_labels
         _load(name)
-        d = _dir(name)
-        rid = body.run_id or latest_run_id(d)
-        if not rid:
-            raise HTTPException(400, f"no scorecard — POST /api/projects/{name}/eval first")
-        try:
-            card = load_scorecard(d, rid)
-            # save_labels reloads the file and rewrites it whole, so its stated
-            # concurrency contract is not optional: two unserialized posts each
-            # merge onto a stale read and the loser's human labels are gone —
-            # silently, because the write is atomic and both requests succeed.
-            with _held(d, name):
-                save_labels(d, rid, body.labels)  # feeds train-engine as ground truth
-        except (FileNotFoundError, ValueError, ValidationError) as exc:
-            raise HTTPException(400, str(exc))
+        # save_labels is a read-modify-write (it merges onto the labels already on
+        # disk), and judge_check.save_labels documents that the caller must hold the
+        # project lock. This was the one mutating route that did not: two concurrent
+        # submissions each merged onto a stale read and the loser's ground truth
+        # vanished. A busy project now answers 423 like every sibling route.
+        with _locked(name) as d:
+            rid = body.run_id or latest_run_id(d)
+            if not rid:
+                raise HTTPException(400, f"no scorecard — POST /api/projects/{name}/eval first")
+            try:
+                card = load_scorecard(d, rid)
+                save_labels(d, rid, body.labels)  # persist: feeds train-engine as ground truth
+            except (FileNotFoundError, ValueError, ValidationError) as exc:
+                raise HTTPException(400, str(exc))
         out = agreement_dict(judge_agreement(card, body.labels))
         out["labels_saved"] = f"evals/{rid}/human-labels.json"
         return out

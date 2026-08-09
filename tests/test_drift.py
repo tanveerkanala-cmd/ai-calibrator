@@ -44,7 +44,7 @@ def test_compare_excludes_results_whose_input_hash_differs():
     r = compare_scorecards(base, cand)
     # t1 asked a different question in each run: not a fix, not a regression.
     assert r.fixed_tests == [] and r.regressed_tests == []
-    assert r.changed_tests == ["t1"]
+    assert r.incomparable_tests == ["t1"]
     assert r.compared == 1          # only t2 was actually compared
     assert r.comparable is True
 
@@ -53,7 +53,7 @@ def test_compare_reports_nothing_comparable_when_the_whole_suite_was_reminted():
     base = _hashed_card("run-0001", [("t1", True, "aaaa000000000000")])
     cand = _hashed_card("run-0002", [("t1", False, "bbbb111111111111")])
     r = compare_scorecards(base, cand)
-    assert r.changed_tests == ["t1"] and r.compared == 0
+    assert r.incomparable_tests == ["t1"] and r.compared == 0
     assert r.comparable is False
     # The rate moved, but across two different exams — that is not a regression.
     assert r.regressed is False
@@ -65,7 +65,7 @@ def test_compare_still_matches_by_id_when_either_hash_is_none():
     base = _hashed_card("run-0001", [("t1", True, None)])
     cand = _hashed_card("run-0002", [("t1", False, "bbbb111111111111")])
     r = compare_scorecards(base, cand)
-    assert r.regressed_tests == ["t1"] and r.changed_tests == []
+    assert r.regressed_tests == ["t1"] and r.incomparable_tests == []
 
 
 def test_compare_detects_regression_and_fix():

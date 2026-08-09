@@ -52,7 +52,13 @@ def _stub_uvicorn(monkeypatch):
     """Stop `run` before it actually binds a port — when uvicorn is installed at
     all. It ships in the `api` extra, so a plain `.[dev]` venv has none and the
     command exits 1 at its own ImportError guard instead. The gate decision
-    below it is what these tests pin, and that happens either way."""
+    below it is what these tests pin, and that happens either way.
+
+    Also supplies a credential: `run` resolves the subject engine's credentials
+    when it builds the app, so on a machine with no key set it exits 1 with the
+    friendly auth message BEFORE reaching the server — which is correct, and is
+    not what these tests are about."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-" + "x" * 40)
     try:
         import uvicorn
     except ImportError:

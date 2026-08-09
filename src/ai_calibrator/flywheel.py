@@ -110,7 +110,25 @@ def read_feedback_lines(project_dir: str | Path) -> tuple[list[dict], list[str]]
         return [], []
     out: list[dict] = []
     junk: list[str] = []
-    for line in f.read_text(encoding="utf-8").splitlines():
+    # Read BYTES and decode per line. read_text() raises UnicodeDecodeError on the
+    # first bad byte, out through absorb_feedback, where nothing catches it — and
+    # since the inbox can then never be rewritten, one malformed byte strands every
+    # good record behind it permanently. An encoding accident is named in this
+    # docstring as a reason unparsed lines exist; it must become one, not a crash.
+    try:
+        raw = f.read_bytes()
+    except OSError:
+        return [], []
+    for chunk in raw.split(b"\n"):
+        try:
+            line = chunk.decode("utf-8")
+        except UnicodeDecodeError:
+            # Keep a lossy but faithful-length repr so the line stays visible and
+            # the file stays rewritable; absorb writes `unparsed` back unchanged.
+            lossy = chunk.decode("utf-8", "replace").strip()
+            if lossy:
+                junk.append(lossy)
+            continue
         line = line.strip()
         if not line:
             continue
@@ -178,7 +196,10 @@ def absorb_feedback(project: Project, project_dir: str | Path, *,
     them into a project that was never written. Re-absorbing costs nothing;
     losing a flagged exchange the flywheel promised to pin forever does."""
     records, unparsed = read_feedback_lines(project_dir)
-    result = AbsorbResult()
+    # Set the unparsed count BEFORE the early return: an inbox holding only
+    # unreadable lines is the case the "left in place" warning matters most for,
+    # and returning a bare result told both surfaces there was nothing waiting.
+    result = AbsorbResult(unparsed=len(unparsed))
     if not records:
         return result
     if project.spec is None:  # judgment-first bootstrap, same as teach

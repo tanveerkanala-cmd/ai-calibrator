@@ -276,7 +276,17 @@ def ingest_project(
     # `docs` extra, a permissions change), and leaves nothing to retry from. Make
     # it a no-op and let the caller report it — a veto has to come before the
     # destruction, not after.
-    unreadable = bool(skipped) and not docs
+    try:
+        had_entries = any(base.iterdir())
+    except OSError:
+        had_entries = bool(skipped)
+    # NOT `bool(skipped)`: symlinks, hidden files and non-regular entries are
+    # excluded by POLICY and deliberately kept out of the skip report, so a
+    # directory made entirely of those produced docs=[] and skipped=[] and slipped
+    # past this veto — emptying the corpus, facts, gaps and index, and reporting
+    # success. Ask the question that actually matters: did the source have
+    # anything in it, and did we end up with nothing?
+    unreadable = had_entries and not docs
     if unreadable:
         return IngestResult(materials=len(project.materials), chunks=0, facts=len(project.facts),
                             gaps=len(project.gaps), indexed=None, skipped=skipped, analyzed=0,

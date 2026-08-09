@@ -1246,7 +1246,8 @@ def absorb(path: Path = typer.Argument(Path("."), help="Project directory.")) ->
         # The save runs as absorb's commit step, while the records are still in
         # the inbox: a save that fails leaves them there to absorb again.
         result = absorb_feedback(project, path, commit=lambda: save_project(project, path))
-        if result.ups + result.downs + result.skipped == 0:
+        # Include unparsed: an inbox of only-unreadable lines is not "nothing waiting".
+        if result.ups + result.downs + result.skipped + result.unparsed == 0:
             typer.secho("No live feedback to absorb yet.", fg=typer.colors.YELLOW)
             typer.echo("  `calibrate run` records it: POST /v1/feedback "
                        '{"completion_id": "...", "verdict": "down", "correction": "..."}')
@@ -1355,15 +1356,19 @@ def judge_check(
     if sample < 1:
         typer.secho("--sample must be >= 1.", fg=typer.colors.RED)
         raise typer.Exit(code=1)
-    _load(path)
+    project = _load(path)
     rid = latest_run_id(path)
     if not rid:
         typer.secho("No scorecard yet — run `calibrate eval` first.", fg=typer.colors.YELLOW)
         raise typer.Exit(code=1)
     card = _scorecard_or_exit(path, rid)
-    items = gradings(card)
+    items = gradings(card, project.spec)
     if not items:
-        typer.secho("No graded verdicts in the latest scorecard.", fg=typer.colors.YELLOW)
+        typer.secho(f"No judge verdicts in {rid} to calibrate — every criterion in this run was "
+                    "graded deterministically (or the answer was empty), so the judge never "
+                    "weighed in.", fg=typer.colors.YELLOW)
+        typer.echo("  There is nothing here to agree or disagree with. Add a judge-graded "
+                   "criterion (one without an `add-check`) and re-run `calibrate eval`.")
         raise typer.Exit(code=1)
     items = items[:sample]
 
@@ -1389,10 +1394,11 @@ def judge_check(
         typer.secho("⏹ Stopped before the first judgment — nothing to save.", fg=typer.colors.YELLOW)
         raise typer.Exit(code=1)
 
-    # save_labels reloads the file and rewrites it whole — its stated concurrency
-    # contract, which neither caller was honouring. Take the lock around the save
-    # only: it is not re-entrant, and holding it across the prompts above would
-    # block every other command for as long as a person takes to answer.
+    # save_labels reloads the file and rewrites it whole, so its stated
+    # concurrency contract is not optional. Serialize the read-modify-write the
+    # way that contract requires — taken AFTER the interactive prompts, never
+    # across them: the lock is not re-entrant, and holding it while a person
+    # thinks would block every other command on the project.
     _require_project(path)  # no junk .lock dir for a typo'd name
     with project_lock(path, on_wait=_lock_wait_notice):
         save_labels(path, rid, labels)  # ground truth is an asset: feeds train-engine
@@ -1748,6 +1754,12 @@ def drift(
     if report.fixed_tests:
         typer.secho(f"  ✓ {len(report.fixed_tests)} improved (fail→pass): "
                     f"{', '.join(report.fixed_tests[:10])}", fg=typer.colors.GREEN)
+    if report.incomparable_tests:
+        # These ids exist in both runs but now ask different questions, so neither
+        # a regression nor a fix can be claimed for them.
+        typer.secho(f"  ? {len(report.incomparable_tests)} not comparable — the test text changed "
+                    f"since the baseline: {', '.join(report.incomparable_tests[:10])}",
+                    fg=typer.colors.YELLOW)
     if report.regressed:
         typer.secho("\n⚠ DRIFT DETECTED — behavior regressed beyond tolerance.", fg=typer.colors.RED)
         raise typer.Exit(code=2)
@@ -2391,6 +2403,12 @@ def serve(
     # working directory (a bare relative "projects" reads as a mystery); the app
     # resolves it the same way for /api/health.
     root = (projects or default_projects_root()).resolve()
+    # create_app mkdirs the root; Path.mkdir(exist_ok=True) still raises when a
+    # regular FILE sits there. init and import already guard this class.
+    if root.exists() and not root.is_dir():
+        typer.secho(f"{root} is a file, not a directory — --projects takes the folder your "
+                    "projects live in.", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
     is_local = host in ("127.0.0.1", "localhost", "::1")
     if not is_local:
         typer.secho(
@@ -2509,8 +2527,8 @@ def finetune(
         # on every run, so two scorecards can share every id and still have graded
         # different questions — which passes every count check above, because the
         # ids match. Compare only the ids that asked the same thing in both runs.
-        from .identity import restrict_to_comparable
-        common, recompiled = restrict_to_comparable(base_card, cand_card, common)
+        from .models import comparable_ids
+        common, recompiled = comparable_ids(base_card, cand_card, common)
         if recompiled and not common:
             typer.secho(f"✗ CANNOT JUDGE — `compile` ran between these two runs and re-minted "
                         f"all {len(recompiled)} shared test id(s): each one asks a different "

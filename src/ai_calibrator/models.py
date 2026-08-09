@@ -122,7 +122,11 @@ class InterviewItem(PreservingModel):
     @property
     def unratified(self) -> bool:
         """True if this answer is the tool's own guess, accepted without review."""
-        return self.answer is not None and self.answer_source == "engine"
+        # bool(), not `is not None`: --accept-drafts stores `draft_answer or ""`,
+        # so a question the engine gave no draft for yields answer="" — which every
+        # other consumer (`if it.answer`) treats as unanswered. Disagreeing made the
+        # compile warning count "2 of 1 answer(s)".
+        return bool(self.answer) and self.answer_source == "engine"
 
 
 # --- The compiled behavior spec (source of truth) --------------------------
@@ -348,6 +352,68 @@ def test_input_hash(test: "TestCase") -> str:
     Covers the follow-ups as well as the opening turn: a multi-turn test whose
     later turns changed is a different question, however stable its id."""
     return content_hash(test.input, *test.follow_ups)
+
+
+def same_question(a: "TestResult", b: "TestResult") -> bool:
+    """Do two results record runs of the SAME question?
+
+    An id names a slot, not a question: `compile` regenerates t1..tN positionally,
+    so the ordinary workflow puts different text under the same id. Two results
+    match only when the id agrees AND their recorded content hashes do not
+    disagree. A result with no hash predates the field and is matched on id alone,
+    so existing scorecards keep comparing exactly as they did.
+
+    Shared deliberately: every surface that compares a run to another run, or to
+    the suite as it stands now, is a consumer of ONE rule. When only report.py
+    had it, `calibrate drift` went on comparing verdicts across recompiled
+    suites and calling the result "no regressions" — and a fix that teaches one
+    surface to say "not comparable" while another still says ACCEPT leaves the
+    user with two answers and no way to tell which is honest."""
+    if a.test_id != b.test_id:
+        return False
+    return hashes_agree(a.input_hash, b.input_hash)
+
+
+def hashes_agree(a: str | None, b: str | None) -> bool:
+    """Whether two recorded content hashes can name the same question.
+
+    None means "written before the field existed", which is unknown, never
+    "matches" — so pre-existing scorecards and goldens keep comparing by id
+    exactly as they always did, and every run from here on gets the strict
+    check. Two hashes that are both KNOWN and differ are two different
+    questions, and no caller may score one against the other."""
+    return a is None or b is None or a == b
+
+
+def result_matches_test(result: "TestResult", test: "TestCase") -> bool:
+    """Does ``result`` record a run of ``test`` as the suite defines it NOW?
+
+    The run/suite form of :func:`same_question`: same slot AND same question.
+    Matching on the id alone hands an old run's verdicts to tests that have
+    never been executed."""
+    if result.test_id != test.id:
+        return False
+    return hashes_agree(result.input_hash, test_input_hash(test))
+
+
+def comparable_ids(baseline: "Scorecard", candidate: "Scorecard",
+                   ids: set[str]) -> tuple[set[str], list[str]]:
+    """Narrow an already-chosen id set to the ids that asked the same question.
+
+    For callers that select ids on their own terms first (graded-only,
+    held-out-of-training) and then need the content check applied to whatever
+    survived. Returns (still comparable, excluded because the question changed).
+    """
+    before = {r.test_id: r for r in baseline.results}
+    after = {r.test_id: r for r in candidate.results}
+    keep, changed = set(), []
+    for tid in ids:
+        a, b = before.get(tid), after.get(tid)
+        if a is not None and b is not None and not same_question(a, b):
+            changed.append(tid)
+        else:
+            keep.add(tid)
+    return keep, sorted(changed)
 
 
 def validate_project_name(v: object) -> str:

@@ -24,7 +24,7 @@ import yaml
 from .coerce import as_bool
 from .engines.base import Engine
 from .finetune import recommend_recipe, render_train_py
-from .identity import result_matches_test
+from .models import result_matches_test
 from .store import atomic_write_text
 
 TRAINABLE_ROLES = {"extractor", "interviewer", "predictor", "compiler", "judge"}

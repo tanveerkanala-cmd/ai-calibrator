@@ -487,3 +487,57 @@ def test_judge_check_route_waits_for_the_project_lock(tmp_path):
 
     # ...and succeeds once it is free.
     assert c.post("/api/projects/p/judge-check", json=body).status_code == 200
+
+
+def test_create_will_not_adopt_an_existing_user_folder(tmp_path):
+    """The served root is now the user's working directory, full of ordinary
+    folders — and DELETE removes a project's whole tree. Writing project.yaml into
+    an existing `Documents/` would make it deletable through this API."""
+    (tmp_path / "Documents").mkdir()
+    (tmp_path / "Documents" / "taxes.pdf").write_text("important", encoding="utf-8")
+
+    c = TestClient(create_app(tmp_path), base_url="http://localhost")
+    r = c.post("/api/projects", json={"name": "Documents", "goal": "answer questions"})
+
+    assert r.status_code == 409
+    assert "already exists here" in r.json()["detail"]
+    assert (tmp_path / "Documents" / "taxes.pdf").exists()
+    assert not (tmp_path / "Documents" / "project.yaml").exists()
+
+
+def test_create_still_works_on_a_free_name(tmp_path):
+    c = TestClient(create_app(tmp_path), base_url="http://localhost")
+    assert c.post("/api/projects", json={"name": "fresh", "goal": "g"}).status_code == 200
+
+
+def test_ingest_that_could_read_nothing_refuses_instead_of_reporting_success(tmp_path):
+    """Parity with the CLI, which exits 1. Returning 200 here reported the
+    project's PREVIOUS counts as though the ingest had succeeded."""
+    from ai_calibrator.api import _engine_factory
+    from ai_calibrator.models import Material
+    from ai_calibrator.store import load_project, save_project
+
+    class Boom:
+        name = "e@test"
+
+        def complete(self, *a, **k):
+            raise AssertionError("no engine call on an unreadable corpus")
+
+    app_ = create_app(tmp_path)
+    app_.dependency_overrides[_engine_factory] = lambda: (lambda spec: Boom())
+    c = TestClient(app_, base_url="http://localhost")
+    c.post("/api/projects", json={"name": "p", "goal": "g"})
+    # A project that HAS ingested materials before: this is a RE-ingest that can
+    # read nothing, not a project that never had any (which correctly gets
+    # "add some first").
+    proj = load_project(tmp_path / "p")
+    proj.materials = [Material(path="handbook.md")]
+    save_project(proj, tmp_path / "p")
+    mats = tmp_path / "p" / "materials"
+    mats.mkdir(exist_ok=True)
+    (mats / ".hidden.md").write_text("policy", encoding="utf-8")
+    (mats / "link.txt").symlink_to(mats / "missing.txt")
+
+    r = c.post("/api/projects/p/ingest")
+    assert r.status_code == 422
+    assert "nothing was ingested" in r.json()["detail"]

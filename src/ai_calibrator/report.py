@@ -18,8 +18,8 @@ from collections import Counter
 from .coerce import as_str
 from .coverage import CoverageReport
 from .fmt import pct
-from .identity import result_matches_test
-from .models import BehaviorSpec, Project, Scorecard
+
+from .models import BehaviorSpec, Project, Scorecard, result_matches_test
 from .store import atomic_write_text
 
 
@@ -60,8 +60,10 @@ def _matches(test, result) -> bool:
     existing scorecards keep reporting exactly as they did; every run from here
     on records the content and gets the stricter check.
 
-    Defers to `identity`, which is where every surface that compares a run to
-    the suite — or to another run — reads the same rule from.
+    A thin alias for ``models.result_matches_test``, kept because this module's
+    readers call it with (test, result). The rule itself lives in `models`
+    alongside ``same_question``, which is where every surface that compares a
+    run to the suite — or to another run — now reads it from.
     """
     return result_matches_test(result, test)
 

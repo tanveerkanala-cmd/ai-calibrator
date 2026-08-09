@@ -13,8 +13,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .identity import hashes_compatible
-from .models import Scorecard
+from .models import Scorecard, hashes_agree
 from .store import atomic_write_text
 
 GOLDEN_FILE = "golden.json"
@@ -63,7 +62,7 @@ def compare(golden: dict, latest: dict) -> SnapshotDiff:
     g = {k: _entry(v) for k, v in golden.items()}
     now = {k: _entry(v) for k, v in latest.items()}
     shared = g.keys() & now.keys()
-    replaced = sorted(t for t in shared if not hashes_compatible(g[t][1], now[t][1]))
+    replaced = sorted(t for t in shared if not hashes_agree(g[t][1], now[t][1]))
     comparable = shared - set(replaced)
     return SnapshotDiff(
         changed=sorted(t for t in comparable if now[t][0] != g[t][0]),
