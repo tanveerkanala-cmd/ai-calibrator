@@ -131,8 +131,13 @@ _MERGE_PY = '''#!/usr/bin/env python3
     pip install "transformers>=4.56.2" peft torch
     python merge.py
 
+Merged in fp32 and saved in bf16, so the result loads on the same GPU that
+trained it rather than needing twice its memory.
+
 Then serve the merged model (see README.md) and point the project's `subject`
 engine at it to run the prove-it gate."""
+from pathlib import Path
+
 import torch
 from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -144,11 +149,18 @@ MERGE_OUT = "__MERGE_OUT__"
 
 def main() -> None:
     tokenizer = AutoTokenizer.from_pretrained(BASE)
+    # Merge in fp32 so the LoRA delta is applied at full precision, then SAVE in
+    # bf16. Saving fp32 doubles the artifact -- a 3B becomes ~12 GB -- and the
+    # next step in the README is to serve this model on the same GPU that just
+    # trained it. A 12 GB card fits the bf16 copy and not the fp32 one, so the
+    # documented workflow would dead-end on the hardware it was written for.
     base = AutoModelForCausalLM.from_pretrained(BASE, dtype=torch.float32)
     merged = PeftModel.from_pretrained(base, ADAPTER).merge_and_unload()
+    merged = merged.to(torch.bfloat16)
     merged.save_pretrained(MERGE_OUT)
     tokenizer.save_pretrained(MERGE_OUT)
-    print(f"merged model saved to {MERGE_OUT}/")
+    size = sum(f.stat().st_size for f in Path(MERGE_OUT).glob("*.safetensors")) / 1e9
+    print(f"merged model saved to {MERGE_OUT}/ ({size:.1f} GB, bf16)")
 
 
 if __name__ == "__main__":
