@@ -91,6 +91,17 @@ module = [
 ]
 ignore_missing_imports = true
 
+# The `train` extra brings numpy, whose shipped stubs use 3.12 syntax that mypy
+# refuses to parse while checking against our 3.10 floor — one unparseable
+# third-party stub aborts the whole run. `calibrate train` installs that extra
+# into whatever venv it is run from, so a contributor who exercises the
+# fine-tuning tier in their clone would find the mypy gate broken by a file they
+# do not own. Skip following it: nothing here is typed against numpy.
+[[tool.mypy.overrides]]
+module = ["numpy", "numpy.*"]
+follow_imports = "skip"
+follow_imports_for_stubs = true
+
 [tool.ruff.lint]
 # Bug-focused static-analysis gate: pyflakes (F), bugbear (B), syntax (E9).
 # B008 and B904 are intentional framework idioms here — Typer/FastAPI require
