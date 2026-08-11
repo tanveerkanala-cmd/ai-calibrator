@@ -367,11 +367,25 @@ base first:
 python merge.py            # writes the merged model to ./{MERGE_OUT}/
 ```
 Then either:
-- **Ollama:** convert to GGUF and `ollama create my-ft -f Modelfile` (with
-  `FROM ./{MERGE_OUT}`), then bind `calibrate engines <project> subject my-ft@ollama`.
-- **OpenAI-compatible endpoint:** `transformers serve ./{MERGE_OUT}` (or vLLM),
-  then `export OPENAI_BASE_URL=http://localhost:8000/v1` and bind
-  `calibrate engines <project> subject ./{MERGE_OUT}@openai`.
+- **OpenAI-compatible endpoint (verified).** `transformers serve` ships with
+  this extra, so nothing else to install and no conversion:
+  ```bash
+  transformers serve --port 8010
+  export OPENAI_BASE_URL=http://localhost:8010/v1 OPENAI_API_KEY=local
+  calibrate engines <project> subject "$(pwd)/{MERGE_OUT}@openai"
+  ```
+  > `OPENAI_BASE_URL` applies to **every** `@openai` role in the process, so a
+  > judge bound to `@openai` is sent to this endpoint too — it would be graded by
+  > the very model it is grading. Bind the judge to `@ollama` or `@anthropic`
+  > before the comparison.
+- **Ollama.** Recent versions import merged safetensors directly
+  (`printf 'FROM ./{MERGE_OUT}\n' > Modelfile && ollama create my-ft -f Modelfile
+  --experimental`), and older ones need a GGUF conversion via llama.cpp first.
+  Either way **confirm `ollama list` shows the model before you rely on it**: the
+  experimental import has been observed printing "successfully imported" while
+  writing a manifest the running daemon never picks up, so the next command fails
+  with a 404 for a model you were told was created. Then bind
+  `calibrate engines <project> subject my-ft@ollama`.
 
 ## 3. Prove it beats the baseline
 1. With the fine-tune served + bound as `subject`, run `calibrate eval`.
