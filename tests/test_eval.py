@@ -401,8 +401,6 @@ def test_duplicate_expects_do_not_multiply_weight():
     assert [c.criterion_id for c in tr.criteria] == ["lo", "hi"]
 
 
-
-
 def test_non_string_criterion_id_does_not_destroy_the_run():
     """A judge that returns criterion_id as a list must not abort the eval.
 
@@ -464,3 +462,127 @@ def test_judge_schema_is_bounded_to_the_batch():
     results = captured["schema"]["properties"]["results"]
     assert results["minItems"] == 2 and results["maxItems"] == 2  # c3 never reaches the judge
     assert results["items"]["properties"]["rationale"]["maxLength"] >= 1
+
+
+class RecordingJudge:
+    """Passes everything, and keeps the exact prompt and system it was handed."""
+    name = "judge@test"
+
+    def __init__(self):
+        self.prompts: list[str] = []
+        self.systems: list[str | None] = []
+
+    def complete(self, prompt, *, system=None, schema=None):
+        self.prompts.append(prompt)
+        self.systems.append(system)
+        ids = re.findall(r"^- (\S+):", prompt, re.M)
+        return {"results": [{"criterion_id": i, "passed": True, "score": 1.0, "rationale": "ok"}
+                            for i in ids]}
+
+
+def _rag_project(**spec_kw):
+    p = Project(name="p", goal="g")
+    p.spec = BehaviorSpec(goal="g", knowledge_sources=["policy.pdf"],
+                          eval_criteria=[EvalCriterion(id="c1", description="cites policy",
+                                                       weight=Weight.HIGH)], **spec_kw)
+    p.tests = [CaseModel(id="t1", input="how long do I have to return?", expects=["c1"])]
+    return p
+
+
+def test_judge_is_shown_the_knowledge_the_subject_answered_from(tmp_path, monkeypatch):
+    """RAG grounds the SUBJECT by augmenting its system prompt per test. The
+    judge graded the same answer against a spec that says "a fact stated in the
+    knowledge base is NOT invented" while never being shown the chunks — so a
+    correct, fully grounded answer read as invented and the run reported 0%.
+
+    The chunks ride in the per-test judge prompt, not the judge's system message:
+    that message is identical for every test in a run, which is what lets the
+    prompt cache charge for it once instead of once per test."""
+    from ai_calibrator import rag
+    monkeypatch.setattr(rag, "retrieve",
+                        lambda *a, **k: ["Refunds are issued within 30 days of purchase."])
+    judge = RecordingJudge()
+    run_eval(_rag_project(), GoodSubject(), judge, run_id="r", project_dir=tmp_path)
+    assert "30 days of purchase" in judge.prompts[0]
+    assert "30 days of purchase" not in (judge.systems[0] or "")   # cacheable, per-run
+
+
+def test_judge_system_message_is_identical_across_tests_under_rag(tmp_path, monkeypatch):
+    """Whatever the retrieval returns per test, the cached half must not move."""
+    from ai_calibrator import rag
+    seen = []
+
+    def _retrieve(_dir, query, *a, **k):
+        seen.append(query)
+        return [f"chunk for {query}"]
+
+    monkeypatch.setattr(rag, "retrieve", _retrieve)
+    p = _rag_project()
+    p.tests = [CaseModel(id="t1", input="q one", expects=["c1"]),
+               CaseModel(id="t2", input="q two", expects=["c1"])]
+    judge = RecordingJudge()
+    run_eval(p, GoodSubject(), judge, run_id="r", project_dir=tmp_path)
+    assert len(judge.systems) == 2 and judge.systems[0] == judge.systems[1]
+    assert "chunk for q one" in judge.prompts[0]
+    assert "chunk for q two" in judge.prompts[1]
+    assert "chunk for q two" not in judge.prompts[0]
+
+
+def test_judge_sees_every_turns_knowledge_in_a_conversation(tmp_path, monkeypatch):
+    """A multi-turn test retrieves per turn, and the judge grades the whole
+    transcript — so it needs what was retrieved for every turn in it."""
+    from ai_calibrator import rag
+    monkeypatch.setattr(rag, "retrieve", lambda _d, query, *a, **k: [f"fact about {query}"])
+    p = _rag_project()
+    p.tests = [CaseModel(id="t1", input="first ask", follow_ups=["second ask"], expects=["c1"])]
+    judge = RecordingJudge()
+    run_eval(p, GoodSubject(), judge, run_id="r", project_dir=tmp_path)
+    assert "fact about first ask" in judge.prompts[0]
+    assert "fact about second ask" in judge.prompts[0]
+
+
+def test_no_knowledge_section_without_retrieval(tmp_path):
+    """No index, no project_dir, nothing retrieved — the judge prompt is the
+    one train_engine rebuilds ground-truth rows from, byte for byte."""
+    from ai_calibrator.eval import judge_prompt
+    judge = RecordingJudge()
+    run_eval(_project(), GoodSubject(), judge, run_id="r")
+    assert judge.prompts[0] == judge_prompt("a question", "ACCEPTABLE answer",
+                                            [("c1", "answer is on-policy")])
+
+
+def test_off_scale_judge_score_cannot_contradict_its_own_verdict():
+    """A judge answering 0-100 (routine for the small local models this tool
+    supports) returned score 25 with passed=false. Clamping that to 1.0 printed
+    a 100% weighted score directly beneath a 0% pass rate — a scorecard that
+    contradicts itself, and the more reassuring of the two numbers is the wrong
+    one. An out-of-contract number carries no usable magnitude; the verdict is
+    the only signal left in the row."""
+    class OffScaleJudge:
+        name = "judge@test"
+
+        def complete(self, prompt, *, system=None, schema=None):
+            ids = re.findall(r"^- (\S+):", prompt, re.M)
+            return {"results": [{"criterion_id": i, "passed": False, "score": 25,
+                                 "rationale": "scored 25 out of 100 - weak"} for i in ids]}
+
+    card = run_eval(_project(), GoodSubject(), OffScaleJudge(), run_id="r")
+    assert card.pass_rate == 0.0
+    assert card.weighted_score == 0.0
+    assert card.results[0].criteria[0].score == 0.0
+
+
+def test_off_scale_passing_score_follows_the_verdict_too():
+    """The same rule in the other direction: 85-out-of-100 with passed=true must
+    not be recorded as a 0, which would print 0% weighted beside a 100% pass."""
+    class OffScaleJudge:
+        name = "judge@test"
+
+        def complete(self, prompt, *, system=None, schema=None):
+            ids = re.findall(r"^- (\S+):", prompt, re.M)
+            return {"results": [{"criterion_id": i, "passed": True, "score": 85,
+                                 "rationale": "85 of 100"} for i in ids]}
+
+    card = run_eval(_project(), GoodSubject(), OffScaleJudge(), run_id="r")
+    assert card.pass_rate == 1.0
+    assert card.weighted_score == 1.0

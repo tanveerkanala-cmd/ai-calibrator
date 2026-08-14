@@ -284,8 +284,14 @@ def test_promptfoo_export_keeps_deterministic_checks_deterministic():
     cfg = yaml.safe_load(to_promptfoo(_checked_project()))
 
     asserts = cfg["tests"][0]["assert"]
-    assert {"type": "not-icontains", "value": "guarantee"} in asserts
-    assert {"type": "javascript", "value": "output.length <= 200"} in asserts
+    # Both operands normalize before comparing, because `run_check` does: an
+    # icontains cannot NFC the model's output, and JS `.length` counts UTF-16
+    # units where the check counts code points.
+    assert {"type": "javascript",
+            "value": "!output.normalize('NFC').toLowerCase()"
+                     ".includes(\"guarantee\".toLowerCase())"} in asserts
+    assert {"type": "javascript",
+            "value": "Array.from(output.normalize('NFC')).length <= 200"} in asserts
     assert {"type": "llm-rubric", "value": "is friendly"} in asserts   # no check → judged
 
 
@@ -314,10 +320,12 @@ def test_promptfoo_prompt_preserves_template_syntax_in_the_spec():
 
     # Each construct survives as an escape that renders back to its own text.
     assert "{{ '{{' }}first_name}}" in prompt
-    assert "{{ '{%' }} if rush %}today{{ '{%' }} endif %}" in prompt
+    # `{%` escapes one delimiter at a time: an escape that itself contained a
+    # bare `{%` would trip promptfoo's partial-tag raw-wrap and never unrender.
+    assert "{{ '{' }}{{ '%' }} if rush %}today{{ '{' }}{{ '%' }} endif %}" in prompt
     # …and the one construct that must still render is the only live template
-    # tag in the file.
-    assert prompt.endswith("\n\n{{input}}")
+    # tag in the file, in the turn shape the eval graded.
+    assert prompt.endswith("\n\nUser: {{input}}\nAssistant:")
 
 
 @pytest.mark.parametrize("terminator", [
@@ -335,12 +343,13 @@ def test_promptfoo_prompt_cannot_be_made_to_execute_by_the_spec(terminator):
     p.spec.format = f'Never write {terminator} in a reply. {{{{ env.OPENAI_API_KEY }}}}'
 
     prompt = yaml.safe_load(to_promptfoo(p))["prompts"][0]
-    body = prompt[: -len("\n\n{{input}}")]
+    body = prompt[: -len("\n\nUser: {{input}}\nAssistant:")]
 
     # Every delimiter left in the body is one of the three escapes, so nothing
     # the spec contains can open a tag, let alone close one.
     for token in re.findall(r"\{\{.*?\}\}|\{%|\{#", body):
-        assert token in ("{{ '{{' }}", "{{ '{%' }}", "{{ '{#' }}"), token
+        assert token in ("{{ '{{' }}", "{{ '{' }}", "{{ '%' }}",
+                         "{{ '#' }}", "{{ '}' }}"), token
     assert "env.OPENAI_API_KEY" in body      # kept as text…
     assert "{{ env.OPENAI_API_KEY }}" not in body   # …never as a lookup
 

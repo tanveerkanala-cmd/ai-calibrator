@@ -57,6 +57,70 @@ def test_compare_reports_nothing_comparable_when_the_whole_suite_was_reminted():
     assert r.comparable is False
     # The rate moved, but across two different exams — that is not a regression.
     assert r.regressed is False
+    # And there is no delta to report at all: 0.0 would read as "nothing
+    # changed", -100% as a collapse. Neither happened; nothing was measured.
+    assert r.delta is None
+    assert r.baseline_shared_rate is None and r.candidate_shared_rate is None
+
+
+def test_drift_dict_publishes_the_absent_delta_rather_than_a_number():
+    """The payload every non-Python surface reads. "Nothing was comparable" has
+    to arrive as a fact in the payload, or each consumer invents its own reading
+    of a Δ that means nothing."""
+    from ai_calibrator.drift import drift_dict
+
+    base = _hashed_card("run-0001", [("t1", True, "aaaa000000000000")])
+    cand = _hashed_card("run-0002", [("t1", False, "bbbb111111111111")])
+    d = drift_dict(compare_scorecards(base, cand))
+    assert d["delta"] is None and d["comparable"] is False and d["compared"] == 0
+    assert d["baseline_shared_rate"] is None and d["candidate_shared_rate"] is None
+    # The whole-run rates stay: they describe each run honestly on its own.
+    assert d["baseline_rate"] == 1.0 and d["candidate_rate"] == 0.0
+
+
+def test_a_reminted_test_does_not_move_the_delta():
+    """The ordinary state after answering one more interview question: `compile`
+    re-mints one probe and leaves the rest. A test excluded from the flip lists
+    must be excluded from the rates too — a delta driven by the very results the
+    comparison refused to make fails the gate on behavior that never changed."""
+    held = [(f"t{i}", True, f"{i:016d}") for i in range(1, 10)]
+    base = _hashed_card("run-0001", [*held, ("t10", True, "aaaa000000000000")])
+    cand = _hashed_card("run-0002", [*held, ("t10", False, "bbbb111111111111")])
+    r = compare_scorecards(base, cand)
+    assert r.compared == 9 and r.incomparable_tests == ["t10"]
+    assert r.regressed_tests == [] and r.fixed_tests == []
+    assert r.delta == 0.0            # over the 9 that were actually compared
+    assert r.regressed is False
+
+
+def test_the_shared_rates_are_the_pair_the_delta_subtracts():
+    """Whatever a surface prints beside a Δ has to be the two numbers that Δ is
+    the difference of, or the display contradicts its own arithmetic."""
+    base = _hashed_card("run-0001", [("t1", True, "a" * 16), ("t2", True, "b" * 16), ("t3", True, "c" * 16)])
+    cand = _hashed_card("run-0002", [("t1", True, "a" * 16), ("t2", False, "b" * 16), ("t3", True, "z" * 16)])
+    r = compare_scorecards(base, cand)
+    assert r.compared == 2 and r.incomparable_tests == ["t3"]
+    assert r.baseline_shared_rate == 1.0 and r.candidate_shared_rate == 0.5
+    assert r.delta == -0.5 and r.regressed_tests == ["t2"] and r.regressed is True
+
+
+def test_a_test_the_baseline_never_graded_is_not_drift():
+    """A new probe has no "before": the baseline never asked it, so it cannot
+    have flipped. Folding it into the rate scores two different exams against
+    each other — the same reason a partial run is refused as a baseline."""
+    base = _card("run-0001", [("a", True), ("b", True)])                # 100%
+    cand = _card("run-0002", [("a", True), ("b", True), ("c", False)])  # 67% of a different set
+    r = compare_scorecards(base, cand)
+    assert r.compared == 2 and r.delta == 0.0
+    assert r.regressed is False and r.regressed_tests == []
+
+
+def test_tolerance_never_excuses_a_test_that_flipped_pass_to_fail():
+    """Tolerance bounds the rate drop; a probe that went pass→fail is drift at
+    any tolerance."""
+    base = _card("run-0001", [("a", True), ("b", True)])
+    cand = _card("run-0002", [("a", True), ("b", False)])
+    assert compare_scorecards(base, cand, tolerance=0.9).regressed is True
 
 
 def test_compare_still_matches_by_id_when_either_hash_is_none():
@@ -83,13 +147,6 @@ def test_no_drift_when_stable():
     r = compare_scorecards(base, cand)
     assert not r.regressed and r.delta == 0.0
     assert r.regressed_tests == [] and r.fixed_tests == []
-
-
-def test_tolerance_absorbs_rate_drop_without_test_regression():
-    base = _card("run-0001", [("a", True), ("b", True)])               # 100%
-    cand = _card("run-0002", [("a", True), ("b", True), ("c", False)])  # 67%, but a/b held
-    assert compare_scorecards(base, cand, tolerance=0.0).regressed is True
-    assert compare_scorecards(base, cand, tolerance=0.5).regressed is False
 
 
 class _Subj:

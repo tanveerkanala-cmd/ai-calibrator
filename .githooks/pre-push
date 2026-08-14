@@ -8,8 +8,16 @@
 # clone it is installed in, and anyone can bypass it with `--no-verify`. Delete
 # this file and turn on real protection the day the repo goes public.
 #
-# Enabled by `git config core.hooksPath .githooks` (already set in this clone;
-# undo with `git config --unset core.hooksPath`).
+# It runs only in a clone that has been pointed at this directory. core.hooksPath
+# is per-clone config, and config is NOT carried by a clone or a checkout — so a
+# fresh clone (or one whose config was reset) has no protection at all until:
+#
+#     git config core.hooksPath .githooks     # once per clone
+#     git config core.hooksPath               # verify: must print .githooks
+#
+# Nothing in this file can detect that it was skipped, because a hook that is not
+# installed does not run. Check it, do not assume it. Undo with
+# `git config --unset core.hooksPath`.
 
 set -euo pipefail
 

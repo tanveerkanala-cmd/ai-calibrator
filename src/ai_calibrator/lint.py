@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pydantic import BaseModel
 
 from .coverage import analyze_coverage
-from .engines.base import Engine
+from .engines.base import Engine, parse_engine_spec
 from .models import BehaviorSpec, Project, TestCase
 
 # Vague, unfalsifiable words that make a standard hard to test objectively.
@@ -187,6 +187,12 @@ def lint_schema_version(project: Project) -> list[LintIssue]:
         "schema_version")]
 
 
+def _same_engine(a: str, b: str) -> bool:
+    """True if two role bindings resolve to the same (model, provider)."""
+    (m1, p1), (m2, p2) = parse_engine_spec(a), parse_engine_spec(b)
+    return (m1.casefold(), p1.casefold()) == (m2.casefold(), p2.casefold())
+
+
 def lint_engine_roles(project: Project) -> list[LintIssue]:
     """Flag a judge that is the same model as the subject it grades.
 
@@ -207,7 +213,13 @@ def lint_engine_roles(project: Project) -> list[LintIssue]:
     """
     engines = project.engines
     subject, judge = (engines.subject or "").strip(), (engines.judge or "").strip()
-    if not subject or not judge or subject.casefold() != judge.casefold():
+    # Compare the ENGINES the specs build, not the strings. `parse_engine_spec`
+    # defaults the provider to ollama and strips both halves, so `llama3`,
+    # `llama3@ollama` and `llama3 @ ollama` are one engine three ways — and the
+    # CLI's own error text tells the user to type the short one. A string compare
+    # meant rebinding a role with a different spelling silently retired the
+    # warning while the model went on grading its own answers.
+    if not subject or not judge or not _same_engine(subject, judge):
         return []
     graded_by_judge = 0
     if project.spec is not None:

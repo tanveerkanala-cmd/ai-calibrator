@@ -125,6 +125,33 @@ def test_drift_stage_still_compares_the_subset_that_did_not_change(tmp_path):
     assert "1 not comparable" in drift.detail           # and what it left out
 
 
+def test_drift_stage_gates_on_the_population_its_detail_names(tmp_path):
+    """`compile` re-mints t2 onto a new question that the model gets wrong, while
+    t1 asks what it always asked and still passes. Over the one shared test
+    nothing moved, so there is no regression to gate on — and a detail reading
+    "Δ -50.0% over 1 shared test(s)" states a number that a single unflipped test
+    cannot produce, then exits 2 on it."""
+    p = _project()
+    p.tests = [CaseModel(id="t1", input="a question", expects=["c1"]),
+               CaseModel(id="t2", input="a second question", expects=["c1"])]
+    save_scorecard(tmp_path, run_eval(p, Subject("GOOD baseline"), Judge(), run_id="run-0001"))
+
+    p.tests[1] = CaseModel(id="t2", input="a REMINTED second question", expects=["c1"])
+
+    class SplitSubject:  # holds on t1; the re-minted t2 fails
+        name = "s@test"
+
+        def complete(self, prompt, *, system=None, schema=None):
+            return "BAD" if "REMINTED" in prompt else "GOOD"
+
+    r = run_ci(p, SplitSubject(), Judge(), project_dir=tmp_path, threshold=0.0)
+    drift = next(s for s in r.stages if s.name == "drift")
+    assert drift.status == "pass", drift.detail
+    assert "1 shared test(s)" in drift.detail and "1 not comparable" in drift.detail
+    assert "±0%" in drift.detail          # the delta over that shared test
+    assert "-50" not in drift.detail
+
+
 def test_drift_stage_still_compares_when_the_suite_is_unchanged(tmp_path):
     """The fix must not make every ordinary run incomparable: an unchanged suite
     re-evaluated still drifts against its baseline the way it always did."""

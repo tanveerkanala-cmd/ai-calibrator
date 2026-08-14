@@ -4,19 +4,28 @@ Anti-lock-in: lets power users run calibrator's generated suite inside promptfoo
 (a popular eval harness) instead of only `calibrate eval`. Deterministic — no
 engine. The provider-agnostic system prompt becomes a promptfoo prompt, each test
 an `input` var, and each expected eval criterion an assertion — a code-graded
-`check` maps to promptfoo's own deterministic assertion for it, everything else
-to `llm-rubric`. Edit the emitted `providers:` line to point at whatever model
-you want to grade.
+`check` maps to a deterministic assertion that grades it exactly as
+:mod:`.checks` does, everything else to `llm-rubric`. Edit the emitted
+`providers:` line to point at whatever model you want to grade.
+
+The bargain of this module: whatever it emits must grade the same behavior the
+same way `calibrate eval` does, and where the format cannot carry something
+(a multi-turn test, a check promptfoo has no equivalent for, the system/user
+split) the file says so in a header comment. A number measured here is only
+worth reading if it means what the certificate means.
 """
 
 from __future__ import annotations
 
+import json
+import unicodedata
 from pathlib import Path
 
 import yaml
 
 from .compile import render_system_prompt
 from .engines.base import parse_engine_spec
+from .eval import conversation_prompt
 from .models import Check, EvalCriterion, Project
 from .store import atomic_write_text
 
@@ -50,6 +59,21 @@ def _portable_regex(pattern: str) -> bool:
     return not any(token in pattern for token in _PY_ONLY_REGEX)
 
 
+def _js_literal(value: str) -> str:
+    """``value`` as a JavaScript string literal no template renderer will touch.
+
+    promptfoo renders an assertion's ``value`` through Nunjucks before evaluating
+    it, with ``process.env`` registered as a global — so a `{{ … }}` inside a
+    banned term reads the operator's API keys, and a bare `{%` or `#}` throws in
+    the lexer and takes the whole config with it. check values are model-authored
+    (the compiler) or owner-authored (`add-check`), so neither is trustworthy
+    input. `\\u007b`/`\\u0023` are the same characters to JavaScript and open
+    nothing to the lexer. NFC here for the same reason :mod:`.checks` normalizes:
+    the comparison must not turn on which spelling of a glyph was stored."""
+    return (json.dumps(unicodedata.normalize("NFC", value))
+            .replace("{", "\\u007b").replace("#", "\\u0023"))
+
+
 def _check_assert(check: Check) -> dict | None:
     """The promptfoo assertion equivalent to a deterministic ``check``, or None.
 
@@ -57,12 +81,21 @@ def _check_assert(check: Check) -> dict | None:
     the judge (see :mod:`.checks`), so exporting it as an `llm-rubric` hands a
     hard pass/fail to a grader that can talk itself out of it — and drops the
     operand (the banned term, the length limit) from the file entirely.
-    contains/not_contains are case-insensitive here, hence promptfoo's i-forms."""
+
+    The equivalence has to hold on the exact text a model emits, not just on
+    ASCII: `run_check` compares NFC-normalized text and counts code points, and
+    promptfoo's own assertions do neither (`icontains` is a plain
+    ``toLowerCase().includes()``; JavaScript's ``.length`` counts UTF-16 units).
+    Where that gap is reachable the rule is written out as JavaScript that
+    mirrors `run_check` — an exported ban must not be walkable around by
+    spelling é decomposed, and a length bound must not move because the answer
+    contains an emoji."""
     kind, value = check.kind, check.value
-    if kind == "contains":
-        return {"type": "icontains", "value": value}
-    if kind == "not_contains":
-        return {"type": "not-icontains", "value": value}
+    if kind in ("contains", "not_contains"):
+        # Both sides normalized and lowercased, exactly as `run_check` does it.
+        carries = f"output.normalize('NFC').toLowerCase().includes({_js_literal(value)}.toLowerCase())"
+        return {"type": "javascript",
+                "value": carries if kind == "contains" else f"!{carries}"}
     if kind == "regex":
         # promptfoo's regex assertion is `new RegExp(value)` — JavaScript, not
         # Python. The dialects agree on a common subset and diverge outside it
@@ -71,7 +104,10 @@ def _check_assert(check: Check) -> dict | None:
         # different rule than `calibrate eval` does. Export only what both read
         # identically; anything else takes the honest downgrade the caller already
         # implements (llm-rubric, plus a NOTE naming the criterion).
-        return {"type": "regex", "value": value} if _portable_regex(value) else None
+        # The pattern is escaped because promptfoo renders assertion values
+        # through Nunjucks: a `\\{%.*%\\}` rule (the natural way to ban a leaked
+        # template tag) is otherwise read as a block tag and the config throws.
+        return {"type": "regex", "value": _nunjucks_literal(value)} if _portable_regex(value) else None
     if kind == "non_empty":
         return {"type": "javascript", "value": "output.trim().length > 0"}
     if kind in ("max_chars", "min_chars"):
@@ -81,9 +117,30 @@ def _check_assert(check: Check) -> dict | None:
             return None  # not a usable limit; run_check fails it, promptfoo can't express it
         if limit < 0:
             return None
+        # `run_check` measures code points on NFC-normalized text. `output.length`
+        # is UTF-16 units on whatever arrived, which is larger for every non-BMP
+        # character and every decomposed accent — the exported bound would fail
+        # answers the certified one passes (and pass short ones it fails).
         return {"type": "javascript",
-                "value": f"output.length {'<=' if kind == 'max_chars' else '>='} {limit}"}
+                "value": f"Array.from(output.normalize('NFC')).length "
+                         f"{'<=' if kind == 'max_chars' else '>='} {limit}"}
     return None
+
+
+# Each delimiter becomes a Nunjucks expression that renders back to the exact two
+# characters. The escapes carry no delimiter of their own: promptfoo wraps any
+# value matching /({%[^%]*$|{{[^}]*$|{#[^#]*$)/m in `{% raw %}` before rendering
+# it (its defense against a half-written tag), and a raw-wrapped value is
+# delivered ESCAPE AND ALL — so `{{ '{%' }}`, which contains a `{%` with no
+# closing `%` on the line, would reach the model instead of the `{%` it stands
+# for. Nothing here emits a bare `{`, `%` or `#` next to a neighbouring character
+# either, so two escapes side by side cannot form a new tag between them.
+_ESCAPES = {
+    "{{": "{{ '{{' }}",
+    "{%": "{{ '{' }}{{ '%' }}",
+    "{#": "{{ '{' }}{{ '#' }}",
+    "#}": "{{ '#' }}{{ '}' }}",
+}
 
 
 def _nunjucks_literal(text: str) -> str:
@@ -102,16 +159,25 @@ def _nunjucks_literal(text: str) -> str:
     containing one would close the block early and get the remainder EXECUTED.
     An escaped delimiter has no terminator.
 
-    `#}` must be replaced LAST — the three openers above emit `}}` and never
-    `#}`, so escaping it after them is safe while escaping it first is not.
-    It has to be escaped at all because Nunjucks' lexer throws "unexpected end
-    of comment" on a bare `#}`, which would make promptfoo refuse the file.
+    `#}` is escaped too because Nunjucks' lexer throws "unexpected end of
+    comment" on a bare one, which would make promptfoo refuse the file.
+
+    One left-to-right pass, never repeated ``str.replace`` calls: replacing in
+    passes lets an earlier escape's output be rewritten by a later one, and lets
+    a delimiter the input never contained (`{` + `%` from two separate escapes)
+    appear in the result.
     """
-    return (text
-            .replace("{{", "{{ '{{' }}")
-            .replace("{%", "{{ '{%' }}")
-            .replace("{#", "{{ '{#' }}")
-            .replace("#}", "{{ '#}' }}"))
+    out: list[str] = []
+    i = 0
+    while i < len(text):
+        escaped = _ESCAPES.get(text[i:i + 2])
+        if escaped is None:
+            out.append(text[i])
+            i += 1
+        else:
+            out.append(escaped)
+            i += 2
+    return "".join(out)
 
 
 def to_promptfoo(project: Project) -> str:
@@ -129,11 +195,10 @@ def to_promptfoo(project: Project) -> str:
         native = _check_assert(c.check) if c.check is not None else None
         if c.check is not None and native is None and c.id not in downgraded:
             downgraded.append(c.id)
-        # Native assertions are left as authored. promptfoo renders the prompt,
-        # `vars`, and an llm-rubric's value through Nunjucks — those are escaped
-        # below. Whether it also renders a deterministic assertion's value is
-        # not established here, and escaping one that is NOT rendered would make
-        # the check search for the escape sequence instead of the owner's text.
+        # Every field promptfoo substitutes into is rendered through Nunjucks —
+        # the prompt, `vars`, and an assertion's `value`, deterministic ones
+        # included — so each carries its operand escaped (`_check_assert` for the
+        # checks, here for a rubric).
         return native or {"type": "llm-rubric", "value": _nunjucks_literal(c.description)}
 
     for t in project.tests:
@@ -144,7 +209,11 @@ def to_promptfoo(project: Project) -> str:
         if t.follow_ups:
             omitted.append(t.id)
             continue
-        targeted = [cid for cid in (t.expects or list(crit)) if cid in crit]
+        # De-dup while preserving order, exactly as `run_eval` does: a repeated id
+        # in `expects` (a hand-edited spec, or a compiler that listed one twice)
+        # would otherwise emit the same assertion twice and score that criterion
+        # twice, so the two tools would disagree about identical behavior.
+        targeted = list(dict.fromkeys(cid for cid in (t.expects or list(crit)) if cid in crit))
         asserts = [_assertion(crit[cid]) for cid in targeted]
         if not asserts:  # no criteria → grade against the goal so the test still runs
             asserts = [{"type": "llm-rubric",
@@ -164,15 +233,31 @@ def to_promptfoo(project: Project) -> str:
     # would otherwise render to nothing, and promptfoo would grade a prompt
     # `calibrate eval` never scored.)
     body = _nunjucks_literal(render_system_prompt(spec))
+    # The user turn is encoded the way the harness encodes it (and the way
+    # `calibrate run` serves it), so the answer graded here is an answer to the
+    # question the certified pass rate was earned on. The system/user SPLIT
+    # cannot be reproduced — a text prompt reaches the provider as one user
+    # message — which is what the header comment below declares.
+    turn = conversation_prompt([], "{{input}}")
 
     config = {
         "description": project.goal,
-        "prompts": [body + "\n\n{{input}}"],
+        "prompts": [body + "\n\n" + turn],
         "providers": [_provider_id(project.engines.subject)],
         "defaultTest": {"options": {"provider": _provider_id(project.engines.judge)}},
         "tests": tests,
     }
     out = yaml.safe_dump(config, sort_keys=False, allow_unicode=True, width=100)
+    # Stated on every export, unlike the NOTEs below: this one is a property of the
+    # format rather than of this project, and an unannounced difference in request
+    # shape is what would quietly make a pass rate measured here not mean what the
+    # certificate says. A NOTE stays reserved for "something about YOUR export was
+    # degraded", so it keeps its signal.
+    out = ("# Prompt shape: promptfoo delivers this as a SINGLE user message — the behavior and\n"
+           "# the question in one turn, with no system role. `calibrate eval` sends the behavior\n"
+           "# as a real system message, so a pass rate measured here is measured on a slightly\n"
+           "# different request. The user turn itself is encoded exactly as the harness encodes it.\n"
+           ) + out
     if downgraded:
         out = (f"# NOTE: {len(downgraded)} criterion/criteria carry a deterministic check promptfoo "
                f"cannot express ({', '.join(downgraded[:10])}"

@@ -154,26 +154,30 @@ def _drift_stage(project_dir: str | Path, baseline_id: str | None, card: Scoreca
                        f"baseline {baseline_id} is a PARTIAL run (interrupted, or --max-tests) — "
                        "not comparable; run a full eval to set a baseline")
     d = compare_scorecards(base, card, tolerance=tolerance)
-    if not d.comparable:
+    delta = d.delta
+    if delta is None:
         # Same reasoning as the PARTIAL baseline above: a comparison the tool
-        # cannot make must not be reported as a passing stage. Every shared id
-        # now asks a different question, so there is nothing left to compare.
+        # cannot make must not be reported as a passing stage. There is no delta
+        # because there was no shared question left to measure one over.
         #
-        # Keyed on `compared == 0`, not on "no test flipped". A suite where one
-        # probe was re-minted and the rest still hold is the ordinary state
-        # after answering another interview question, and it HAS been compared —
-        # skipping it there would mean the drift stage never passes again until
-        # someone re-baselines, which teaches people to ignore the stage.
+        # Keyed on "nothing was compared", not on "no test flipped". A suite
+        # where one probe was re-minted and the rest still hold is the ordinary
+        # state after answering another interview question, and it HAS been
+        # compared — skipping it there would mean the drift stage never passes
+        # again until someone re-baselines, which teaches people to ignore it.
+        why = (f"{len(d.incomparable_tests)} test(s) changed content since that run "
+               "(a recompile rewrites the probes under the same ids)"
+               if d.incomparable_tests else
+               "no test in this run was also graded by that one")
         return CiStage("drift", "skip",
-                       f"vs {baseline_id}: {len(d.incomparable_tests)} test(s) changed content "
-                       "since that run (a recompile rewrites the probes under the same ids) — "
-                       "not comparable; re-baseline with `calibrate eval`")
-    detail = f"vs {baseline_id}: Δ {pct_delta(d.delta)}"
+                       f"vs {baseline_id}: {why} — not comparable; "
+                       "re-baseline with `calibrate eval`")
+    # The population is named on every line, not only when something was
+    # excluded: the delta covers the tests both runs asked, which is not the
+    # same set as either run's scorecard whenever the suite has moved at all.
+    detail = f"vs {baseline_id}: Δ {pct_delta(delta)} over {d.compared} shared test(s)"
     if d.incomparable_tests:
-        # Partially comparable: name what was excluded, so the delta is read as
-        # covering the subset it actually covers.
-        detail += (f" over {d.compared} shared test(s), "
-                   f"{len(d.incomparable_tests)} not comparable (content changed)")
+        detail += f", {len(d.incomparable_tests)} not comparable (content changed)"
     if d.regressed:
         what = f", regressed: {', '.join(d.regressed_tests)}" if d.regressed_tests else ""
         return CiStage("drift", "fail", detail + what)

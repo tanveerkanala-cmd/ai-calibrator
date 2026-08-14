@@ -415,6 +415,54 @@ def test_diff_prints_a_knowledge_only_change(tmp_path):
     assert "refund-policy.pdf" in r.output and "No behavior change" not in r.output
 
 
+def test_diff_prints_an_examples_only_change(tmp_path):
+    """Examples are what the fine-tune trains on, and teach/absorb/merge change
+    nothing else — an empty report under a "changed" verdict reviews a flipped
+    verdict as no change at all."""
+    from ai_calibrator.models import BehaviorSpec, Example, Project
+    from ai_calibrator.store import save_project
+
+    a, b = tmp_path / "a", tmp_path / "b"
+    q = "Can I return after 30 days?"
+    save_project(Project(name="a", goal="g", spec=BehaviorSpec(
+        goal="g", examples=[Example(input=q, good_output="Yes — within 60.", source="human")])), a)
+    # The same answer, moved from good to bad: the flip `specdiff` exists to catch.
+    save_project(Project(name="b", goal="g", spec=BehaviorSpec(
+        goal="g", examples=[Example(input=q, bad_output="Yes — within 60.", source="human")])), b)
+
+    r = runner.invoke(app, ["diff", str(a), str(b)])
+
+    assert r.exit_code == 0, r.output
+    assert r.output.strip(), "a changed spec printed an empty report"
+    assert q in r.output
+
+
+def test_diff_never_reports_a_change_it_prints_nothing_about(tmp_path, monkeypatch):
+    """The report renders one hand-written section per diff field, so a field
+    added to SpecDiff and not to that list disappears silently — which is how the
+    examples case came to print nothing at all."""
+    import ai_calibrator.specdiff as specdiff
+    from ai_calibrator.models import BehaviorSpec, Project
+    from ai_calibrator.store import save_project
+
+    a, b = tmp_path / "a", tmp_path / "b"
+    save_project(Project(name="a", goal="g", spec=BehaviorSpec(goal="g")), a)
+    save_project(Project(name="b", goal="g", spec=BehaviorSpec(goal="g")), b)
+
+    class _UnrenderedChange(specdiff.SpecDiff):
+        """`changed`, through nothing the sections below know how to render."""
+        @property
+        def changed(self) -> bool:
+            return True
+
+    monkeypatch.setattr(specdiff, "diff_specs", lambda before, after: _UnrenderedChange())
+
+    r = runner.invoke(app, ["diff", str(a), str(b)])
+
+    assert r.exit_code == 0, r.output
+    assert r.output.strip(), "a changed spec printed an empty report"
+
+
 
 
 def test_retrieval_off_reason_separates_missing_extra_from_broken_index(tmp_path, monkeypatch):
@@ -691,3 +739,160 @@ def test_import_rejects_an_empty_goal(tmp_path):
     assert "must not be empty" in r.output
     assert _has_no_traceback(r)
     assert not (tmp_path / "proj").exists()        # nothing created, nothing billed
+
+
+# --- train: the install it offers has to be the one the trainer needs -------
+
+def test_the_training_install_floors_are_the_ones_the_trainer_needs():
+    """`train` installs requirement STRINGS so an already-present but too-old
+    package is upgraded. A floor below what the generated train.py calls leaves
+    that package untouched, and the crash it causes is then reported as a
+    memory problem the owner does not have."""
+    import tomllib
+    from pathlib import Path
+
+    import pytest
+
+    from ai_calibrator import cli
+
+    pyproject = Path(cli.__file__).resolve().parents[2] / "pyproject.toml"
+    if not pyproject.exists():
+        pytest.skip("not a source checkout — the declared extras are not on disk")
+    declared = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    train_extra = declared["project"]["optional-dependencies"]["train"]
+    floors = {req.partition(">=")[0].strip(): req.strip() for req in train_extra}
+
+    assert cli._TRAIN_REQS == {m: floors[m] for m in cli._TRAIN_REQS}
+
+
+class _Ran:
+    returncode = 0
+
+
+def _trainable_project(tmp_path):
+    import yaml
+    (tmp_path / "project.yaml").write_text(yaml.safe_dump({
+        "name": "p", "goal": "g",
+        "spec": {"goal": "g",
+                 "examples": [{"input": "hi", "good_output": "hello there", "source": "human"}],
+                 "eval_criteria": [{"id": "c1", "description": "d", "weight": "high"}]},
+    }))
+
+
+class _NoCuda:
+    """Stands in for torch on a machine with no CUDA device."""
+
+    class cuda:
+        @staticmethod
+        def is_available():
+            return False
+
+    class backends:
+        pass
+
+
+def test_qlora_off_a_cuda_gpu_falls_back_instead_of_demanding_bitsandbytes(tmp_path, monkeypatch):
+    """`--qlora` is documented, and off CUDA the very next block trains in full
+    precision instead. Asking for a CUDA-only package first turns that fallback
+    into a dead end — and on a platform with no wheel for it, an unreachable one."""
+    import subprocess
+    import sys
+
+    from ai_calibrator import cli
+
+    _trainable_project(tmp_path)
+    monkeypatch.setitem(sys.modules, "torch", _NoCuda)
+    monkeypatch.setattr(cli, "_dep_satisfied", lambda module, requirement: True)
+    installed: list[list[str]] = []
+    monkeypatch.setattr(subprocess, "run",
+                        lambda cmd, **kw: installed.append(list(cmd)) or _Ran())
+
+    r = runner.invoke(app, ["train", str(tmp_path), "--qlora"], input="n\n")
+
+    assert r.exit_code == 0, r.output
+    assert "full precision" in r.output
+    assert not any("bitsandbytes" in part for cmd in installed for part in cmd)
+    assert _has_no_traceback(r)
+
+
+# --- compile: a retry the message describes has to be the retry that runs ---
+
+class _SynthesisOnlyEngine:
+    name = "half@test"
+
+    def complete(self, prompt, *, system=None, schema=None):
+        return {}
+
+
+def test_compile_does_not_promise_a_retry_that_skips_synthesis(tmp_path, monkeypatch):
+    """The saved spec is kept, but a re-run synthesizes again and merges the two
+    independent results — so the standards and criteria grow with near-duplicates.
+    Telling the owner the retry picks up at test generation hides that cost."""
+    import ai_calibrator.compile as compile_mod
+    import ai_calibrator.engines as engines
+    from ai_calibrator.engines.base import EngineOutputError
+    from ai_calibrator.models import BehaviorSpec, InterviewItem, Project
+    from ai_calibrator.store import save_project
+
+    p = Project(name="p", goal="g")
+    p.interview = [InterviewItem(id="q1", dimension="tone", question="?", answer="warm")]
+    save_project(p, tmp_path)
+    monkeypatch.setattr(engines, "get_engine", lambda spec: _SynthesisOnlyEngine())
+
+    def _fails_at_test_generation(project, engine, **kwargs):
+        project.spec = BehaviorSpec(goal="g")     # synthesis had already succeeded
+        raise EngineOutputError("could not read the generated tests", raw="{{{")
+
+    monkeypatch.setattr(compile_mod, "compile_project", _fails_at_test_generation)
+
+    r = runner.invoke(app, ["compile", str(tmp_path)])
+
+    assert r.exit_code == 1, r.output
+    assert "synthesis runs again" in r.output
+    assert _has_no_traceback(r)
+
+
+# --- examples: the compiled bundle is an artifact, not a snapshot -----------
+
+def test_examples_import_refreshes_the_compiled_bundle(tmp_path):
+    """build/ is the documented compiled bundle and every other spec-mutating
+    command rewrites it. Left behind, build/spec.yaml is a spec nobody chose —
+    reviewed and committed as the one that shipped."""
+    import yaml
+
+    from ai_calibrator.compile import write_build_bundle
+    from ai_calibrator.models import BehaviorSpec, Example, Project
+    from ai_calibrator.store import save_project
+
+    p = Project(name="p", goal="g", spec=BehaviorSpec(goal="g", examples=[
+        Example(input="compiler q", good_output="a", source="engine")]))
+    save_project(p, tmp_path)
+    write_build_bundle(p.spec, p.tests, tmp_path)
+    csv = tmp_path / "qa.csv"
+    csv.write_text("question,answer\nHuman q?,Human a\n", encoding="utf-8")
+
+    r = runner.invoke(app, ["examples", str(tmp_path), "--import", str(csv)])
+
+    assert r.exit_code == 0, r.output
+    built = yaml.safe_load((tmp_path / "build" / "spec.yaml").read_text(encoding="utf-8"))
+    assert [e["input"] for e in built["examples"]] == ["compiler q", "Human q?"]
+
+
+def test_examples_dedup_refreshes_the_compiled_bundle(tmp_path):
+    import yaml
+
+    from ai_calibrator.compile import write_build_bundle
+    from ai_calibrator.models import BehaviorSpec, Example, Project
+    from ai_calibrator.store import save_project
+
+    dupe = [Example(input="q", good_output="a", source="human"),
+            Example(input="q", good_output="a", source="human")]
+    p = Project(name="p", goal="g", spec=BehaviorSpec(goal="g", examples=dupe))
+    save_project(p, tmp_path)
+    write_build_bundle(p.spec, p.tests, tmp_path)
+
+    r = runner.invoke(app, ["examples", str(tmp_path), "--dedup"])
+
+    assert r.exit_code == 0, r.output
+    built = yaml.safe_load((tmp_path / "build" / "spec.yaml").read_text(encoding="utf-8"))
+    assert len(built["examples"]) == 1

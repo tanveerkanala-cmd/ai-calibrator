@@ -99,6 +99,37 @@ def test_load_labels_filters_half_formed_entries(tmp_path):
 
 
 
+def test_save_labels_refuses_to_overwrite_unreadable_labels(tmp_path):
+    """Human labels are the most expensive data the tool collects, and saving
+    MERGES onto the file. A merge conflict marker, a hand-edit typo or a torn
+    write made the load return [], so the next session's one label replaced the
+    whole file — and the corrupt bytes, which still held every prior label, went
+    with it. The same situation on golden.json refuses; this must too."""
+    import json as _json
+
+    import pytest as _pytest
+
+    from ai_calibrator.judge_check import load_labels, save_labels
+
+    save_labels(tmp_path, "run-0001", [
+        {"test_id": f"t{i}", "criterion_id": "c1", "passed": False} for i in range(9)
+    ])
+    path = tmp_path / "evals" / "run-0001" / "human-labels.json"
+    path.write_text("<<<<<<< HEAD\n" + path.read_text(encoding="utf-8"), encoding="utf-8")
+    corrupt = path.read_text(encoding="utf-8")
+
+    with _pytest.raises(ValueError, match="unreadable"):
+        save_labels(tmp_path, "run-0001", [{"test_id": "t9", "criterion_id": "c1", "passed": True}])
+
+    assert path.read_text(encoding="utf-8") == corrupt   # the 9 are still recoverable
+    assert load_labels(tmp_path, "run-0001") == []       # load stays advisory
+
+    # Repaired by hand, the labels are back and saving works again.
+    path.write_text(corrupt.split("\n", 1)[1], encoding="utf-8")
+    save_labels(tmp_path, "run-0001", [{"test_id": "t9", "criterion_id": "c1", "passed": True}])
+    assert len(_json.loads(path.read_text(encoding="utf-8"))["labels"]) == 10
+
+
 def test_unmatched_labels_are_reported_not_silently_dropped():
     """A label the judge never ruled on is counted as unmatched, not ignored.
 

@@ -102,6 +102,25 @@ def test_build_merged_unions_other_dimensions_with_dedup():
     assert len(spec.edge_cases) == 1
 
 
+def test_merged_spec_does_not_claim_knowledge_the_merged_project_has_none_of():
+    """A merged project is built from the stakeholders' SPECS alone — it has no
+    materials/ and no knowledge index. Carrying their knowledge_sources forward
+    made compile append "Ground answers in the provided knowledge base; do not
+    invent facts it does not support." to a prompt that retrieval never augments,
+    so the model was ordered to answer only from documents it is never given —
+    and it hedges or refuses on exactly the questions the merge exists to answer."""
+    from ai_calibrator.compile import render_system_prompt
+
+    named = {"legal": _spec(knowledge_sources=["handbook.pdf"]),
+             "sales": _spec(knowledge_sources=["pricing.csv"])}
+    spec = build_merged_spec(named, goal="g", task_type=TaskType.ASSISTANT)
+    assert spec.knowledge_sources == []
+    assert "knowledge base" not in render_system_prompt(spec)
+
+    p = merged_project("org", named, goal="g", task_type=TaskType.ASSISTANT)
+    assert p.spec.knowledge_sources == []
+
+
 def test_merged_project():
     named = {"a": _spec(standards=["s1"]), "b": _spec(standards=["s2"])}
     p = merged_project("org", named, goal="org goal", task_type=TaskType.SUPPORT_ASSISTANT)

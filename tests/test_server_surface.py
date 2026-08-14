@@ -473,7 +473,8 @@ def test_judge_check_route_waits_for_the_project_lock(tmp_path):
                    criteria=[CriterionResult(criterion_id="c1", passed=True, score=1.0)])]))
 
     c = TestClient(create_app(tmp_path), base_url="http://localhost")
-    body = {"labels": [{"test_id": "t1", "criterion_id": "c1", "passed": False}]}
+    body = {"run_id": "run-0001",
+            "labels": [{"test_id": "t1", "criterion_id": "c1", "passed": False}]}
 
     # Mirrors the /log guard: while the lock is held, the route must not proceed.
     from ai_calibrator.store import project_lock
@@ -503,6 +504,61 @@ def test_create_will_not_adopt_an_existing_user_folder(tmp_path):
     assert "already exists here" in r.json()["detail"]
     assert (tmp_path / "Documents" / "taxes.pdf").exists()
     assert not (tmp_path / "Documents" / "project.yaml").exists()
+
+
+def test_import_will_not_adopt_an_existing_user_folder(tmp_path):
+    """Same invariant as create, on the other route that brings a project into
+    being: `POST /api/import` writing project.yaml into an existing `Documents/`
+    would make the user's own files deletable through `DELETE /api/projects`."""
+    from ai_calibrator.api import _engine_factory
+
+    calls = []
+
+    class SpecFake:
+        """Extracts a usable spec, so the import would otherwise succeed."""
+
+        name = "fake@test"
+
+        def complete(self, prompt, *, system=None, schema=None):
+            calls.append(prompt)
+            if "tests" in (schema or {}).get("properties", {}):
+                return {"tests": [{"id": "t1", "input": "q", "expects": ["clarity"], "notes": ""}]}
+            return {"persona": {"voice": "concise"}, "standards": ["Be clear."], "do_not": [],
+                    "edge_cases": [], "format": "", "refusal_policy": "", "examples": [],
+                    "eval_criteria": [{"id": "clarity", "description": "d", "weight": "high"}]}
+
+    (tmp_path / "Documents").mkdir()
+    (tmp_path / "Documents" / "taxes.pdf").write_text("important", encoding="utf-8")
+
+    app_ = create_app(tmp_path)
+    app_.dependency_overrides[_engine_factory] = lambda: (lambda spec: SpecFake())
+    c = TestClient(app_, base_url="http://localhost")
+    r = c.post("/api/import", json={"name": "Documents", "goal": "g", "prompt": "Be concise."})
+
+    assert r.status_code == 409
+    assert "already exists here" in r.json()["detail"]
+    assert calls == []  # refused before spending an engine call on it
+    assert (tmp_path / "Documents" / "taxes.pdf").exists()
+    assert not (tmp_path / "Documents" / "project.yaml").exists()
+
+
+def test_merge_apply_will_not_adopt_an_existing_user_folder(tmp_path):
+    """`out` names a directory the merge creates, so it carries the same rule as
+    create and import — and this route needs no engine credentials at all."""
+    for source in ("legal", "sales"):
+        proj = Project(name=source, goal="g")
+        proj.spec = BehaviorSpec(goal="g", standards=[f"{source} standard"])
+        save_project(proj, tmp_path / source)
+    (tmp_path / "Photos").mkdir()
+    (tmp_path / "Photos" / "wedding.jpg").write_text("bytes", encoding="utf-8")
+
+    c = TestClient(create_app(tmp_path), base_url="http://localhost")
+    r = c.post("/api/merge/apply", json={"out": "Photos", "sources": ["legal", "sales"]})
+
+    assert r.status_code == 409
+    assert "already exists here" in r.json()["detail"]
+    assert (tmp_path / "Photos" / "wedding.jpg").exists()
+    assert not (tmp_path / "Photos" / "project.yaml").exists()
 
 
 def test_create_still_works_on_a_free_name(tmp_path):

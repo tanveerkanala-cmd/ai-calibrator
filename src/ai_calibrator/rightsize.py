@@ -13,6 +13,7 @@ artifact; it never mutates the project, so it is safe to run anytime.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,8 +22,11 @@ from .eval import run_eval
 from .models import Project
 from .store import atomic_write_text
 
-# USD per 1M tokens (input, output) for models we can price confidently. Unknown
-# models still get ranked by pass rate; their cost just shows as unknown.
+# USD per 1M tokens (input, output). This table IS the recommendation: a model
+# absent from it has no cost_score, so it drops out of the "cheapest that meets
+# the bar" ranking without a word — and the survivor is then announced as the
+# cheapest while a candidate that also passed may cost a fraction of it. It must
+# therefore cover every provider the tool documents, not just Anthropic's ladder.
 PRICING: dict[str, tuple[float, float]] = {
     "claude-fable-5": (10.0, 50.0),
     "claude-opus-4-8": (5.0, 25.0),
@@ -30,7 +34,27 @@ PRICING: dict[str, tuple[float, float]] = {
     "claude-opus-4-6": (5.0, 25.0),
     "claude-sonnet-4-6": (3.0, 15.0),
     "claude-haiku-4-5": (1.0, 5.0),
+    # OpenAI is a first-class provider (README, docs/USAGE.md, engines/openai.py),
+    # and these two ids are the ones both put in front of the user.
+    "gpt-4o": (2.5, 10.0),
+    "gpt-4o-mini": (0.15, 0.6),
 }
+
+# `-latest` and a dated snapshot are the same model at the same price.
+_ID_ALIAS = re.compile(r"-(?:latest|\d{8})$")
+
+
+def model_price(model: str) -> tuple[float | None, float | None]:
+    """Published $/Mtok (input, output) for a model id, or ``(None, None)``.
+
+    Providers ship one model under a bare id, a ``-latest`` alias and a dated
+    snapshot (``claude-haiku-4-5-20260401``). An exact-match lookup priced one
+    spelling of the three, so the same model fell out of the cost ranking
+    depending on how the user typed it — silently, the way any unpriced
+    candidate does."""
+    key = _ID_ALIAS.sub("", (model or "").strip().casefold())
+    return PRICING.get(key, (None, None))
+
 
 # Default candidate ladder when the caller doesn't specify one: the Claude tiers,
 # strongest → cheapest. The user can pass any `model@provider` set instead.
@@ -89,6 +113,11 @@ class RightsizeReport:
         local = [r for r in passing if r.local]
         if local:
             return max(local, key=lambda r: r.pass_rate)
+        # A candidate with no published price cannot be placed on a cost ordering
+        # at all, so it cannot be the answer to "which is cheapest" — keeping
+        # PRICING current for every documented provider is what keeps that rare.
+        # The report still carries the candidate, its pass rate and a null
+        # cost_score, so an excluded passer stays visible in rightsize.json.
         priced = [r for r in passing if r.cost_score is not None]
         if priced:
             return min(priced, key=lambda r: (r.cost_score, -r.pass_rate))
@@ -117,7 +146,7 @@ def rightsize(
     results: list[ModelResult] = []
     for i, ms in enumerate(model_specs, start=1):
         model, provider = parse_engine_spec(ms)
-        in_price, out_price = PRICING.get(model, (None, None))
+        in_price, out_price = model_price(model)
         local = provider == "ollama"  # served from the owner's machine: no per-token cost
         try:
             subject = make_engine(ms)

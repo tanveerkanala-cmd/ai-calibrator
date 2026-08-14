@@ -6,14 +6,23 @@ Rename a route or a response field and the CLI stays green, the API stays green,
 the whole suite stays green — and the front door, which is what "Guided mode"
 means for a non-technical owner, breaks silently.
 
-These are static checks against the shipped assets. They cannot prove the UI
+Most are static checks against the shipped assets. They cannot prove the UI
 *works* (only a browser can), but they catch the failure that has no other
 detector: the two halves drifting apart.
+
+The verdicts the panel prints are checked a second way: the real app.js is run
+under node against a stubbed API, because "what does the operator actually
+read?" is a question no static check can answer. Those skip where node is
+absent, so each one is paired with a static check that always runs.
 """
 
 from __future__ import annotations
 
+import json
 import re
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -131,6 +140,194 @@ def test_the_markdown_renderer_escapes_before_it_marks_up():
     # Link syntax would be the one construct that lets untrusted text pick a
     # URL (javascript:). The report has no links; the renderer must not add them.
     assert "<a " not in body and "href" not in body
+
+
+# --- the panel's verdicts, read the way an operator reads them ---------------
+
+# Loads the shipped app.js in node against a stubbed API, so the assertion is on
+# what the panel actually renders rather than on the source that renders it. The
+# DOM shim is deliberately thin: only the handful of calls app.js makes.
+_HARNESS = r"""
+import fs from "node:fs";
+import vm from "node:vm";
+
+const [appPath, planPath] = process.argv.slice(2);
+const plan = JSON.parse(fs.readFileSync(planPath, "utf8"));
+process.on("unhandledRejection", (e) => {
+  console.error("unhandled rejection: " + ((e && e.stack) || e));
+  process.exit(1);
+});
+
+class El {
+  constructor(tag) {
+    this.tagName = tag;
+    this.children = [];
+    this._html = "";
+    this.style = {};
+    this.dataset = {};
+    this.value = "";
+    this.classList = { add() {}, remove() {} };
+  }
+  set innerHTML(html) { this._html = String(html); this.children = []; }
+  get innerHTML() { return this._html; }
+  insertAdjacentHTML(_where, html) { this._html += String(html); }
+  appendChild(child) { this.children.push(child); return child; }
+  querySelectorAll(tag) {
+    const found = [];
+    (function walk(el) {
+      for (const c of el.children) { if (c.tagName === tag) found.push(c); walk(c); }
+    })(this);
+    return found;
+  }
+  get text() { return this._html + this.children.map((c) => c.text).join(""); }
+}
+
+const named = {};
+const document = {
+  createElement: (tag) => new El(tag),
+  createTextNode: (t) => { const e = new El("#text"); e._html = String(t); return e; },
+  querySelector: (sel) => (named[sel] = named[sel] || new El("div")),
+};
+
+const calls = [];
+const routes = Object.keys(plan.routes).sort((a, b) => b.length - a.length);
+async function fetchStub(url, opts) {
+  opts = opts || {};
+  calls.push({ url, method: opts.method || "GET", body: opts.body ? JSON.parse(opts.body) : null });
+  const hit = routes.find((r) => url === r) || routes.find((r) => url.startsWith(r));
+  return { ok: true, status: 200, statusText: "OK", json: async () => (hit ? plan.routes[hit] : []) };
+}
+
+const sandbox = { document, fetch: fetchStub, console, FormData: class { append() {} } };
+vm.createContext(sandbox);
+vm.runInContext(fs.readFileSync(appPath, "utf8"), sandbox, { filename: "app.js" });
+const result = await vm.runInContext(`(async () => { ${plan.script} })()`, sandbox, { filename: "plan.js" });
+process.stdout.write(JSON.stringify({ result: result === undefined ? null : result, calls }));
+"""
+
+
+def _run_ui(script: str, routes: dict) -> dict:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not installed — this one checks app.js by running it")
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        (d / "harness.mjs").write_text(_HARNESS, encoding="utf-8")
+        (d / "plan.json").write_text(json.dumps({"routes": routes, "script": script}), encoding="utf-8")
+        proc = subprocess.run([node, str(d / "harness.mjs"), str(WEB / "app.js"), str(d / "plan.json")],
+                              capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)
+
+
+def _js_function(name: str) -> str:
+    """The source of one top-level function in app.js."""
+    js = (WEB / "app.js").read_text(encoding="utf-8")
+    start = js.index(f"function {name}(")
+    return js[start:js.index("\n}\n", start) + 3]
+
+
+def _drift_payload(baseline: list, candidate: list) -> dict:
+    """The real drift payload for two runs — (test_id, passed, input_hash) rows.
+
+    Built by the library, not by hand: a UI test that invents the response it
+    wants proves only that the test and the UI agree with each other.
+    """
+    from ai_calibrator.drift import compare_scorecards, drift_dict
+    from ai_calibrator.models import CriterionResult, Scorecard, TestResult
+
+    def card(run_id, rows):
+        return Scorecard(run_id=run_id, results=[
+            TestResult(test_id=tid, output="o", input_hash=h,
+                       criteria=[CriterionResult(criterion_id="c", passed=p)])
+            for tid, p, h in rows])
+
+    return drift_dict(compare_scorecards(card("run-0001", baseline), card("run-0002", candidate)))
+
+
+def test_the_drift_panel_does_not_call_an_impossible_comparison_no_drift():
+    """`compile` re-mints t1..tN under the same ids, so a re-run can grade an
+    entirely new suite. The rates are then real but describe two different exams
+    — and a panel that reads only the rates prints "✓ No drift" beside "Δ -100%",
+    a green verdict for a comparison that never happened."""
+    payload = _drift_payload(
+        [("t1", True, "a" * 16), ("t2", True, "b" * 16), ("t3", True, "c" * 16)],
+        [("t1", False, "x" * 16), ("t2", False, "y" * 16), ("t3", False, "z" * 16)])
+    assert payload["compared"] == 0 and payload["delta"] is None   # the state under test
+
+    out = _run_ui('await showDrift("p"); return document.querySelector("#panel").text;',
+                  {"/api/projects/p/drift": payload})
+    rendered = out["result"]
+
+    assert "No drift" not in rendered, f"claims no drift over nothing compared:\n{rendered}"
+    assert "-100" not in rendered, f"prints a delta it did not compute:\n{rendered}"
+    assert "comparable" in rendered, f"never says the comparison did not happen:\n{rendered}"
+
+
+def test_the_drift_panel_shows_the_delta_over_the_tests_it_compared():
+    """One re-minted probe with the rest holding is the ordinary state after
+    answering another interview question. The Δ has to be the difference of the
+    two numbers printed beside it, over a population the panel names."""
+    held = [(f"t{i}", True, f"{i:016d}") for i in range(1, 10)]
+    payload = _drift_payload([*held, ("t10", True, "a" * 16)], [*held, ("t10", False, "b" * 16)])
+    assert payload["compared"] == 9 and payload["delta"] == 0.0
+
+    out = _run_ui('await showDrift("p"); return document.querySelector("#panel").text;',
+                  {"/api/projects/p/drift": payload})
+    rendered = out["result"]
+
+    assert "9 shared" in rendered, f"does not say what the delta covers:\n{rendered}"
+    assert "±0%" in rendered and "-10" not in rendered, f"prints a whole-run delta:\n{rendered}"
+    assert "1 " in rendered and "not comparable" in rendered, f"hides the excluded probe:\n{rendered}"
+
+
+def test_saving_the_interview_posts_only_the_answers_the_person_wrote():
+    """Every textarea is prefilled with the tool's drafted guess. Posting them
+    all records 7 unreviewed engine guesses as the owner's ratified answers —
+    the spec compiles from them, and every "unreviewed draft" caveat downstream
+    keys on a source flag this route cannot set. The CLI makes the same act an
+    explicit `--accept-drafts` choice with a loud warning."""
+    state = {
+        "name": "p", "goal": "g", "materials": [], "gaps": [], "has_spec": False, "tests": 0,
+        "interview": [
+            {"id": f"q{i}", "dimension": "Tone", "question": f"question {i}", "rationale": None,
+             "answer": None, "draft_answer": f"ENGINE GUESS {i}", "answer_source": None}
+            for i in range(1, 11)
+        ],
+    }
+    script = """
+      const panel = document.querySelector("#panel");
+      renderInterview(panel, STATE, "p");
+      const card = panel.children[0];
+      const boxes = card.querySelectorAll("textarea");
+      boxes[0].value = "USER TYPED 1";
+      boxes[2].value = "USER TYPED 3";
+      await card.children[card.children.length - 1].onclick();
+      return null;
+    """.replace("STATE", json.dumps(state))
+
+    out = _run_ui(script, {"/api/projects/p": state})
+    posts = [c for c in out["calls"] if c["method"] == "POST" and c["url"].endswith("/answers")]
+
+    assert len(posts) == 1, f"expected one save, got {posts}"
+    assert posts[0]["body"]["answers"] == {"q1": "USER TYPED 1", "q3": "USER TYPED 3"}
+
+
+def test_the_drift_panel_reads_whether_a_comparison_happened_at_all():
+    """The static half of the check above, for a machine with no node: the panel
+    has to consult the fields that say whether anything was compared."""
+    body = _js_function("showDrift")
+    for field in ("delta", "compared", "incomparable_tests"):
+        assert field in body, f"showDrift never reads {field} — it cannot tell a comparison from none"
+    assert "null" in body or "undefined" in body, "showDrift never handles an absent delta"
+
+
+def test_the_interview_save_is_selective_about_what_it_posts():
+    """The static half: the handler that collects textareas must decide per box,
+    not sweep them all — an untouched draft is a proposal, not an answer."""
+    body = _js_function("renderInterview")
+    collect = body[body.index("const answers = {}"):body.index("await api")]
+    assert "if" in collect, "every textarea is posted unconditionally, drafts included"
 
 
 def test_the_ui_assets_are_served_revalidating():

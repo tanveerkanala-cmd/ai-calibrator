@@ -641,7 +641,7 @@ def interview(
 ) -> None:
     """Ask adaptive, gap-driven questions (propose-and-ratify) and store answers."""
     from .engines import get_engine
-    from .interview import generate_questions
+    from .interview import generate_questions, uncovered_gaps
 
     _require_project(path)  # no junk .lock dir for a typo'd name
     with project_lock(path, on_wait=_lock_wait_notice):
@@ -650,7 +650,13 @@ def interview(
             typer.secho("No gaps yet — run `calibrate ingest` first.", fg=typer.colors.YELLOW)
             raise typer.Exit(code=1)
 
-        if regenerate or not project.interview:
+        # Draft whenever a gap still has no question — not merely when the
+        # interview is empty. Drafting persists after every gap and the spend
+        # notice below invites Ctrl-C, so a partial interview is an ordinary
+        # state; gating on "is it empty" skipped straight to answering the
+        # questions it happened to hold, and the coverage warning further down
+        # lives inside this branch, so nothing said the rest were never asked.
+        if regenerate or uncovered_gaps(project, project.interview):
             try:
                 engine = get_engine(project.engines.interviewer)
             except (RuntimeError, ValueError, NotImplementedError) as exc:
@@ -687,15 +693,22 @@ def interview(
 
             try:
                 project.interview = generate_questions(project, engine, on_progress=_progress)
+            # KeyboardInterrupt is not an Exception, so the stop this command
+            # advertises escaped as a bare abort: the partial interview was on
+            # disk and nothing said so, or how to finish it.
+            except KeyboardInterrupt:
+                typer.secho(f"\n⏹ Stopped after {drafted} of {len(project.gaps)} gap(s) — "
+                            "the questions drafted so far are saved.", fg=typer.colors.YELLOW)
+                typer.echo("  Re-run `calibrate interview` to draft the gaps it did not reach.")
+                raise typer.Exit(code=130)
             except Exception as exc:
                 typer.secho(f"Question generation stopped after {drafted} "
                             f"of {len(project.gaps)} gap(s): {exc}", fg=typer.colors.RED)
                 typer.echo("  Progress was saved and your answers were kept — re-run "
-                           "`calibrate interview --regenerate` to finish.")
+                           "`calibrate interview` to draft the gaps it did not reach.")
                 raise typer.Exit(code=1)
             save_project(project, path)
 
-            from .interview import uncovered_gaps
             missing = uncovered_gaps(project, project.interview)
             if missing:
                 typer.secho(
@@ -837,7 +850,13 @@ def compile(path: Path = typer.Argument(Path("."), help="Project directory.")) -
             if raw:
                 typer.echo(f"  The model's raw output was saved to {err_path} for inspection.")
             if project.spec is not None:
-                typer.echo("  The synthesized spec was saved — re-run `calibrate compile` to retry test generation.")
+                # Say what the retry actually costs: compile_project synthesizes
+                # again whenever the interview has answers and merges that second
+                # result into this one, so promising it picks up at test generation
+                # hides both the call and the near-duplicate rules it leaves behind.
+                typer.echo("  The synthesized spec was saved — re-run `calibrate compile` to finish. "
+                           "Spec synthesis runs again (one more billed call) and merges into the "
+                           "saved spec, so check the standards and criteria for near-duplicates.")
             raise typer.Exit(code=1)
         except Exception as exc:
             typer.secho(f"Compile failed: {exc}", fg=typer.colors.RED)
@@ -1351,7 +1370,7 @@ def judge_check(
 ) -> None:
     """Calibrate the judge: confirm a sample of its verdicts and measure its agreement with you. (no engine)"""
     from .eval import latest_run_id
-    from .judge_check import gradings, judge_agreement, save_labels
+    from .judge_check import gradings, judge_agreement, load_labels, save_labels
 
     if sample < 1:
         typer.secho("--sample must be >= 1.", fg=typer.colors.RED)
@@ -1370,44 +1389,70 @@ def judge_check(
         typer.echo("  There is nothing here to agree or disagree with. Add a judge-graded "
                    "criterion (one without an `add-check`) and re-run `calibrate eval`.")
         raise typer.Exit(code=1)
-    items = items[:sample]
+    # "Re-run to continue" has to continue. Labels persist per (test, criterion),
+    # so offering the head of the list again re-asks judgments the owner already
+    # gave and puts every verdict past --sample permanently out of reach — capping
+    # the ground truth `train-engine judge` can ever be given at the first N.
+    judged = {(x["test_id"], x["criterion_id"]) for x in load_labels(path, rid)}
+    unjudged = [it for it in items if (it["test_id"], it["criterion_id"]) not in judged]
+    to_review = unjudged[:sample]
 
-    typer.echo(f"Reviewing {len(items)} of the judge's verdicts from {rid} — confirm or correct each:")
     labels = []
     aborted = False
-    try:
-        for it in items:
-            typer.secho(f"\n[{it['criterion_id']}]  judge said {'PASS' if it['judge_passed'] else 'FAIL'}", bold=True)
-            if it["rationale"]:
-                typer.echo(f"  judge's reason: {it['rationale']}")
-            typer.echo(f"  output: {it['output'][:200]}")
-            agree = typer.confirm("  Do you agree with the judge?", default=True)
-            human_passed = it["judge_passed"] if agree else (not it["judge_passed"])
-            labels.append({"test_id": it["test_id"], "criterion_id": it["criterion_id"], "passed": human_passed})
-    except (typer.Abort, EOFError, KeyboardInterrupt):
-        # A human's verdict on a judge's verdict is ground truth, and the most
-        # expensive data this tool collects. It lived only in this list.
-        aborted = True
-        typer.echo("")
+    if not to_review:
+        typer.secho(f"Every judge verdict in {rid} already carries your judgment "
+                    f"(all {len(items)} of them).", fg=typer.colors.GREEN)
+    else:
+        typer.echo(f"Reviewing {len(to_review)} of the judge's verdicts from {rid} "
+                   f"({len(unjudged)} still unjudged) — confirm or correct each:")
+        try:
+            for it in to_review:
+                typer.secho(f"\n[{it['criterion_id']}]  judge said {'PASS' if it['judge_passed'] else 'FAIL'}", bold=True)
+                if it["rationale"]:
+                    typer.echo(f"  judge's reason: {it['rationale']}")
+                typer.echo(f"  output: {it['output'][:200]}")
+                agree = typer.confirm("  Do you agree with the judge?", default=True)
+                human_passed = it["judge_passed"] if agree else (not it["judge_passed"])
+                labels.append({"test_id": it["test_id"], "criterion_id": it["criterion_id"], "passed": human_passed})
+        except (typer.Abort, EOFError, KeyboardInterrupt):
+            # A human's verdict on a judge's verdict is ground truth, and the most
+            # expensive data this tool collects. It lived only in this list.
+            aborted = True
+            typer.echo("")
 
-    if aborted and not labels:
-        typer.secho("⏹ Stopped before the first judgment — nothing to save.", fg=typer.colors.YELLOW)
-        raise typer.Exit(code=1)
+        if aborted and not labels:
+            typer.secho("⏹ Stopped before the first judgment — nothing to save.", fg=typer.colors.YELLOW)
+            raise typer.Exit(code=1)
 
-    # save_labels reloads the file and rewrites it whole, so its stated
-    # concurrency contract is not optional. Serialize the read-modify-write the
-    # way that contract requires — taken AFTER the interactive prompts, never
-    # across them: the lock is not re-entrant, and holding it while a person
-    # thinks would block every other command on the project.
-    _require_project(path)  # no junk .lock dir for a typo'd name
-    with project_lock(path, on_wait=_lock_wait_notice):
-        save_labels(path, rid, labels)  # ground truth is an asset: feeds train-engine
-    if aborted:
-        typer.secho(f"⏹ Stopped early — the {len(labels)} judgment(s) you gave are saved.",
-                    fg=typer.colors.YELLOW)
-        typer.echo("  Re-run `calibrate judge-check` to continue.")
-        raise typer.Exit(code=1)
-    ag = judge_agreement(card, labels)
+        # save_labels reloads the file and rewrites it whole, so its stated
+        # concurrency contract is not optional. Serialize the read-modify-write the
+        # way that contract requires — taken AFTER the interactive prompts, never
+        # across them: the lock is not re-entrant, and holding it while a person
+        # thinks would block every other command on the project.
+        _require_project(path)  # no junk .lock dir for a typo'd name
+        with project_lock(path, on_wait=_lock_wait_notice):
+            try:
+                save_labels(path, rid, labels)  # ground truth is an asset: feeds train-engine
+            except ValueError as exc:
+                # Saving merges onto the labels already on disk and refuses when it
+                # cannot read them, rather than replacing every one with this
+                # session's. That refusal names the file and the repair.
+                typer.secho(str(exc), fg=typer.colors.RED)
+                raise typer.Exit(code=1)
+        if aborted:
+            typer.secho(f"⏹ Stopped early — the {len(labels)} judgment(s) you gave are saved.",
+                        fg=typer.colors.YELLOW)
+            typer.echo("  Re-run `calibrate judge-check` to continue with the next ones.")
+            raise typer.Exit(code=1)
+    # Score over every label saved for this run, not just this session's: a resumed
+    # review would otherwise report agreement over its own last few verdicts and
+    # read as the rate for the whole calibration. Still only over the verdicts
+    # `gradings` offers — a label on a code-graded criterion (from an older run of
+    # this project, or from the API) would fold a grader the judge never ran into
+    # a number reported as "judge agreement".
+    offered = {(it["test_id"], it["criterion_id"]) for it in items}
+    ag = judge_agreement(card, [x for x in load_labels(path, rid)
+                                if (x["test_id"], x["criterion_id"]) in offered])
     rate = ag.agreement_rate
     typer.secho(f"\nJudge agreement with you: {pct(rate)} ({ag.agreed}/{ag.total})",
                 fg=typer.colors.GREEN if rate >= 0.8 else typer.colors.YELLOW, bold=True)
@@ -1737,9 +1782,13 @@ def diff(
         typer.secho("No behavior change between the two specs.", fg=typer.colors.GREEN)
         return
 
+    printed = False
+
     def _section(title: str, added: list[str], removed: list[str]) -> None:
+        nonlocal printed
         if not added and not removed:
             return
+        printed = True
         typer.secho(f"\n{title}:", bold=True)
         for x in added:
             typer.secho(f"  + {x}", fg=typer.colors.GREEN)
@@ -1747,6 +1796,7 @@ def diff(
             typer.secho(f"  - {x}", fg=typer.colors.RED)
 
     if d.fields_changed:
+        printed = True
         typer.secho("\nBehavior fields:", bold=True)
         for name, before_v, after_v in d.fields_changed:
             typer.secho(f"  ~ {name}", fg=typer.colors.YELLOW)
@@ -1760,7 +1810,11 @@ def diff(
     # loses its grounding paragraph), so a knowledge-only diff must print
     # something rather than an empty report under a "changed" verdict.
     _section("Knowledge sources", d.knowledge_added, d.knowledge_removed)
+    # Examples are what the fine-tune trains on, and teach / absorb / merge change
+    # nothing else — so an examples-only diff is the common one, not a corner case.
+    _section("Examples", d.examples_added, d.examples_removed)
     if d.criteria_added or d.criteria_removed or d.criteria_changed:
+        printed = True
         typer.secho("\nCriteria:", bold=True)
         for x in d.criteria_added:
             typer.secho(f"  + {x}", fg=typer.colors.GREEN)
@@ -1768,6 +1822,13 @@ def diff(
             typer.secho(f"  - {x}", fg=typer.colors.RED)
         for x in d.criteria_changed:
             typer.secho(f"  ~ {x} (description/weight/check changed)", fg=typer.colors.YELLOW)
+    if not printed:
+        # The sections above are written one per diff field, so a field added to
+        # SpecDiff and not to that list would print nothing under a "changed"
+        # verdict — a reviewer reads blank output as "no change" and ships it.
+        typer.secho("\nThe two specs differ, but this report has no section for what changed — "
+                    "compare them with `calibrate serve` or the saved build/spec.yaml files.",
+                    fg=typer.colors.YELLOW)
 
 
 @app.command()
@@ -1780,7 +1841,7 @@ def drift(
         0.0, "--tolerance", help="Allowed pass-rate drop before flagging drift (0-1)."
     ),
 ) -> None:
-    """Re-run the suite and flag behavior drift vs a baseline. Exits 2 on regression (CI-friendly)."""
+    """Re-run the suite and flag behavior drift vs a baseline. Exits 2 on regression, 1 if nothing was comparable (CI-friendly)."""
     from .drift import run_drift
     from .engines import get_engine
     from .eval import latest_run_id
@@ -1822,11 +1883,26 @@ def drift(
             typer.secho(f"Drift check failed: {exc}", fg=typer.colors.RED)
             raise typer.Exit(code=1)
 
-    typer.secho(
-        f"\nbaseline {report.baseline_run}: {pct(report.baseline_rate)}  →  "
-        f"{report.candidate_run}: {pct(report.candidate_rate)}  (Δ {pct_delta(report.delta)})",
-        bold=True,
-    )
+    # A Δ is the difference of the two SHARED rates, so those are the pair printed
+    # beside it: the whole-run rates each denominate over every test their own run
+    # graded, including the ones this comparison refused, and the three numbers
+    # then visibly fail to add up.
+    delta = report.delta
+    base_shared, cand_shared = report.baseline_shared_rate, report.candidate_shared_rate
+    if delta is None or base_shared is None or cand_shared is None:
+        typer.secho(
+            f"\nbaseline {report.baseline_run}: {pct(report.baseline_rate)}  →  "
+            f"{report.candidate_run}: {pct(report.candidate_rate)}  "
+            "(Δ — nothing was comparable)",
+            bold=True,
+        )
+    else:
+        typer.secho(
+            f"\nbaseline {report.baseline_run}: {pct(base_shared)}  →  "
+            f"{report.candidate_run}: {pct(cand_shared)}  "
+            f"(Δ {pct_delta(delta)} over {report.compared} shared test(s))",
+            bold=True,
+        )
     if report.regressed_tests:
         typer.secho(f"  ✗ {len(report.regressed_tests)} regressed (pass→fail): "
                     f"{', '.join(report.regressed_tests[:10])}", fg=typer.colors.RED)
@@ -1842,6 +1918,16 @@ def drift(
     if report.regressed:
         typer.secho("\n⚠ DRIFT DETECTED — behavior regressed beyond tolerance.", fg=typer.colors.RED)
         raise typer.Exit(code=2)
+    if not report.comparable:
+        # "Behavior held" is a verdict on a measurement, and there was none: the
+        # two runs share no test still asking the same question. Exit 1 — the
+        # code for "could not gate" — so a pipeline reads this as the missing
+        # answer it is, the same way the `ci` drift stage refuses this state.
+        typer.secho("\n? Nothing to compare — this run and the baseline share no test that still "
+                    "asks the same question, so no drift verdict is possible.",
+                    fg=typer.colors.YELLOW)
+        typer.echo(f"  Re-baseline with `calibrate eval` (the new run replaces {base_id}).")
+        raise typer.Exit(code=1)
     typer.secho("\n✓ No drift — behavior held within tolerance.", fg=typer.colors.GREEN)
 
 
@@ -2301,7 +2387,14 @@ def train_engine_cmd(
     threshold: float = typer.Option(0.9, "--threshold", help="Min agreement to trust the local engine (0-1)."),
 ) -> None:
     """Localize a cloud role onto your own model from logged decisions — the autonomy loop. (Advanced tier)"""
-    from .train_engine import LOGGED_ROLES, TRAINABLE_ROLES, export_engine_bundle, prove_engine, read_log
+    from .train_engine import (
+        LOGGED_ROLES,
+        TRAINABLE_ROLES,
+        export_engine_bundle,
+        human_judge_rows,
+        prove_engine,
+        read_log,
+    )
 
     role = role.strip().lower()
     if role not in TRAINABLE_ROLES:
@@ -2354,24 +2447,42 @@ def train_engine_cmd(
             typer.secho("✗ Not yet — keep the cloud engine, or train on more logged data.", fg=typer.colors.YELLOW)
         raise typer.Exit(code=0 if proof.passes else 1)
 
-    if not read_log(path, role):
-        if role in LOGGED_ROLES:
-            typer.secho(
-                f"No logged {role} decisions yet. Turn on logging (`calibrate log --on`), run `calibrate eval`, then retry.",
-                fg=typer.colors.YELLOW,
-            )
-        else:
-            typer.secho(
-                f"Nothing records the {role} role yet — only the judge (`calibrate eval`, `calibrate ci`) and the "
-                "compiler (`calibrate eval --refine`) are logged, so there is no data to train on.",
-                fg=typer.colors.YELLOW,
-            )
+    def _no_data(detail: str) -> None:
+        typer.secho(detail, fg=typer.colors.YELLOW)
         raise typer.Exit(code=1)
+
+    # The log is not the only ground truth for the judge: a judge-check label a
+    # logged call never answered becomes a row of its own, which is exactly what
+    # judge-check promises when it says these labels are what this command trains
+    # on. Logging is off by default, so gating on the log alone refused the very
+    # data the tool told the owner to collect.
+    labels = human_judge_rows(path) if role == "judge" else []
+    if not read_log(path, role) and not labels:
+        if role == "judge":
+            _no_data("No logged judge decisions and no judge-check labels yet. Label verdicts "
+                     "with `calibrate judge-check`, or turn on logging (`calibrate log --on`) "
+                     "and run `calibrate eval`, then retry.")
+        elif role in LOGGED_ROLES:
+            _no_data(f"No logged {role} decisions yet. Turn on logging (`calibrate log --on`), "
+                     "run `calibrate eval`, then retry.")
+        else:
+            _no_data(f"Nothing records the {role} role yet — only the judge (`calibrate eval`, "
+                     "`calibrate ci`) and the compiler (`calibrate eval --refine`) are logged, "
+                     "so there is no data to train on.")
     try:
         result = export_engine_bundle(path, role, base_model=base)
     except ValueError as exc:
         typer.secho(str(exc), fg=typer.colors.RED)
         raise typer.Exit(code=1)
+    if result.examples == 0:
+        # A logged row with no output has no answer to learn from, and the split
+        # can reserve every question it does have — so a non-empty log still buys
+        # an empty dataset.jsonl. Announcing that as a bundle sends the owner to
+        # rent a GPU for a train.py whose first act is to refuse the file.
+        _no_data(f"Nothing to train on: every {role} record was unusable (no output recorded), "
+                 f"or all of them were held back for the prove-it gate. The bundle at "
+                 f"{result.bundle_dir}/ has an empty dataset — keep running with logging on, "
+                 "then re-export.")
     typer.secho(
         f"✓ Engine-training bundle → {result.bundle_dir}/  "
         f"({result.examples} example(s) on {result.base_model})",
@@ -2379,9 +2490,12 @@ def train_engine_cmd(
     )
     for f in result.files:
         typer.echo(f"    {f}")
+    # Name the project: this line is meant to be copied, and the bundle README
+    # sends the owner to run it from inside trained-engines/<role>/, where a
+    # pathless command resolves to a directory that holds no project.
     typer.echo(
         f"\nTrain on a GPU (see README), serve it, then prove it matches:\n"
-        f"  calibrate train-engine {role} --prove --candidate <your-model@ollama>"
+        f"  calibrate train-engine {role} {path} --prove --candidate <your-model@ollama>"
     )
 
 
@@ -2741,6 +2855,19 @@ def _dep_satisfied(module: str, requirement: str) -> bool:
     return _version_tuple(have) >= _version_tuple(floor)
 
 
+# The REQUIREMENT STRINGS the `train` extra declares, not bare module names:
+# find_spec only answers "is it importable", so an already-present but too-old
+# transformers/trl/peft was neither detected nor upgraded — and the generated
+# trainer then failed on an argument that release doesn't have, which the failure
+# message downstream blames on GPU memory. These floors MUST stay identical to
+# pyproject.toml's `train` extra: they are the floors the bundle's train.py is
+# written against, and a lower one here silently keeps the release that crashes.
+_TRAIN_REQS = {
+    "torch": "torch>=2.2", "transformers": "transformers>=4.56.2", "trl": "trl>=1.0",
+    "peft": "peft>=0.11", "datasets": "datasets>=2.19", "accelerate": "accelerate>=0.30",
+}
+
+
 @app.command()
 def train(
     path: Path = typer.Argument(Path("."), help="Project directory."),
@@ -2800,40 +2927,38 @@ def train(
         typer.echo(f"Plan: ~{est} optimizer step(s) over {recipe.get('epochs')} epoch(s).")
 
     # 2. ensure the training stack (offered, not forced)
-    # Install the REQUIREMENT STRINGS the `train` extra declares, not bare module
-    # names: find_spec only answers "is it importable", so an already-present but
-    # too-old transformers/trl/peft was neither detected nor upgraded — and the
-    # generated trainer then fails on an argument that release doesn't have.
     # _dep_satisfied compares the INSTALLED version against each floor, so an
     # outdated module is upgraded and not just an absent one.
-    _TRAIN_REQS = {
-        "torch": "torch>=2.2", "transformers": "transformers>=4.46", "trl": "trl>=1.0",
-        "peft": "peft>=0.11", "datasets": "datasets>=2.19", "accelerate": "accelerate>=0.30",
-    }
-    stale = [m for m, req in _TRAIN_REQS.items() if not _dep_satisfied(m, req)]
-    need = [_TRAIN_REQS[m] for m in stale]
-    if qlora and importlib.util.find_spec("bitsandbytes") is None:
-        need.append("bitsandbytes")
-    if need:
-        typer.secho(f"\nTraining needs: {', '.join(stale) or 'bitsandbytes'}  "
-                    "(torch is a large download — several GB).", fg=typer.colors.YELLOW)
+    def _install(packages: list[str], why: str) -> None:
+        typer.secho(f"\n{why}", fg=typer.colors.YELLOW)
         typer.echo("  Installing with the version floors the bundle's train.py requires.")
         typer.echo("  (or install once yourself, in your ai-calibrator clone:  pip install -e '.[train]')")
         if not yes and not typer.confirm("  Install them now?", default=True):
             raise typer.Exit(code=1)
-        if subprocess.run([sys.executable, "-m", "pip", "install", *need]).returncode != 0:
+        if subprocess.run([sys.executable, "-m", "pip", "install", *packages]).returncode != 0:
             typer.secho("Dependency install failed — install manually and retry.", fg=typer.colors.RED)
             raise typer.Exit(code=1)
+
+    stale = [m for m, req in _TRAIN_REQS.items() if not _dep_satisfied(m, req)]
+    if stale:
+        _install([_TRAIN_REQS[m] for m in stale],
+                 f"Training needs: {', '.join(stale)}  (torch is a large download — several GB).")
 
     # 3. hardware
     import torch
     device = ("cuda" if torch.cuda.is_available()
               else "mps" if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available()
               else "cpu")
+    # The hardware decides whether QLoRA is even in play, so it is settled BEFORE
+    # asking for bitsandbytes: the package is CUDA-only and has no wheel on some
+    # platforms, and demanding it first turned the full-precision fallback on the
+    # next line into a dead end for every machine the fallback exists to serve.
     if qlora and device != "cuda":
         typer.secho("--qlora needs a CUDA GPU (bitsandbytes) — training in full precision instead.",
                     fg=typer.colors.YELLOW)
         qlora = False
+    if qlora and importlib.util.find_spec("bitsandbytes") is None:
+        _install(["bitsandbytes"], "--qlora needs: bitsandbytes (4-bit loading on CUDA).")
     typer.secho(f"\nTraining on {device.upper()} — first run downloads the base model …", fg=typer.colors.CYAN)
 
     # 4. run the tool's generated, device-aware train.py
@@ -2868,6 +2993,7 @@ def examples(
     Most owners already HAVE examples (past replies, an FAQ, a spreadsheet). Import
     them in one shot: `calibrate examples --import my-qa.csv`. Column/key names are
     matched flexibly (input/question/prompt…, good_output/output/answer…)."""
+    from .compile import write_build_bundle
     from .examples_io import dedup_examples, examples_status, load_examples_report, merge_examples
 
     if _load(path).spec is None:
@@ -2894,6 +3020,10 @@ def examples(
                 raise typer.Exit(code=1)
             added, skipped = merge_examples(project.spec, report.examples)
             save_project(project, path)
+            # build/ is the documented compiled bundle; every other spec-mutating
+            # command refreshes it, so leaving it here made build/spec.yaml a spec
+            # nobody chose — read and committed as the one that shipped.
+            write_build_bundle(project.spec, project.tests, path)
         msg = f"✓ Imported {added} example(s) from {import_file.name}"
         typer.secho(msg + (f" ({skipped} duplicate(s) skipped)." if skipped else "."), fg=typer.colors.GREEN)
         if report.without_output:
@@ -2915,6 +3045,7 @@ def examples(
                 raise typer.Exit(code=1)
             removed = dedup_examples(project.spec)
             save_project(project, path)
+            write_build_bundle(project.spec, project.tests, path)  # keep build/ in step
         typer.secho(f"✓ Removed {removed} duplicate example(s)." if removed else "No duplicates to remove.",
                     fg=typer.colors.GREEN)
 

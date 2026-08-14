@@ -107,15 +107,35 @@ def judge_system(instructions: str | None = None) -> str:
     )
 
 
-def judge_prompt(test_input: str, output: str, criteria: list[tuple[str, str]]) -> str:
+def judge_prompt(test_input: str, output: str, criteria: list[tuple[str, str]],
+                 knowledge: str = "") -> str:
     """The exact prompt the judge grades with.
+
+    ``knowledge`` is the retrieved-knowledge section the subject's system prompt
+    was augmented with for THIS test (empty when the project has no index). It
+    belongs here rather than in ``judge_system`` because it changes per test,
+    while the system message is identical for every test in a run — which is what
+    lets the prompt cache charge for it once instead of once per test.
+
+    It sits AFTER the criteria block so the graded-item head (everything up to
+    the last ``CRITERIA:``) is the same string with or without retrieval; that
+    head is what ties a human judge-check label back to the logged judge call it
+    corrects.
 
     Public because the Engine-Trainer builds *ground-truth* training rows from
     human judge-check labels — those must use the identical format the judge role
     sees at inference time, or the fine-tune learns the wrong distribution."""
     block = "\n".join(f"- {cid}: {desc}" for cid, desc in criteria)
+    ref = ""
+    if knowledge.strip():
+        # Without this the judge grades a retrieval-grounded answer against a
+        # knowledge base it was never shown, while the instructions tell it a
+        # fact stated there is not invented — so a correct answer citing a
+        # retrieved policy reads as fabricated, with a confident rationale.
+        ref = ("\n\nTHE AI WAS GIVEN THIS REFERENCE MATERIAL AND ANSWERED FROM IT — a fact or "
+               f"figure stated in it is NOT invented:{knowledge.rstrip()}")
     return (
-        f"INPUT:\n{test_input}\n\nAI OUTPUT:\n{output}\n\nCRITERIA:\n{block}\n\n"
+        f"INPUT:\n{test_input}\n\nAI OUTPUT:\n{output}\n\nCRITERIA:\n{block}{ref}\n\n"
         "Grade each criterion."
     )
 
@@ -124,11 +144,10 @@ def _as_float(value: object) -> float:
     """Coerce a model-supplied score to a float in [0, 1], defaulting to 0.0.
 
     A non-compliant judge could return a non-numeric, non-finite, or out-of-range
-    score; none of those may raise or poison the scorecard arithmetic. Clamping
-    matters as much as the finite check: a judge answering on a 0-100 or 1-5 scale
-    (routine for the small local models this tool supports) would otherwise push
-    the weighted mean above 1.0, and `pct` renders anything >= 1 as the reassuring
-    ">99%" — an anomaly hidden instead of surfaced, right next to a 0% pass rate."""
+    score; none of those may raise or poison the scorecard arithmetic. This is the
+    last line — whatever reaches ``CriterionResult.score`` is in range, so the
+    weighted mean cannot exceed 1.0. What an off-scale answer *means* is decided
+    by ``_criterion_score``; clamping alone got that wrong."""
     try:
         f = float(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
@@ -138,14 +157,42 @@ def _as_float(value: object) -> float:
     return min(1.0, max(0.0, f))
 
 
+def _on_the_asked_scale(value: object) -> bool:
+    """True if the judge answered with the 0-1 score the schema asked for."""
+    try:
+        f = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(f) and 0.0 <= f <= 1.0
+
+
+def _criterion_score(value: object, passed: bool) -> float:
+    """The score to record for one criterion, given the judge's own verdict.
+
+    A judge answering on a 0-100 or 1-5 scale is routine for the small local
+    models this tool supports, and JUDGE_SCHEMA cannot stop it (``score`` is an
+    unbounded number). Clamping such a value into range published a 100% weighted
+    score directly beneath a 0% pass rate — a scorecard contradicting itself, with
+    the reassuring number being the wrong one.
+
+    A value outside the documented 0-1 contract carries no usable magnitude, and
+    neither does a non-numeric or non-finite one. The verdict is then the only
+    signal in the row, so the score follows it; that keeps the weighted score and
+    the pass rate telling the same story instead of opposite ones."""
+    if not _on_the_asked_scale(value):
+        return 1.0 if passed else 0.0
+    return _as_float(value)
+
+
 def _judge(
     judge: Engine,
     test_input: str,
     output: str,
     criteria: list[tuple[str, str]],
     instructions: str | None = None,
+    knowledge: str = "",
 ) -> list[CriterionResult]:
-    prompt = judge_prompt(test_input, output, criteria)
+    prompt = judge_prompt(test_input, output, criteria, knowledge)
     out = require_object(
         judge.complete(prompt, system=judge_system(instructions),
                        schema=judge_schema(len(criteria))), "judge")
@@ -161,11 +208,12 @@ def _judge(
     results = []
     for cid, _ in criteria:
         r = by_id.get(cid, {})
+        passed = as_bool(r.get("passed", False))
         results.append(
             CriterionResult(
                 criterion_id=cid,
-                passed=as_bool(r.get("passed", False)),
-                score=_as_float(r.get("score", 0.0)),
+                passed=passed,
+                score=_criterion_score(r.get("score"), passed),
                 # Never leave a failing verdict with a null rationale — the failure
                 # list must read consistently, so substitute a clear placeholder.
                 rationale=as_opt_str(r.get("rationale")) or "judge gave no rationale",
@@ -176,10 +224,12 @@ def _judge(
 
 def _judge_consensus(judge: Engine, test_input: str, output: str,
                      criteria: list[tuple[str, str]], passes: int,
-                     instructions: str | None = None) -> list[CriterionResult]:
+                     instructions: str | None = None,
+                     knowledge: str = "") -> list[CriterionResult]:
     """Grade with ``passes`` independent judge calls, majority-vote each criterion,
     and record agreement as ``confidence`` — self-consistency over a noisy judge."""
-    runs = [_judge(judge, test_input, output, criteria, instructions) for _ in range(passes)]
+    runs = [_judge(judge, test_input, output, criteria, instructions, knowledge)
+            for _ in range(passes)]
     results: list[CriterionResult] = []
     for idx, (cid, _) in enumerate(criteria):
         verdicts = [run[idx].passed for run in runs]
@@ -205,9 +255,20 @@ def conversation_prompt(history_lines: list[str], user_turn: str) -> str:
     return (history + "\n" if history else "") + f"User: {user_turn}\nAssistant:"
 
 
+def _retrieved_section(system: str | None, augmented: str | None) -> str:
+    """The knowledge section RAG appended to a system prompt, or ''.
+
+    Read back off the augmented copy rather than retrieved a second time, so the
+    judge is shown exactly the snippets the subject answered from and
+    ``rag.augment_system`` stays the single injection point it documents itself
+    as being."""
+    base, full = system or "", augmented or ""
+    return full[len(base):] if full.startswith(base) else ""
+
+
 def _conversation_output(subject: Engine, system: str | None, user_turns: list[str],
-                         project_dir: str | Path | None = None) -> tuple[str, list[str]]:
-    """Run a multi-turn conversation; return ``(transcript, replies)``.
+                         project_dir: str | Path | None = None) -> tuple[str, list[str], str]:
+    """Run a multi-turn conversation; return ``(transcript, replies, knowledge)``.
 
     Two different views, for two different consumers. The **transcript** (the
     alternating ``User:`` / ``Assistant:`` lines) is what gets recorded on the
@@ -223,18 +284,26 @@ def _conversation_output(subject: Engine, system: str | None, user_turns: list[s
     messages-based interface). The base system prompt is constant; when a
     knowledge index exists, each turn's system is augmented with chunks retrieved
     for THAT turn (identical to how the runtime serves — what you test is what
-    you serve)."""
+    you serve).
+
+    The **knowledge** is every turn's retrieved section, kept so the judge can be
+    shown it: the judge grades the whole transcript, so it needs the reference
+    material each answer in that transcript was given."""
     from . import rag
     lines: list[str] = []
     replies: list[str] = []
+    retrieved: list[str] = []
     for turn in user_turns:
         eff_system = rag.augment_system(system, project_dir, turn)
+        section = _retrieved_section(system, eff_system)
+        if section and section not in retrieved:
+            retrieved.append(section)
         prompt = conversation_prompt(lines, turn)
         reply = as_str(subject.complete(prompt, system=eff_system)).strip()
         replies.append(reply)
         lines.append(f"User: {turn}")
         lines.append(f"Assistant: {reply}")
-    return "\n".join(lines), replies
+    return "\n".join(lines), replies, "".join(retrieved)
 
 
 # Called before each test runs: (done, total, test_id). Lets the CLI show live
@@ -337,9 +406,16 @@ def run_eval(
             if len(turns) > 1:  # multi-turn conversation test
                 # `output` is the transcript (recorded + judged); `replies` are the
                 # assistant's words alone, one per turn, which is what the checks grade.
-                output, replies = _conversation_output(subject, subject_system, turns, project_dir)
+                output, replies, knowledge = _conversation_output(
+                    subject, subject_system, turns, project_dir)
             else:
                 eff_system = rag.augment_system(subject_system, project_dir, test.input)  # RAG when indexed
+                # What retrieval added for THIS test, so the judge can be shown the
+                # same reference material the subject answered from. Graded against
+                # a knowledge base it never sees, a judge fails correct, grounded
+                # answers as invented — the spec's own grounding rule tells it a
+                # fact stated there is not made up.
+                knowledge = _retrieved_section(subject_system, eff_system)
                 # Encode the single turn exactly as the runtime and the API's /try
                 # do (`conversation_prompt`), so the certified pass rate is earned
                 # on the prompt the deployed endpoint actually sends.
@@ -381,10 +457,10 @@ def run_eval(
                           if crit_by_id[cid].check is None]
                 if judged and judge_passes > 1:
                     for cr in _judge_consensus(judge, test.input, output, judged,
-                                              judge_passes, system):
+                                              judge_passes, system, knowledge):
                         graded[cr.criterion_id] = cr
                 elif judged:
-                    for cr in _judge(judge, test.input, output, judged, system):
+                    for cr in _judge(judge, test.input, output, judged, system, knowledge):
                         graded[cr.criterion_id] = cr
 
             # Reassemble in requested order — test.expects is an ordered list, so the
