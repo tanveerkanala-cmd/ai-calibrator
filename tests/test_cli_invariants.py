@@ -111,6 +111,72 @@ def test_regenerate_after_a_failure_does_not_overwrite_answers_with_drafts(tmp_p
     assert answers["pricing"] == "a model guess"  # the only gap that was ever unanswered
 
 
+class _StopAfterFirstEngine:
+    """Drafts one question, then the user stops it — the stop the notice invites."""
+    name = "stop@test"
+
+    def __init__(self):
+        self.calls = 0
+
+    def complete(self, prompt, *, system=None, schema=None):
+        self.calls += 1
+        if self.calls > 1:
+            raise KeyboardInterrupt
+        return {"question": "q?", "draft_answer": "a model guess", "rationale": "why"}
+
+
+def _partly_drafted_project(tmp_path):
+    """Four gaps, questions drafted for the first two — what a stopped drafting run
+    leaves on disk, since progress is persisted per gap."""
+    from ai_calibrator.models import Gap, InterviewItem, Project
+    from ai_calibrator.store import save_project
+
+    project = Project(name="p", goal="g")
+    project.gaps = [Gap(dimension=d) for d in ("escalation", "pricing", "tone", "format")]
+    project.interview = [
+        InterviewItem(id="q1", dimension="escalation", question="?", draft_answer="d1"),
+        InterviewItem(id="q2", dimension="pricing", question="?", draft_answer="d2"),
+    ]
+    save_project(project, tmp_path)
+    return project
+
+
+def test_a_partly_drafted_interview_resumes_instead_of_reading_as_finished(tmp_path, monkeypatch):
+    """Drafting is persisted per gap and stopping it is invited, so a partial
+    interview is an ordinary state. Answering only the questions it holds reports
+    the untouched gaps as covered, and `compile` then builds a spec from an
+    interview that never asked them."""
+    import ai_calibrator.engines as engines
+    from ai_calibrator.store import load_project
+
+    _partly_drafted_project(tmp_path)
+    monkeypatch.setattr(engines, "get_engine", lambda spec: _DraftEngine())
+
+    result = runner.invoke(app, ["interview", str(tmp_path), "--accept-drafts"])
+    assert result.exit_code == 0, result.output
+    assert _has_no_traceback(result)
+
+    after = load_project(tmp_path)
+    assert {it.dimension for it in after.interview if it.answer} == {
+        "escalation", "pricing", "tone", "format"
+    }
+
+
+def test_drafting_stopped_by_the_user_says_how_to_finish_it(tmp_path, monkeypatch):
+    """The spend notice tells the owner Ctrl-C is safe, so the stop it invites has
+    to end in an instruction rather than a bare abort."""
+    import ai_calibrator.engines as engines
+
+    _partly_drafted_project(tmp_path)
+    monkeypatch.setattr(engines, "get_engine", lambda spec: _StopAfterFirstEngine())
+
+    result = runner.invoke(app, ["interview", str(tmp_path), "--regenerate"])
+
+    assert result.exit_code != 0
+    assert "calibrate interview" in result.output
+    assert _has_no_traceback(result)
+
+
 # --- ingest: a mistyped --source is a typo, not "delete everything" --------
 
 class _ExtractEngine:
@@ -633,3 +699,138 @@ def test_a_progress_estimate_is_never_more_precise_than_it_deserves(seconds, exp
     from ai_calibrator.cli import _duration
 
     assert _duration(seconds) == expected
+
+
+# --- judge-check: a judgment given once is not asked for again --------------
+
+def _judged_project(tmp_path, verdicts=6):
+    """A saved run whose every criterion was graded by the judge, so each one is a
+    verdict `judge-check` can offer for confirmation."""
+    from ai_calibrator.eval import save_scorecard
+    from ai_calibrator.models import (
+        BehaviorSpec,
+        CriterionResult,
+        EvalCriterion,
+        Project,
+        Scorecard,
+        TestCase,
+        TestResult,
+        Weight,
+    )
+    from ai_calibrator.store import save_project
+
+    project = Project(name="p", goal="g")
+    project.spec = BehaviorSpec(goal="g", eval_criteria=[
+        EvalCriterion(id="c1", description="stays polite", weight=Weight.HIGH)])
+    project.tests = [TestCase(id=f"t{i}", input=f"question {i}", expects=["c1"])
+                     for i in range(1, verdicts + 1)]
+    save_project(project, tmp_path)
+    save_scorecard(tmp_path, Scorecard(run_id="run-0001", results=[
+        TestResult(test_id=f"t{i}", output=f"answer {i}",
+                   criteria=[CriterionResult(criterion_id="c1", passed=True,
+                                             rationale=f"reads fine {i}")])
+        for i in range(1, verdicts + 1)]))
+    return project
+
+
+def test_judge_check_continues_past_the_verdicts_already_labeled(tmp_path):
+    """"Re-run to continue" has to continue. Re-presenting the head of the list
+    re-asks what the owner already judged and puts every verdict past --sample out
+    of reach, capping the ground truth `train-engine judge` can ever have."""
+    _judged_project(tmp_path, verdicts=6)
+
+    first = runner.invoke(app, ["judge-check", str(tmp_path), "--sample", "3"], input="y\ny\ny\n")
+    assert first.exit_code == 0, first.output
+
+    second = runner.invoke(app, ["judge-check", str(tmp_path), "--sample", "3"], input="y\ny\ny\n")
+
+    assert second.exit_code == 0, second.output
+    assert "answer 4" in second.output          # it moved on
+    assert "answer 1" not in second.output      # and did not re-ask a settled verdict
+    assert _has_no_traceback(second)
+
+    from ai_calibrator.judge_check import load_labels
+    assert len(load_labels(tmp_path, "run-0001")) == 6
+
+
+def test_judge_check_says_so_when_every_verdict_is_already_judged(tmp_path):
+    """With nothing left to review the command has no work to do, and saying
+    "reviewing 0 verdicts" or re-asking the same ones both misreport that."""
+    _judged_project(tmp_path, verdicts=2)
+    assert runner.invoke(app, ["judge-check", str(tmp_path)], input="y\ny\n").exit_code == 0
+
+    r = runner.invoke(app, ["judge-check", str(tmp_path)])
+
+    assert r.exit_code == 0, r.output
+    assert "already" in r.output
+    assert "agreement" in r.output.lower()      # the measurement still gets reported
+    assert _has_no_traceback(r)
+
+
+def test_judge_check_reports_an_unreadable_labels_file_instead_of_crashing(tmp_path):
+    """Saving merges onto the labels already on disk and refuses when it cannot
+    read them, so the CLI has to turn that refusal into the instruction it
+    carries rather than a traceback."""
+    _judged_project(tmp_path, verdicts=2)
+    (tmp_path / "evals" / "run-0001" / "human-labels.json").write_text("{ truncated",
+                                                                      encoding="utf-8")
+
+    r = runner.invoke(app, ["judge-check", str(tmp_path), "--sample", "1"], input="y\n")
+
+    assert r.exit_code == 1, r.output
+    assert "human-labels.json" in r.output
+    assert _has_no_traceback(r)
+
+
+# --- train-engine: a bundle is only worth announcing if it holds something ---
+
+def test_train_engine_judge_builds_from_labels_when_logging_was_never_on(tmp_path):
+    """Logging is off by default, and `judge-check` ends by promising these labels
+    are what `train-engine judge` uses as ground truth. A label a logged call never
+    answered is a row of its own, so the log is not what makes the dataset exist."""
+    _judged_project(tmp_path, verdicts=2)
+    assert runner.invoke(app, ["judge-check", str(tmp_path)], input="y\ny\n").exit_code == 0
+    assert not (tmp_path / "logs").exists()      # logging never turned on
+
+    r = runner.invoke(app, ["train-engine", "judge", str(tmp_path)])
+
+    assert r.exit_code == 0, r.output
+    dataset = tmp_path / "trained-engines" / "judge" / "dataset.jsonl"
+    assert dataset.read_text(encoding="utf-8").strip(), "the promised ground truth trained nothing"
+    assert _has_no_traceback(r)
+
+
+def test_train_engine_refuses_a_bundle_with_nothing_in_it(tmp_path):
+    """A logged row with no output has no answer to learn, so a log can be
+    non-empty and the dataset still empty. A green ✓ over a 0-byte dataset.jsonl
+    surfaces as a crash on the GPU box the owner rented to train it."""
+    import json
+
+    from ai_calibrator.models import Project
+    from ai_calibrator.store import save_project
+
+    save_project(Project(name="p", goal="g"), tmp_path)
+    (tmp_path / "logs").mkdir()
+    (tmp_path / "logs" / "judge.jsonl").write_text(
+        json.dumps({"role": "judge", "prompt": "grade this", "output": None}) + "\n",
+        encoding="utf-8")
+
+    r = runner.invoke(app, ["train-engine", "judge", str(tmp_path)])
+
+    assert r.exit_code == 1, r.output
+    assert "✓" not in r.output
+    assert _has_no_traceback(r)
+
+
+def test_train_engine_next_step_names_the_project_it_just_exported(tmp_path):
+    """The printed prove command is meant to be copied. Without the project path it
+    runs against the working directory — and the bundle README tells the owner to
+    run it from inside trained-engines/, where that can only fail."""
+    _judged_project(tmp_path, verdicts=2)
+    assert runner.invoke(app, ["judge-check", str(tmp_path)], input="y\ny\n").exit_code == 0
+
+    r = runner.invoke(app, ["train-engine", "judge", str(tmp_path)])
+
+    assert r.exit_code == 0, r.output
+    prove = next(ln for ln in r.output.splitlines() if "--prove" in ln)
+    assert str(tmp_path) in prove

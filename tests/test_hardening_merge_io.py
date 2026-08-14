@@ -57,23 +57,20 @@ def test_save_labels_requires_passed(tmp_path):
     assert ("t1", "c1") in keys and ("t2", "c2") not in keys
 
 
-# prove_engine: rows with a None logged output must be skipped, not scored
-def test_prove_engine_skips_none_output(tmp_path):
+# a logged row with a None output has no answer to train on or to score against
+def test_a_logged_row_with_no_output_is_not_measurable(tmp_path):
     import json
 
     from ai_calibrator.store import open_private_append
-    from ai_calibrator.train_engine import prove_engine
+    from ai_calibrator.train_engine import _usable_log
     logs = tmp_path / "logs"; logs.mkdir()
     with open_private_append(logs / "judge.jsonl") as fh:
         fh.write(json.dumps({"role": "judge", "prompt": "p1", "output": "real"}) + "\n")
         fh.write(json.dumps({"role": "judge", "prompt": "p2", "output": None}) + "\n")
 
-    class Echo:
-        name = "echo@test"
-        def complete(self, prompt, *, system=None, schema=None):
-            return "real"
-    res = prove_engine(tmp_path, "judge", Echo())
-    assert res.samples == 1        # only the row with a non-None output is measured
+    # The one population both the dataset and the prove-it gate are drawn from, so
+    # a row with no recorded answer can neither be trained on nor scored against.
+    assert len(_usable_log(tmp_path, "judge")) == 1
 
 
 # loads_tolerant parses engine TEXT — bytes is a contract violation, not silently OK

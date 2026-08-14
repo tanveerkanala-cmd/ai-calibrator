@@ -26,7 +26,7 @@ from .models import Scorecard, same_question
 class DriftReport:
     baseline_run: str
     candidate_run: str
-    baseline_rate: float
+    baseline_rate: float        # each run's own headline rate, over everything it graded
     candidate_rate: float
     regressed_tests: list[str]  # passed in baseline, failed in candidate
     fixed_tests: list[str]      # failed in baseline, passed in candidate
@@ -36,34 +36,54 @@ class DriftReport:
     # comparable and are excluded from the counts above rather than being
     # silently treated as the same test.
     incomparable_tests: list[str] = field(default_factory=list)
-    # How many shared ids the flip lists were actually computed over. Zero with
-    # a non-empty `incomparable_tests` means nothing was compared at all — which
-    # is a different situation from "compared, and nothing flipped", and the two
-    # must not report the same way.
+    # How many ids the two runs actually compared: shared, and asking the same
+    # question in both. This is the population the flip lists AND the delta are
+    # computed over — everything else describes only one of the two runs.
     compared: int = 0
+    # Pass rate over those `compared` ids alone, per run. The whole-run rates
+    # above are each true of their own run and are NOT subtractable: they
+    # denominate over every graded test, including the ones this comparison
+    # refused to make. None when nothing was comparable.
+    baseline_shared_rate: float | None = None
+    candidate_shared_rate: float | None = None
 
     @property
-    def delta(self) -> float:
-        return self.candidate_rate - self.baseline_rate
+    def delta(self) -> float | None:
+        """Pass-rate change over the tests both runs graded and both still ask.
+
+        None when nothing was comparable: there is no measurement, and every
+        stand-in lies — 0.0 reads as "behavior held", and the whole-run
+        difference reports a collapse the model never caused."""
+        if self.baseline_shared_rate is None or self.candidate_shared_rate is None:
+            return None
+        return self.candidate_shared_rate - self.baseline_shared_rate
 
     @property
     def comparable(self) -> bool:
         """Whether the two runs still share any question worth comparing.
 
-        False when `compile` replaced every shared probe. The rates are still
-        computed and still real, but they describe two different exams, so
-        their difference is not a result."""
-        return self.compared > 0 or not self.incomparable_tests
+        False when `compile` replaced every shared probe, and false when the two
+        runs graded no id in common. The rates are still computed and still
+        real, but they describe two different exams, so their difference is not
+        a result — which is the same fact `delta is None` states."""
+        return self.compared > 0
 
     @property
     def regressed(self) -> bool:
         """Drift worth alerting on: a pass-rate drop beyond tolerance, OR any
         individual test that went from passing to failing.
 
-        A pass-rate drop only counts when the two runs are comparable at all —
-        otherwise a recompile that swapped in harder questions reads as a
-        regression the model never caused."""
-        rate_dropped = self.comparable and self.delta < -self.tolerance
+        Both read the comparable population only. A recompile that swapped in
+        harder questions, or a test the baseline never graded, must not read as
+        a regression the model never caused.
+
+        NOTE: confining the delta to the shared population makes the first
+        clause unreachable — `delta < -tolerance` requires more flips down than
+        up, which the second clause already catches — so `--tolerance` cannot
+        change this verdict. Deciding whether tolerance should gate the flipped
+        SHARE instead, or be retired, is a product call: gating it would let a
+        real pass->fail regression through a CI gate that currently stops it."""
+        rate_dropped = self.delta is not None and self.delta < -self.tolerance
         return rate_dropped or bool(self.regressed_tests)
 
 
@@ -78,7 +98,7 @@ def compare_scorecards(baseline: Scorecard, candidate: Scorecard, *, tolerance: 
     # something else, and reported the difference as a regression or a fix.
     by_id_before = {r.test_id: r for r in baseline.results}
     regressed, fixed, incomparable = [], [], []
-    compared = 0
+    compared = base_passes = cand_passes = 0
     for cand in candidate.results:
         base = by_id_before.get(cand.test_id)
         if base is None:
@@ -90,6 +110,12 @@ def compare_scorecards(baseline: Scorecard, candidate: Scorecard, *, tolerance: 
         # nothing flipped" is a real result, and the caller has to be able to
         # tell it apart from "there was nothing left to compare".
         compared += 1
+        # The rates the delta subtracts are tallied HERE, over this exact set —
+        # the whole-run rates include tests the loop above just refused to
+        # compare, so their difference gates on results this comparison
+        # deliberately threw away.
+        base_passes += base.passed
+        cand_passes += cand.passed
         if base.passed and not cand.passed:
             regressed.append(cand.test_id)
         elif not base.passed and cand.passed:
@@ -105,6 +131,8 @@ def compare_scorecards(baseline: Scorecard, candidate: Scorecard, *, tolerance: 
         tolerance=tolerance,
         incomparable_tests=incomparable,
         compared=compared,
+        baseline_shared_rate=(base_passes / compared) if compared else None,
+        candidate_shared_rate=(cand_passes / compared) if compared else None,
     )
 
 
@@ -141,6 +169,10 @@ def drift_dict(report: DriftReport) -> dict:
         "candidate_run": report.candidate_run,
         "baseline_rate": report.baseline_rate,
         "candidate_rate": report.candidate_rate,
+        # The pair `delta` is the difference of — a surface that prints a Δ must
+        # print these beside it, not the whole-run rates above.
+        "baseline_shared_rate": report.baseline_shared_rate,
+        "candidate_shared_rate": report.candidate_shared_rate,
         "delta": report.delta,
         "regressed": report.regressed,
         "regressed_tests": report.regressed_tests,

@@ -169,14 +169,34 @@ function renderInterview(p, s, name) {
     const ta = document.createElement("textarea");
     ta.value = item.answer || item.draft_answer || "";
     ta.dataset.qid = item.id;
+    // What the box held before anyone touched it, so the save can tell an
+    // answer the owner wrote from a draft it merely showed them.
+    ta.dataset.prefilled = ta.value;
     q.appendChild(ta);
+    if (!item.answer && item.draft_answer) {
+      q.insertAdjacentHTML("beforeend",
+        `<div class="why">drafted for you — edit it to make it your answer; left as is, it stays a draft</div>`);
+    }
     card.appendChild(q);
   }
   const save = document.createElement("button");
   save.textContent = "Save answers";
   save.onclick = () => action(async () => {
     const answers = {};
-    card.querySelectorAll("textarea").forEach((t) => { answers[t.dataset.qid] = t.value; });
+    // Only what the person actually wrote. Every box arrives prefilled with the
+    // tool's drafted guess, so posting them all records the tool's own answers
+    // as the owner's ratified ones — the spec then compiles from guesses nobody
+    // read, and this route cannot mark them as drafted, so every downstream
+    // "unreviewed draft" caveat stays silent. Propose-and-ratify: an untouched
+    // draft is a proposal, and the CLI makes accepting one an explicit
+    // --accept-drafts choice.
+    card.querySelectorAll("textarea").forEach((t) => {
+      if (t.value !== t.dataset.prefilled) answers[t.dataset.qid] = t.value;
+    });
+    if (!Object.keys(answers).length) {
+      banner("Nothing saved — no answer was edited. A drafted answer stays a draft until you change it.");
+      return;
+    }
     await api("POST", `/projects/${name}/answers`, { answers });
     selectProject(s.name);
   });
@@ -373,8 +393,26 @@ async function showDrift(name) {
   const card = resultCard("Drift");
   card.insertAdjacentHTML("beforeend", `<p class="muted">re-evaluating…</p>`);
   const d = await api("POST", `/projects/${name}/drift`, {});
+  // `delta` is null when the two runs graded no question in common — `compile`
+  // re-mints t1..tN under the same ids, so a re-run can be an entirely new exam.
+  // Both rates are real and neither can be subtracted from the other, so there
+  // is no verdict to give: "no drift" would certify a comparison that never
+  // happened, and the Δ beside it would be a number nothing produced.
+  if (d.delta === null || d.delta === undefined) {
+    card.innerHTML = `<strong>Drift</strong>` +
+      `<p>${escapeHtml(d.baseline_run)}: ${pctText(d.baseline_rate)} → ${escapeHtml(d.candidate_run)}: ${pctText(d.candidate_rate)}</p>` +
+      `<p><b>? Not comparable — nothing was compared.</b></p>` +
+      `<div class="why">${d.incomparable_tests.length} test(s) ask a different question than they did in ` +
+      `${escapeHtml(d.baseline_run)}. Run <code>calibrate eval</code> on the current suite to set a new baseline.</div>`;
+    return;
+  }
+  // The two rates printed beside a Δ are the two the Δ is the difference of,
+  // over the tests both runs actually asked — the whole-run rates cover tests
+  // the comparison excluded, so their difference is not this number.
   card.innerHTML = `<strong>Drift</strong>` +
-    `<p>${escapeHtml(d.baseline_run)}: ${pctText(d.baseline_rate)} → ${escapeHtml(d.candidate_run)}: ${pctText(d.candidate_rate)} (Δ ${pctDelta(d.delta)})</p>` +
+    `<p>${escapeHtml(d.baseline_run)}: ${pctText(d.baseline_shared_rate)} → ${escapeHtml(d.candidate_run)}: ${pctText(d.candidate_shared_rate)} ` +
+    `(Δ ${pctDelta(d.delta)}) over ${d.compared} shared test(s)</p>` +
+    (d.incomparable_tests.length ? `<div class="why">? ${d.incomparable_tests.length} not comparable — the test text changed since ${escapeHtml(d.baseline_run)}, so they are outside this comparison</div>` : "") +
     (d.regressed_tests.length ? `<div class="why">✗ regressed: ${d.regressed_tests.map(escapeHtml).join(", ")}</div>` : "") +
     (d.fixed_tests.length ? `<div class="why">✓ improved: ${d.fixed_tests.map(escapeHtml).join(", ")}</div>` : "") +
     (d.regressed ? `<p><b>⚠ Drift detected.</b></p>` : `<p>✓ No drift.</p>`);

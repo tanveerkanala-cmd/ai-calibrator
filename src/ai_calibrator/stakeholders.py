@@ -189,7 +189,11 @@ def build_merged_spec(
 ) -> BehaviorSpec:
     """The unified spec: everyone's rules minus the dropped (losing) statements,
     plus any merged additions, plus an additive union of the non-conflicting
-    dimensions (edge cases, criteria, examples, knowledge, persona)."""
+    dimensions (edge cases, criteria, examples, persona).
+
+    Knowledge sources are the exception to the union: a merged project is built
+    from these specs alone, so it has no materials/ and no knowledge index. See
+    the note where they are dropped."""
     drops = drops or set()
     additions = [a for a in (additions or []) if is_str(a)]
     statements = gather(named_specs)
@@ -240,7 +244,15 @@ def build_merged_spec(
             if ex.input not in seen_ex:
                 seen_ex.add(ex.input)
                 examples.append(ex)
-    knowledge = _dedup([k for sp in specs for k in sp.knowledge_sources])
+    # NOT unioned. A merged project is constructed from the specs and nothing
+    # else: no materials/ are copied and no knowledge.lancedb is built, so
+    # retrieval has nothing to augment the prompt with. Carrying the sources
+    # forward still makes compile append "Ground answers in the provided
+    # knowledge base; do not invent facts it does not support." — ordering the
+    # model to answer only from documents it is never given, so it hedges or
+    # refuses on exactly the questions the merge exists to answer. Re-ingest the
+    # documents into the merged project to ground it for real.
+    knowledge: list[str] = []
 
     # Scalar behavior fields. These render straight into the system prompt, so
     # picking one by argument order silently ships a different AI depending on the

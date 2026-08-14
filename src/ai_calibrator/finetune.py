@@ -63,8 +63,16 @@ def _recipe() -> dict:
         with open("recipe.yaml", encoding="utf-8") as f:
             loaded = yaml.safe_load(f) or {}
         for k in DEFAULTS:
-            if isinstance(loaded.get(k), (int, float)):
-                cfg[k] = loaded[k]
+            if k not in loaded:
+                continue
+            # YAML 1.1 resolves 5e-5 (no decimal point) to a STRING, and that is
+            # exactly how a learning rate is written. Read the number out of the
+            # text: this file is documented as editable, so an edit that trains
+            # at 4x the requested rate must not pass silently.
+            try:
+                cfg[k] = float(loaded[k])
+            except (TypeError, ValueError):
+                print(f"recipe.yaml: {k}={loaded[k]!r} is not a number, using {cfg[k]}")
     except Exception:
         pass
     return cfg
@@ -76,6 +84,18 @@ def _device() -> str:
     if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
         return "mps"
     return "cpu"
+
+
+def _cuda_dtype():
+    """The half precision THIS GPU can train in.
+
+    bf16 needs Ampere (compute capability 8.0+). On a T4 / V100 / RTX 20xx,
+    TrainingArguments refuses bf16 before step 0, and where a newer torch reports
+    it as supported it is a software emulation slower than fp16. Nothing else in
+    the bundle changes dtype -- neither QLORA=1 nor a smaller base -- so assuming
+    bf16 is what stops those cards from training at all."""
+    major = torch.cuda.get_device_capability()[0]
+    return torch.bfloat16 if major >= 8 else torch.float16
 
 
 def main() -> None:
@@ -90,13 +110,13 @@ def main() -> None:
     dataset = Dataset.from_list([{"text": t} for t in texts])
 
     qlora = bool(os.getenv("QLORA")) and device == "cuda"
+    # fp32 off-CUDA (MPS/CPU are unstable in half precision for training)
+    dtype = _cuda_dtype() if device == "cuda" else torch.float32
     if qlora:                                          # 4-bit -- CUDA + bitsandbytes only
         from transformers import BitsAndBytesConfig
         model = AutoModelForCausalLM.from_pretrained(BASE, quantization_config=BitsAndBytesConfig(
-            load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=torch.bfloat16))
+            load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=dtype))
     else:
-        # fp32 off-CUDA (MPS/CPU are unstable in half precision for training)
-        dtype = torch.bfloat16 if device == "cuda" else torch.float32
         model = AutoModelForCausalLM.from_pretrained(BASE, dtype=dtype).to(device)
 
     cfg = _recipe()
@@ -110,7 +130,8 @@ def main() -> None:
         logging_steps=5,
         dataset_text_field="text",
         max_length=int(cfg["max_seq_len"]),
-        bf16=(device == "cuda"),
+        bf16=(dtype is torch.bfloat16),
+        fp16=(dtype is torch.float16),
     )
     peft_config = LoraConfig(r=int(cfg["lora_r"]), lora_alpha=int(cfg["lora_alpha"]),
                              lora_dropout=float(cfg["lora_dropout"]), task_type="CAUSAL_LM")
@@ -131,8 +152,8 @@ _MERGE_PY = '''#!/usr/bin/env python3
     pip install "transformers>=4.56.2" peft torch
     python merge.py
 
-Merged in fp32 and saved in bf16, so the result loads on the same GPU that
-trained it rather than needing twice its memory.
+Merged and saved in bf16, so the merge fits the RAM of the machine that trained
+the model and the result loads on the GPU that trained it.
 
 Then serve the merged model (see README.md) and point the project's `subject`
 engine at it to run the prove-it gate."""
@@ -149,12 +170,13 @@ MERGE_OUT = "__MERGE_OUT__"
 
 def main() -> None:
     tokenizer = AutoTokenizer.from_pretrained(BASE)
-    # Merge in fp32 so the LoRA delta is applied at full precision, then SAVE in
-    # bf16. Saving fp32 doubles the artifact -- a 3B becomes ~12 GB -- and the
-    # next step in the README is to serve this model on the same GPU that just
-    # trained it. A 12 GB card fits the bf16 copy and not the fp32 one, so the
-    # documented workflow would dead-end on the hardware it was written for.
-    base = AutoModelForCausalLM.from_pretrained(BASE, dtype=torch.float32)
+    # Load and save at 2 bytes/param. This step runs on the CPU, so fp32 would
+    # cost 4 bytes/param of HOST RAM -- ~30 GB for a 7B -- on the 16-32 GB
+    # machines that pair with the 10-12 GB card the QLoRA route targets, and the
+    # merge is mandatory before serving. It buys no precision either: peft
+    # computes the LoRA delta in fp32 on the CPU whatever the weights are stored
+    # in. Saving fp32 would also double the artifact past the GPU that trained it.
+    base = AutoModelForCausalLM.from_pretrained(BASE, dtype=torch.bfloat16)
     merged = PeftModel.from_pretrained(base, ADAPTER).merge_and_unload()
     merged = merged.to(torch.bfloat16)
     merged.save_pretrained(MERGE_OUT)
@@ -168,6 +190,16 @@ if __name__ == "__main__":
 '''
 
 MERGE_OUT = "merged"
+
+# The hyperparameters the generated train.py reads from recipe.yaml at RUN time
+# (its DEFAULTS block). Regenerating a bundle carries exactly these forward from
+# the recipe.yaml already on disk: `calibrate train` rebuilds the bundle before
+# train.py reads it, so writing the size-based defaults back over an existing file
+# would silently revert the knobs the docs invite the user to edit. Nothing else
+# in the recipe may carry over -- base model, epochs and the step cap are BAKED
+# into train.py by this invocation's flags, so a stale value would describe a run
+# that never happened.
+TUNABLE_KEYS = ("learning_rate", "lora_r", "lora_alpha", "lora_dropout", "max_seq_len")
 
 # Every placeholder the trainer template carries. Rendering must substitute ALL of
 # them: a leftover `__EPOCHS__` is a valid Python identifier, so the emitted file
@@ -319,6 +351,13 @@ def training_overlap(project: Project, card: Scorecard) -> list[str]:
     excludes was never trained on, so a test using its input is genuinely held
     out and must stay in the comparison.
 
+    Matched against EVERY user turn a test sends, not just the opening one.
+    Absorbing live feedback on a conversation trains on the last turn
+    (``Example(input=turns[-1])``) and pins the test on the first
+    (``TestCase(input=turns[0], follow_ups=turns[1:])``), so a first-turn-only
+    check can never match the row that feedback created — while eval replays all
+    the turns and grades a transcript that ends in the memorized exchange.
+
     The card may predate the current suite, and `compile` re-mints t1..tN, so an
     id in the card can name a different question than the id in ``project``
     does now. Reading the memorization check off the CURRENT input for that id
@@ -332,7 +371,9 @@ def training_overlap(project: Project, card: Scorecard) -> list[str]:
     out = []
     for r in card.results:
         t = by_id.get(r.test_id)
-        if t is not None and result_matches_test(r, t) and t.input in trained:
+        if t is None or not result_matches_test(r, t):
+            continue
+        if any(turn in trained for turn in (t.input, *t.follow_ups)):
             out.append(r.test_id)
     return sorted(out)
 
@@ -366,10 +407,15 @@ base first:
 ```bash
 python merge.py            # writes the merged model to ./{MERGE_OUT}/
 ```
+It runs on the CPU and holds the base at 2 bytes/param — ~15GB of system RAM for
+a 7B, not VRAM. Route (b) above (a smaller `--base`) is the fix if that is tight.
+
 Then either:
-- **OpenAI-compatible endpoint (verified).** `transformers serve` ships with
-  this extra, so nothing else to install and no conversion:
+- **OpenAI-compatible endpoint.** No conversion, but `transformers serve` needs
+  its serving extras (fastapi/uvicorn/openai) — the `train` install above does
+  not include them:
   ```bash
+  pip install "transformers[serving]"
   transformers serve --port 8010
   export OPENAI_BASE_URL=http://localhost:8010/v1 OPENAI_API_KEY=local
   calibrate engines <project> subject "$(pwd)/{MERGE_OUT}@openai"
@@ -378,9 +424,12 @@ Then either:
   > judge bound to `@openai` is sent to this endpoint too — it would be graded by
   > the very model it is grading. Bind the judge to `@ollama` or `@anthropic`
   > before the comparison.
-- **Ollama.** Recent versions import merged safetensors directly
-  (`printf 'FROM ./{MERGE_OUT}\n' > Modelfile && ollama create my-ft -f Modelfile
-  --experimental`), and older ones need a GGUF conversion via llama.cpp first.
+- **Ollama.** Recent versions import merged safetensors directly; older ones need
+  a GGUF conversion via llama.cpp first.
+  ```bash
+  printf 'FROM ./{MERGE_OUT}\\n' > Modelfile
+  ollama create my-ft -f Modelfile --experimental
+  ```
   Either way **confirm `ollama list` shows the model before you rely on it**: the
   experimental import has been observed printing "successfully imported" while
   writing a manifest the running daemon never picks up, so the next command fails
@@ -401,6 +450,21 @@ Then either:
 """
 
 
+def _hand_edited_tunables(recipe_file: Path) -> dict:
+    """The run-time hyperparameters an existing recipe.yaml already carries.
+
+    Read back so regenerating the bundle refreshes the dataset and the scripts
+    without reverting a user's edits — see ``TUNABLE_KEYS``. An unreadable or
+    non-mapping file yields nothing and the defaults stand."""
+    try:
+        loaded = yaml.safe_load(recipe_file.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return {}
+    if not isinstance(loaded, dict):
+        return {}
+    return {k: loaded[k] for k in TUNABLE_KEYS if k in loaded}
+
+
 def export_finetune(
     project: Project, *, project_dir, base_model: str | None = None,
     epochs: int | None = None, max_steps: int | None = None,
@@ -412,6 +476,7 @@ def export_finetune(
 
     out = Path(project_dir) / "finetune"
     out.mkdir(parents=True, exist_ok=True)
+    recipe.update(_hand_edited_tunables(out / "recipe.yaml"))
     files: list[str] = []
 
     def _write(fn: str, content: str) -> None:

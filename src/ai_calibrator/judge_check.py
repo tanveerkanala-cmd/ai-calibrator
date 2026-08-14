@@ -45,10 +45,16 @@ def save_labels(project_dir: str | Path, run_id: str, labels: list[dict]) -> Pat
     CONCURRENCY CONTRACT: the caller must hold ``store.project_lock``. This
     RELOADS the file and rewrites it whole, so two unserialized writers each
     merge onto a stale read and the loser's labels are gone — silently, since
-    the write itself is atomic and every caller still succeeds."""
+    the write itself is atomic and every caller still succeeds.
+
+    Raises ValueError if the labels file exists but cannot be read. The merge
+    would otherwise start from the empty list ``load_labels`` returns for an
+    unreadable file and then rewrite the file whole, destroying every label the
+    corrupt bytes still held — the same situation the golden-output paths refuse
+    to overwrite, on data that is even more expensive to recreate."""
     path = _labels_path(project_dir, run_id)
     merged: dict[tuple, dict] = {}
-    for label in load_labels(project_dir, run_id) + list(labels):
+    for label in _prior_labels(path) + list(labels):
         # Require an explicit "passed" — otherwise a label missing it would be
         # silently persisted as a FAIL (bool(None)); load_labels enforces the same.
         # Ids must be STRINGS: they become a dict key here, so a list/dict id would
@@ -82,6 +88,39 @@ def load_labels(project_dir: str | Path, run_id: str) -> list[dict]:
     labels = data.get("labels") if isinstance(data, dict) else None
     if not isinstance(labels, list):
         return []
+    return _valid_labels(labels)
+
+
+def _prior_labels(path: Path) -> list[dict]:
+    """The labels already on disk, for a merge that will rewrite the file whole.
+
+    Unlike ``load_labels`` this tells "nothing saved yet" apart from "what is
+    saved cannot be read": to a reader the difference is academic (labels are
+    advisory), but a writer that treats them the same rewrites the file with only
+    the new labels and takes every prior one with it. Half-formed ROWS are not
+    corruption — they are filtered, exactly as the reader filters them."""
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, OSError) as exc:
+        raise ValueError(
+            f"{path} is unreadable ({exc}) — refusing to overwrite it. Saving merges onto "
+            "the labels already there, so writing now would replace every one of them with "
+            "just this session's. Repair the file (a merge-conflict marker or a truncated "
+            "write is the usual cause), or move it aside, then re-run."
+        ) from exc
+    labels = data.get("labels") if isinstance(data, dict) else None
+    if not isinstance(labels, list):
+        raise ValueError(
+            f"{path} is unreadable — refusing to overwrite it. It parses, but carries no "
+            "`labels` list, so whatever labels it was meant to hold cannot be merged "
+            "forward. Repair the file, or move it aside, then re-run."
+        )
+    return _valid_labels(labels)
+
+
+def _valid_labels(labels: list) -> list[dict]:
     # Require the verdict too: a label without "passed" carries no judgment, and
     # letting it through would be silently treated as a fail downstream.
     # isinstance, not truthiness: a list or dict id is truthy and reaches the

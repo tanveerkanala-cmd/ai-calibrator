@@ -1,7 +1,12 @@
 """M5 export — fully deterministic, no engine needed."""
 
 import ast
+import importlib.util
+import json
+import sys
+import urllib.request
 
+from ai_calibrator.eval import conversation_prompt
 from ai_calibrator.export import DEFAULT_LOCAL_BASE, export_bundle
 from ai_calibrator.models import (
     BehaviorSpec,
@@ -58,3 +63,59 @@ def test_generated_runner_is_valid_python_with_base(tmp_path):
     src = (tmp_path / "export" / "run.py").read_text(encoding="utf-8")
     assert "llama3.1:8b" in src
     ast.parse(src)  # the generated runner is syntactically valid Python
+
+
+def _run_bundle_runner(tmp_path, question, monkeypatch):
+    """Execute the generated run.py against a stubbed Ollama → the posted payload."""
+    sent = {}
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return json.dumps({"message": {"content": "an answer"}}).encode("utf-8")
+
+    def _urlopen(request, *args, **kwargs):
+        sent["payload"] = json.loads(request.data.decode("utf-8"))
+        return _Response()
+
+    monkeypatch.setattr(urllib.request, "urlopen", _urlopen)
+    monkeypatch.setattr(sys, "argv", ["run.py", question])
+    path = tmp_path / "export" / "run.py"
+    spec = importlib.util.spec_from_file_location("bundle_runner", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.main()
+    return sent["payload"]
+
+
+def test_generated_runner_asks_the_question_the_way_the_eval_graded_it(tmp_path, monkeypatch):
+    """`calibrate eval` grades `User: …\\nAssistant:` (eval.conversation_prompt), and
+    the served endpoint sends the same encoding. A bundle that asks the bare question
+    is asking something the pass rate stamped beside it was never earned on."""
+    export_bundle(_project("llama3.1:8b@ollama"), project_dir=tmp_path)
+
+    payload = _run_bundle_runner(tmp_path, "How do I return an item?", monkeypatch)
+
+    system, user = payload["messages"]
+    assert system["role"] == "system" and "Answer product questions" in system["content"]
+    assert user["role"] == "user"
+    assert user["content"] == conversation_prompt([], "How do I return an item?")
+
+
+def test_bundle_says_where_the_interactive_path_diverges(tmp_path):
+    """`ollama run` sends the bare question — this format cannot carry the
+    encoding the eval graded, so the bundle says so instead of implying the
+    certificate covers it."""
+    export_bundle(_project("llama3.1:8b@ollama"), project_dir=tmp_path)
+    exp = tmp_path / "export"
+
+    readme = (exp / "README.md").read_text(encoding="utf-8")
+    modelfile = (exp / "Modelfile").read_text(encoding="utf-8")
+
+    assert "bare question" in readme and "run.py" in readme
+    assert "bare question" in modelfile

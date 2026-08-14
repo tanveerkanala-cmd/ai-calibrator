@@ -68,6 +68,34 @@ def _stub_uvicorn(monkeypatch):
     return calls
 
 
+_CLOUD_SDKS = ("anthropic", "openai")
+
+
+class _NoCloudSdk:
+    """A meta-path hook that makes the cloud engine SDKs unimportable."""
+
+    def find_spec(self, name, path=None, target=None):
+        if name.partition(".")[0] in _CLOUD_SDKS:
+            raise ModuleNotFoundError(f"No module named {name!r}")
+        return None
+
+
+def _without_cloud_sdks(monkeypatch):
+    """Run the body as an `.[api]`-without-`.[cloud]` clone sees it.
+
+    The suite is documented as green with no engine SDK installed, and the two
+    environments CI builds sit on either side of this combination: the `.[dev]`
+    jobs have no uvicorn (so the boot assertions below are skipped) and the
+    full-extras job has the SDK. Pinning the absence here means the boot gate is
+    exercised the same way in every environment, not only in the one that
+    happens to be missing a package."""
+    import sys
+
+    for mod in [m for m in sys.modules if m.partition(".")[0] in _CLOUD_SDKS]:
+        monkeypatch.delitem(sys.modules, mod)
+    monkeypatch.setattr(sys, "meta_path", [_NoCloudSdk(), *sys.meta_path])
+
+
 class _Engine:
     """Answers a fixed string, so the deterministic check decides the verdict."""
 
@@ -126,6 +154,8 @@ def test_run_force_serves_a_failed_gate_but_says_so(tmp_path, monkeypatch):
     """--force is the documented override. It must not print the refusal — and
     must not print a clean certification either."""
     booted = _stub_uvicorn(monkeypatch)
+    _without_cloud_sdks(monkeypatch)
+    _stub_engines(monkeypatch)   # the gate decision is the subject here, not the engine
     p = _project(tmp_path)
     _gate(tmp_path, p, ok=False)
 
@@ -141,6 +171,8 @@ def test_run_force_serves_a_failed_gate_but_says_so(tmp_path, monkeypatch):
 
 def test_run_serves_a_passing_gate(tmp_path, monkeypatch):
     booted = _stub_uvicorn(monkeypatch)
+    _without_cloud_sdks(monkeypatch)
+    _stub_engines(monkeypatch)
     p = _project(tmp_path)
     _gate(tmp_path, p, ok=True)
 
@@ -352,6 +384,54 @@ def test_drift_exits_zero_when_behavior_holds(tmp_path, monkeypatch):
 
     r = runner.invoke(app, ["drift", str(tmp_path)])
     assert r.exit_code == 0, r.output
+
+
+def test_drift_refuses_to_certify_a_run_it_could_not_compare(tmp_path, monkeypatch):
+    """`compile` re-mints t1..tN under the same ids, so a baseline can share every
+    id with the new run and no question. Nothing was measured there — and "no
+    drift, exit 0" is a verdict on a measurement, so a pipeline gating on this
+    command would pass a suite the `ci` drift stage refuses."""
+    from ai_calibrator.eval import save_scorecard
+
+    _project(tmp_path)
+    # Same id, a hash from the text the baseline actually asked.
+    save_scorecard(tmp_path, Scorecard(run_id="run-0001", results=[
+        ResultRow(test_id="t1", output="please", input_hash="0" * 64,
+                  criteria=[CriterionResult(criterion_id="c1", passed=True)])]))
+    _stub_engines(monkeypatch, reply="no.")
+
+    r = runner.invoke(app, ["drift", str(tmp_path)])
+
+    assert r.exit_code == 1, r.output
+    assert "No drift" not in r.output
+    assert "100.0%" not in r.output   # a Δ over an empty population is not a number
+    assert _no_crash(r)
+
+
+def test_drift_prints_the_rates_the_delta_is_the_difference_of(tmp_path, monkeypatch):
+    """The whole-run rates each describe their own run and include tests the
+    comparison refused, so printing them beside a Δ computed over the shared
+    subset shows three numbers that do not add up."""
+    from ai_calibrator.eval import save_scorecard
+    from ai_calibrator.models import test_input_hash
+
+    p = _project(tmp_path)
+    p.tests.append(CaseModel(id="t2", input="another question", expects=["c1"]))
+    save_project(p, tmp_path)
+    save_scorecard(tmp_path, Scorecard(run_id="run-0001", results=[
+        # t1 is comparable and passed; t2 asks something else now, so it is not.
+        ResultRow(test_id="t1", output="please", input_hash=test_input_hash(p.tests[0]),
+                  criteria=[CriterionResult(criterion_id="c1", passed=True)]),
+        ResultRow(test_id="t2", output="no.", input_hash="0" * 64,
+                  criteria=[CriterionResult(criterion_id="c1", passed=False)])]))
+    _stub_engines(monkeypatch, reply="please, of course")
+
+    r = runner.invoke(app, ["drift", str(tmp_path)])
+
+    assert r.exit_code == 0, r.output
+    assert "1 shared test" in r.output      # the population the Δ is over, stated
+    assert "50%" not in r.output            # the baseline's whole-run rate is not it
+    assert _no_crash(r)
 
 
 # --- the one function that rmdir()s a user's directory ---------------------

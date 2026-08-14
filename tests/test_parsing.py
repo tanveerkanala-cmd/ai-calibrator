@@ -96,3 +96,117 @@ def test_corrupt_docx_is_a_clean_error(tmp_path):
     bad.write_bytes(b"this is not a zip archive")
     with pytest.raises(ValueError, match="not a valid"):
         read_document(bad)
+
+
+class _Par:
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+
+class _Cell:
+    """A table cell: a block container of its own, like python-docx's `_Cell`."""
+    def __init__(self, *texts: str) -> None:
+        self._items = [_Par(t) for t in texts]
+
+    def iter_inner_content(self):
+        return list(self._items)
+
+
+class _Row:
+    def __init__(self, *cells: _Cell) -> None:
+        self.cells = list(cells)
+
+
+class _Table:
+    def __init__(self, *rows: _Row) -> None:
+        self.rows = list(rows)
+
+
+class _StubDocument:
+    """python-docx's shape: paragraphs and tables are DIFFERENT block types, and
+    a table's paragraphs are not the document's."""
+    def __init__(self, *items) -> None:
+        self._items = list(items)
+
+    def iter_inner_content(self):
+        return list(self._items)
+
+    @property
+    def paragraphs(self):
+        return [i for i in self._items if isinstance(i, _Par)]
+
+    @property
+    def tables(self):
+        return [i for i in self._items if isinstance(i, _Table)]
+
+
+def _stub_docx(tmp_path, monkeypatch, document):
+    """A .docx on disk whose parsed document is `document` (no `docs` extra)."""
+    import sys
+    import types
+    import zipfile
+
+    monkeypatch.setitem(sys.modules, "docx",
+                        types.SimpleNamespace(Document=lambda _p: document))
+    f = tmp_path / "faq.docx"
+    with zipfile.ZipFile(f, "w") as z:
+        z.writestr("word/document.xml", b"<w:document/>")
+    return f
+
+
+def test_docx_table_content_is_read(tmp_path, monkeypatch):
+    """An FAQ or policy matrix is a Word TABLE, and `document.paragraphs` holds
+    only the body's own paragraphs — never a table cell's. Reading just those
+    returned "" for a table-only file, which ingest counts as a read material
+    while none of its content reaches the facts, the gaps or the index."""
+    doc = _StubDocument(
+        _Par("Support handbook, revision 4."),
+        _Table(_Row(_Cell("Q: refunds?"), _Cell("Refunds are accepted within 30 days."))),
+        _Par("Escalate anything older."),
+    )
+    text = read_document(_stub_docx(tmp_path, monkeypatch, doc))
+    assert "Support handbook, revision 4." in text
+    assert "Refunds are accepted within 30 days." in text   # the table row
+    assert "Escalate anything older." in text
+    # Document order: a policy row keeps the heading it sits under.
+    assert text.index("revision 4") < text.index("30 days") < text.index("Escalate")
+
+
+def test_docx_table_content_is_read_without_iter_inner_content(tmp_path, monkeypatch):
+    """Older python-docx has no `iter_inner_content`; tables must still be read."""
+    class _OldStub:
+        def __init__(self, paragraphs, tables):
+            self.paragraphs, self.tables = paragraphs, tables
+
+    doc = _OldStub([_Par("Support handbook, revision 4.")],
+                   [_Table(_Row(_Cell("Refunds are accepted within 30 days.")))])
+    text = read_document(_stub_docx(tmp_path, monkeypatch, doc))
+    assert "Support handbook, revision 4." in text
+    assert "Refunds are accepted within 30 days." in text
+
+
+def test_docx_nested_table_content_is_read(tmp_path, monkeypatch):
+    """A cell can hold its own table — the walk has to recurse into cells."""
+    inner = _Table(_Row(_Cell("Final-sale items cannot be returned.")))
+    outer_cell = _Cell()
+    outer_cell._items = [_Par("Exceptions:"), inner]
+    doc = _StubDocument(_Table(_Row(outer_cell)))
+    text = read_document(_stub_docx(tmp_path, monkeypatch, doc))
+    assert "Final-sale items cannot be returned." in text
+
+
+def test_docx_table_content_is_read_by_the_real_library(tmp_path):
+    """End-to-end against python-docx itself, where the extra is installed."""
+    import pytest
+
+    docx = pytest.importorskip("docx")
+    f = tmp_path / "faq.docx"
+    d = docx.Document()
+    d.add_paragraph("Support handbook, revision 4.")
+    table = d.add_table(rows=1, cols=2)
+    table.rows[0].cells[0].text = "Q: refunds?"
+    table.rows[0].cells[1].text = "Refunds are accepted within 30 days."
+    d.save(str(f))
+    text = read_document(f)
+    assert "Support handbook, revision 4." in text
+    assert "Refunds are accepted within 30 days." in text

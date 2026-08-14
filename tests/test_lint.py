@@ -108,6 +108,19 @@ def test_lint_warns_when_the_judge_is_the_subject():
     assert "qwen2.5:7b@ollama" in issues[0].message
 
 
+def test_lint_warns_however_the_same_engine_is_spelled():
+    """`parse_engine_spec` defaults the provider to ollama and strips both
+    halves, so several strings build the identical engine — and the CLI's own
+    error text tells the user to type the short one ("or just `model` for local
+    Ollama"). Comparing the raw strings meant rebinding one role with a different
+    spelling retired the warning while the model still graded its own answers."""
+    from ai_calibrator.lint import lint_engine_roles
+
+    for judge in ("qwen2.5:7b", " qwen2.5:7b ", "qwen2.5:7b @ ollama", "qwen2.5:7b@OLLAMA"):
+        issues = lint_engine_roles(_roles_project("qwen2.5:7b@ollama", judge))
+        assert [i.code for i in issues] == ["judge_is_subject"], judge
+
+
 def test_lint_is_quiet_when_the_judge_is_a_different_model():
     from ai_calibrator.lint import lint_engine_roles
 

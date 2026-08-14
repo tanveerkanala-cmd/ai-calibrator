@@ -204,11 +204,105 @@ def test_judge_check_endpoints(tmp_path):
 
     # human disagrees with the judge → 0% agreement, c1 flagged unreliable
     body = c.post("/api/projects/p/judge-check",
-                  json={"labels": [{"test_id": "t1", "criterion_id": "c1", "passed": False}]}).json()
+                  json={"run_id": g["run_id"],
+                        "labels": [{"test_id": "t1", "criterion_id": "c1", "passed": False}]}).json()
     assert body["agreement_rate"] == 0.0 and "c1" in body["unreliable_criteria"]
 
     c.post("/api/projects", json={"name": "q", "goal": "g"})
     assert c.get("/api/projects/q/judge-check").status_code == 400  # no scorecard
+
+
+def test_judge_check_labels_must_name_the_run_they_reviewed(tmp_path):
+    """A reviewer works through the verdicts GET handed them; a scheduled `ci` —
+    or another client's eval — can mint a newer run while they do. Filing their
+    judgment against the newest run scores it against verdicts on outputs they
+    never saw, and stamps it as judge ground truth for `train-engine`."""
+    from ai_calibrator.eval import save_scorecard
+    from ai_calibrator.models import CriterionResult, Scorecard, TestResult
+
+    proj = Project(name="p", goal="g")
+    proj.spec = BehaviorSpec(goal="g", eval_criteria=[EvalCriterion(id="c1", description="d", weight=Weight.HIGH)])
+    proj.tests = [CaseModel(id="t1", input="q", expects=["c1"])]
+    save_project(proj, tmp_path / "p")
+    save_scorecard(tmp_path / "p", Scorecard(run_id="run-0001", results=[
+        TestResult(test_id="t1", output="GOOD ANSWER",
+                   criteria=[CriterionResult(criterion_id="c1", passed=True, rationale="ok")])]))
+
+    c = _client(tmp_path)
+    reviewed = c.get("/api/projects/p/judge-check").json()["run_id"]
+    assert reviewed == "run-0001"
+
+    # a newer run lands while the reviewer is still working through run-0001
+    save_scorecard(tmp_path / "p", Scorecard(run_id="run-0002", results=[
+        TestResult(test_id="t1", output="GARBAGE ANSWER",
+                   criteria=[CriterionResult(criterion_id="c1", passed=False, rationale="bad")])]))
+
+    labels = [{"test_id": "t1", "criterion_id": "c1", "passed": True}]
+    r = c.post("/api/projects/p/judge-check", json={"labels": labels})
+    assert r.status_code == 400 and "run_id" in r.json()["detail"]
+    assert not (tmp_path / "p" / "evals" / "run-0002" / "human-labels.json").exists()
+
+    # naming the reviewed run scores it against the verdicts that were reviewed
+    ok = c.post("/api/projects/p/judge-check", json={"run_id": reviewed, "labels": labels})
+    assert ok.status_code == 200 and ok.json()["agreement_rate"] == 1.0
+    assert (tmp_path / "p" / "evals" / "run-0001" / "human-labels.json").exists()
+
+
+def test_judge_check_agreement_counts_only_judge_graded_criteria(tmp_path):
+    """A criterion carrying a deterministic `check` is graded by `run_check`, so
+    it is not a judgment the judge made — which is why GET never offers it. Folding
+    a label on one into the rate reports agreement for a grader that never ran."""
+    from ai_calibrator.eval import save_scorecard
+    from ai_calibrator.models import Check, CriterionResult, Scorecard, TestResult
+
+    proj = Project(name="p", goal="g")
+    proj.spec = BehaviorSpec(goal="g", eval_criteria=[
+        EvalCriterion(id="c_len", description="stays short", weight=Weight.HIGH,
+                      check=Check(kind="max_chars", value="100")),
+        EvalCriterion(id="c_judge", description="is helpful", weight=Weight.HIGH)])
+    proj.tests = [CaseModel(id="t1", input="q", expects=["c_len", "c_judge"])]
+    save_project(proj, tmp_path / "p")
+    save_scorecard(tmp_path / "p", Scorecard(run_id="run-0001", results=[
+        TestResult(test_id="t1", output="o", criteria=[
+            CriterionResult(criterion_id="c_len", passed=True, rationale="check passed"),
+            CriterionResult(criterion_id="c_judge", passed=True, rationale="helpful")])]))
+
+    c = _client(tmp_path)
+    offered = c.get("/api/projects/p/judge-check").json()["gradings"]
+    assert [g["criterion_id"] for g in offered] == ["c_judge"]
+
+    body = c.post("/api/projects/p/judge-check", json={"run_id": "run-0001", "labels": [
+        {"test_id": "t1", "criterion_id": "c_len", "passed": True},
+        {"test_id": "t1", "criterion_id": "c_judge", "passed": True}]}).json()
+    # the code-graded label is reported (unmatched), never scored as agreement
+    assert body["total"] == 1 and body["agreed"] == 1 and body["unmatched"] == 1
+    assert list(body["by_criterion"]) == ["c_judge"]
+
+
+def test_snapshot_check_refuses_an_unreadable_golden_instead_of_reporting_none(tmp_path):
+    """`load_golden` answers None for "absent" AND for "present but unreadable".
+    Reporting a corrupt golden as "no golden — pin one first" walks the owner into
+    replacing the only copy of their pinned outputs with this run's."""
+    from ai_calibrator.eval import save_scorecard
+    from ai_calibrator.models import Scorecard, TestResult
+    from ai_calibrator.snapshot import GOLDEN_FILE
+
+    proj = Project(name="p", goal="g")
+    proj.spec = BehaviorSpec(goal="g", eval_criteria=[EvalCriterion(id="c1", description="d", weight=Weight.HIGH)])
+    proj.tests = [CaseModel(id="t1", input="q", expects=["c1"])]
+    save_project(proj, tmp_path / "p")
+    save_scorecard(tmp_path / "p", Scorecard(run_id="run-0001", results=[TestResult(test_id="t1", output="original")]))
+
+    c = _client(tmp_path)
+    assert c.post("/api/projects/p/snapshot").json()["pinned"] == 1
+    golden = tmp_path / "p" / GOLDEN_FILE
+    golden.write_text("<<<<<<< HEAD\n" + golden.read_text(encoding="utf-8"), encoding="utf-8")
+
+    r = c.get("/api/projects/p/snapshot")
+    assert r.status_code == 409
+    detail = r.json()["detail"]
+    assert GOLDEN_FILE in detail and "could not be read" in detail
+    assert "original" in golden.read_text(encoding="utf-8")  # the pins are still on disk to fix
 
 
 def test_snapshot_endpoints(tmp_path):
@@ -609,7 +703,8 @@ def test_ci_endpoint(tmp_path):
 
     # labels persist via judge-check POST
     r3 = c.post("/api/projects/p/judge-check",
-                json={"labels": [{"test_id": "t1", "criterion_id": "c1", "passed": False}]})
+                json={"run_id": r2["run_id"],
+                      "labels": [{"test_id": "t1", "criterion_id": "c1", "passed": False}]})
     assert r3.status_code == 200 and r3.json()["labels_saved"].endswith("human-labels.json")
     assert (tmp_path / "p" / "evals" / r2["run_id"] / "human-labels.json").exists()
 

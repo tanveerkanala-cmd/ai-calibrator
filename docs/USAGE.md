@@ -315,7 +315,9 @@ against.
 Re-runs the suite and flags **behavior drift** vs a baseline scorecard (default:
 the latest **full** run): the pass-rate delta and exactly which tests flipped
 pass↔fail. **CI-friendly** — exits code 2 when behavior regresses, so you can gate
-a deploy or catch a provider's silent model update. Partial runs (interrupted, or
+a deploy or catch a provider's silent model update; exits **1** when nothing was
+comparable (every test re-minted, or no ids in common), because a comparison that
+never happened is not a pass. Partial runs (interrupted, or
 `--max-tests`) are never used as the baseline and are refused if you pin one:
 comparing across two different test sets would hide every regression on a test the
 baseline never ran.
@@ -361,8 +363,13 @@ partial (`--max-tests` or interrupted) run. (The API also serves it live: `GET /
 Exports the generated test suite + rubric as a **promptfoo** config
 (`promptfooconfig.yaml`) — the provider-agnostic system prompt becomes a prompt,
 each test an input, each criterion an assertion. A criterion with a deterministic
-`check` exports as promptfoo's own exact assertion for it (`icontains`, `regex`, a
-length test), so it stays code-graded there too; the rest become `llm-rubric`. Run
+`check` stays code-graded there too — as promptfoo's own assertion where that
+assertion grades identically (`regex`), and otherwise as a `javascript` assertion
+that normalizes and counts exactly the way `calibrate eval` does, since
+`icontains` cannot NFC-normalize the model's output and JavaScript's `.length`
+counts UTF-16 units where the check counts code points. The rest become
+`llm-rubric`. The config's header states the one shape promptfoo cannot
+reproduce: it delivers a single user message with no system role. Run
 your calibrator suite inside promptfoo (`promptfoo eval -c promptfooconfig.yaml`)
 instead of being locked into `calibrate eval`. Anti-lock-in.
 
@@ -611,7 +618,9 @@ calibrate train-engine judge    # → <project>/trained-engines/judge/ : dataset
 For the **judge** role the dataset is upgraded with **human ground truth**: every
 verdict you confirmed or corrected in `calibrate judge-check` becomes a training
 row of what the judge *should* have said — and where a logged row asks the exact
-same question, the human answer replaces it. Imitating the cloud judge copies its
+same question, the human answer replaces it. Those labels are a source in their
+own right, so logging is not a precondition: if you only ever ran `judge-check`,
+`calibrate train-engine judge` still builds a bundle from your labels. Imitating the cloud judge copies its
 mistakes; your labels train past them. (The bundle README shows the split.)
 
 Train that bundle on a GPU (see its README), serve the result (e.g. `ollama
@@ -621,11 +630,27 @@ create`), then **prove it matches** before trusting it:
 calibrate train-engine judge --prove --candidate my-judge@ollama --threshold 0.9
 ```
 
-This replays your logged inputs through the local engine and reports how often it
-**agrees** with the cloud engine (for the judge, that's per-criterion pass/fail
-agreement — rationale wording is ignored). Swap it into `engines.judge` in
-`project.yaml` **only** once agreement clears your threshold; otherwise keep the
-cloud engine. Repeat per role (`judge`, `compiler`, `extractor`, `interviewer`).
+This replays **held-out** logged inputs — questions the exported dataset did not
+train on — through the local engine, and reports how often it **agrees** with the
+answer that dataset ships, i.e. the cloud engine's verdict as corrected by any
+`judge-check` labels you recorded (for the judge, that's per-criterion pass/fail
+agreement — rationale wording is ignored). Each distinct question counts once,
+however many times it was logged. Holding rows back is what makes the number mean
+something: a model that merely memorized its training set scores well on the rows
+it trained on and fails here. Swap it into `engines.judge` in `project.yaml`
+**only** once agreement clears your threshold; otherwise keep the cloud engine.
+
+If the log is too small to hold anything back, the gate **refuses** rather than
+grading the candidate on its own training rows — a small project keeps a whole
+dataset and simply cannot certify yet.
+
+The `judge` is the role this loop is built for, and the only one whose gate is
+graded per criterion. The `compiler` is the other role that logs, but its gate
+compares the candidate's output to the cloud engine's **byte for byte** — and a
+compiler's output is a whole behavior spec, so expect a low number there rather
+than a passing one. The remaining roles (`extractor`, `interviewer`, `predictor`)
+are not logged by anything today, so `calibrate train-engine <role>` exits 1 with
+"there is no data to train on": nothing to localize yet.
 
 Logging is **off by default** and never leaves your machine — the path to a fully
 local, private, autonomous tool, on your terms.

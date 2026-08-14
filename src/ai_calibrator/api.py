@@ -156,7 +156,10 @@ class DiffBody(BaseModel):
 
 class JudgeLabelsBody(BaseModel):
     labels: list[dict] = Field(default_factory=list)  # [{test_id, criterion_id, passed}]
-    run_id: str | None = None  # None → latest
+    # Required in practice (see the POST route): only the client knows which run's
+    # verdicts a human actually read, so the server must not guess one for them.
+    run_id: str | None = Field(default=None, description="the run whose verdicts you reviewed — "
+                                                         "echo the run_id from GET /judge-check")
 
 
 class CiBody(BaseModel):
@@ -308,6 +311,35 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         finally:
             lock.release()
 
+    def _refuse_to_adopt(d: Path, name: str) -> None:
+        """Never ADOPT a directory the tool did not create.
+
+        The served root is now the user's working directory, so it is full of
+        ordinary folders — and DELETE removes a project's whole tree. Writing
+        project.yaml into an existing `Documents/` would make it deletable
+        through this API.
+
+        One rule for every route that can bring a project into being (create,
+        import, merge): a guard the caller can route around is no guard, and
+        import/merge land in exactly the same namespace create does.
+
+        `.lock` is OUR artifact — a concurrent create on this same name leaves one
+        behind, and that must reach the lock and answer 423 (busy), not be
+        mistaken for a user's folder.
+
+        The non-directory case comes FIRST: `iterdir()` on a plain file raises
+        NotADirectoryError, which is not an OSError these routes handle and so
+        escaped as a 500 — the one input shape where the adopt-guard itself
+        crashed instead of refusing."""
+        if d.exists() and not d.is_dir():
+            raise HTTPException(409, f"a file named {name!r} already exists where that project "
+                                     "would live — pick another name")
+        foreign = [f.name for f in d.iterdir() if f.name != LOCK_FILE] if d.exists() else []
+        if foreign:
+            raise HTTPException(409, f"a directory named {name!r} already exists here and is not "
+                                     "a calibrator project — pick another name, or serve a "
+                                     "different root with `calibrate serve --projects DIR`")
+
     @contextmanager
     def _locked(name: str):
         """Serialize a project's read-modify-write across concurrent requests.
@@ -371,26 +403,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         # wrong. The in-lock re-check below is what makes the create atomic.
         if (d / "project.yaml").exists():
             raise HTTPException(409, "project already exists")
-        # Never ADOPT a directory the tool did not create. The served root is now
-        # the user's working directory, so it is full of ordinary folders — and
-        # DELETE removes a project's whole tree. Writing project.yaml into an
-        # existing `Documents/` would make it deletable through this API.
-        # `.lock` is OUR artifact — a concurrent create on this same name leaves one
-        # behind, and that must reach the lock below and answer 423 (busy), not be
-        # mistaken for a user's folder.
-        #
-        # The non-directory case comes FIRST: `iterdir()` on a plain file raises
-        # NotADirectoryError, which is not an OSError this route handles and so
-        # escaped as a 500 — the one input shape where the adopt-guard itself
-        # crashed instead of refusing.
-        if d.exists() and not d.is_dir():
-            raise HTTPException(409, f"a file named {name!r} already exists where that project "
-                                     "would live — pick another name")
-        foreign = [f.name for f in d.iterdir() if f.name != LOCK_FILE] if d.exists() else []
-        if foreign:
-            raise HTTPException(409, f"a directory named {name!r} already exists here and is not "
-                                     "a calibrator project — pick another name, or serve a "
-                                     "different root with `calibrate serve --projects DIR`")
+        _refuse_to_adopt(d, name)
         # Atomic create: hold the project lock across the exists-check + write so
         # two concurrent POSTs for the same name can't both pass the check (one
         # wins with 200, the other deterministically gets 409 — never a partial
@@ -867,24 +880,44 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
     @app.post("/api/projects/{name}/judge-check")
     def judge_check_score_(name: str, body: JudgeLabelsBody):
         from .drift import load_scorecard
-        from .eval import latest_run_id
-        from .judge_check import agreement_dict, judge_agreement, save_labels
-        _load(name)
+        from .judge_check import agreement_dict, gradings, judge_agreement, save_labels
+        project = _load(name)
+        # The labels belong to the run the human READ, which only they know: GET
+        # samples the latest run and returns its id, and a scheduled `calibrate ci`
+        # (or another client's eval) can mint a newer one while the reviewer works
+        # through those verdicts. Resolving "latest" again here filed their
+        # judgment against outputs they never saw — scoring it against a different
+        # run's verdicts and stamping it as train-engine ground truth. Permanent
+        # condition, so it is answered before waiting on the lock.
+        rid = body.run_id
+        if not rid:
+            raise HTTPException(400, f"run_id is required — echo the run_id from GET "
+                                     f"/api/projects/{name}/judge-check, the run whose verdicts "
+                                     "you reviewed")
         # save_labels is a read-modify-write (it merges onto the labels already on
         # disk), and judge_check.save_labels documents that the caller must hold the
         # project lock. This was the one mutating route that did not: two concurrent
         # submissions each merged onto a stale read and the loser's ground truth
         # vanished. A busy project now answers 423 like every sibling route.
         with _locked(name) as d:
-            rid = body.run_id or latest_run_id(d)
-            if not rid:
-                raise HTTPException(400, f"no scorecard — POST /api/projects/{name}/eval first")
             try:
                 card = load_scorecard(d, rid)
                 save_labels(d, rid, body.labels)  # persist: feeds train-engine as ground truth
             except (FileNotFoundError, ValueError, ValidationError) as exc:
                 raise HTTPException(400, str(exc))
-        out = agreement_dict(judge_agreement(card, body.labels))
+        # Score against the same verdicts GET offers, and no others: a criterion
+        # carrying a deterministic `check` is graded by code and an empty answer is
+        # failed by the harness, so neither is a judgment the judge made. Counting a
+        # label on one reported "judge agreement" for a grader that never ran — the
+        # exact number the GET route filters to prevent. They stay visible as
+        # unmatched, since a label the rate cannot cover must still be reported.
+        judged = {(g["test_id"], g["criterion_id"]) for g in gradings(card, project.spec)}
+        scored = [x for x in body.labels
+                  if isinstance(x.get("test_id"), str) and isinstance(x.get("criterion_id"), str)
+                  and (x["test_id"], x["criterion_id"]) in judged]
+        ag = judge_agreement(card, scored)
+        ag.unmatched += len(body.labels) - len(scored)
+        out = agreement_dict(ag)
         out["labels_saved"] = f"evals/{rid}/human-labels.json"
         return out
 
@@ -916,11 +949,22 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
     def snapshot_check_(name: str):
         from .drift import load_scorecard
         from .eval import latest_run_id
-        from .snapshot import compare, load_golden, outputs_of, snapshot_dict
+        from .snapshot import GOLDEN_FILE, compare, load_golden, outputs_of, snapshot_dict
         _load(name)
         d = _dir(name)
         golden = load_golden(d)
         if golden is None:
+            # load_golden answers None for "absent" AND for "present but
+            # unreadable" — deliberately, so a hand-edited file cannot traceback.
+            # This route has to tell them apart: telling a user whose golden is
+            # corrupt to POST /snapshot would have them replace the only copy of
+            # their pinned outputs with this run's.
+            if (d / GOLDEN_FILE).exists():
+                raise HTTPException(409, f"{GOLDEN_FILE} exists but could not be read as pinned "
+                                         "outputs — the snapshot check is NOT running. Fix the "
+                                         "file (a bad hand-edit, an unresolved merge conflict, a "
+                                         "truncated write); re-pinning with POST /snapshot would "
+                                         "replace your pinned outputs with this run's.")
             raise HTTPException(400, "no golden — POST /snapshot to pin one first")
         rid = latest_run_id(d)
         if not rid:
@@ -1143,6 +1187,10 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         d = root / name
         if (d / "project.yaml").exists():   # permanent — don't wait out the lock for it
             raise HTTPException(409, "project already exists")
+        # Before spending an engine call on it: an import writes project.yaml,
+        # .gitignore and build/ into this directory, which is how a folder of the
+        # user's own files becomes something DELETE will rmtree.
+        _refuse_to_adopt(d, name)
         with _held(d, name):
             if (d / "project.yaml").exists():
                 raise HTTPException(409, "project already exists")
@@ -1210,6 +1258,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         goal = body.goal or first.goal
         if (out_dir / "project.yaml").exists():   # permanent — don't wait out the lock
             raise HTTPException(409, "merged project already exists")
+        _refuse_to_adopt(out_dir, out_name)  # `out` names a directory this route creates
         with _held(out_dir, out_name):
             if (out_dir / "project.yaml").exists():
                 raise HTTPException(409, "merged project already exists")

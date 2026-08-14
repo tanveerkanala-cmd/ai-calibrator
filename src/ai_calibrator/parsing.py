@@ -8,6 +8,7 @@ runs without them.
 from __future__ import annotations
 
 import codecs
+from collections.abc import Iterator
 from pathlib import Path
 
 # Extracted-text ceiling for compressed formats. PDF/DOCX are zip/deflate
@@ -253,7 +254,32 @@ def _read_docx(p: Path) -> str:
     except zipfile.BadZipFile as exc:
         raise ValueError(f"{p.name}: not a valid .docx (zip) file") from exc
     document = docx.Document(str(p))
-    return _capped_join(par.text for par in document.paragraphs)
+    return _capped_join(_docx_paragraph_text(document))
+
+
+def _docx_paragraph_text(container) -> Iterator[str]:
+    """Every paragraph's text in `container`, INCLUDING inside its tables.
+
+    `Document.paragraphs` is the body's OWN paragraphs — a table is a separate
+    block type, and its cells' paragraphs are not in that list. An FAQ or policy
+    matrix (the standard Word layout for one) therefore contributed nothing at
+    all, and a table-only file read as "", which ingest counts as a material
+    while none of its content reaches the facts, the gaps or the index.
+
+    Walked in document order where python-docx offers it, so a policy row keeps
+    the heading it sits under; a cell is a block container itself, so nested
+    tables recurse. The fallback covers an older python-docx without
+    `iter_inner_content`: tables after prose beats losing them."""
+    inner = getattr(container, "iter_inner_content", None)
+    items = inner() if inner is not None else [*container.paragraphs, *container.tables]
+    for item in items:
+        rows = getattr(item, "rows", None)  # a table; a paragraph has none
+        if rows is None:
+            yield item.text
+        else:
+            for row in rows:
+                for cell in row.cells:
+                    yield from _docx_paragraph_text(cell)
 
 
 def chunk_text(text: str, *, size: int = 1000) -> list[str]:
