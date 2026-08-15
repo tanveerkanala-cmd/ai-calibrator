@@ -1099,7 +1099,7 @@ def eval_(
 def ci(
     path: Path = typer.Argument(Path("."), help="Project directory."),
     threshold: float = typer.Option(0.8, "--threshold", help="Min pass rate for the eval stage (0-1)."),
-    tolerance: float = typer.Option(0.0, "--tolerance", help="Allowed pass-rate drop before drift fails."),
+    tolerance: float = typer.Option(0.0, "--tolerance", help="Share of compared tests allowed to flip pass->fail (0-1)."),
     judge_passes: int = typer.Option(1, "--judge-passes", help="Judge self-consistency passes (1-9)."),
     baseline: Optional[str] = typer.Option(None, "--baseline", help="Run id to drift against (default: previous run)."),
     as_json: bool = typer.Option(False, "--json", help="Print a machine-readable JSON result."),
@@ -1838,7 +1838,7 @@ def drift(
         None, "--baseline", help="Baseline run id (default: the latest saved scorecard)."
     ),
     tolerance: float = typer.Option(
-        0.0, "--tolerance", help="Allowed pass-rate drop before flagging drift (0-1)."
+        0.0, "--tolerance", help="Share of compared tests allowed to flip pass->fail (0-1)."
     ),
 ) -> None:
     """Re-run the suite and flag behavior drift vs a baseline. Exits 2 on regression, 1 if nothing was comparable (CI-friendly)."""

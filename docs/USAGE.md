@@ -322,6 +322,12 @@ never happened is not a pass. Partial runs (interrupted, or
 comparing across two different test sets would hide every regression on a test the
 baseline never ran.
 
+`--tolerance` is the share of the **compared** tests allowed to flip pass→fail
+before that counts as drift — `0.05` on a 100-test suite absorbs five. It defaults
+to `0`, where a single flip is drift. Raise it only to ride out judge
+nondeterminism, and know what you are buying: the share is gross, so an
+improvement elsewhere never excuses a probe that broke.
+
 ### `calibrate diff <before> <after>` (no engine — instant)
 Shows how the behavior **spec** changed between two projects — the goal, persona,
 format and refusal policy, plus standards, never-rules, edge cases, and criteria

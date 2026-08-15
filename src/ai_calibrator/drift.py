@@ -70,21 +70,28 @@ class DriftReport:
 
     @property
     def regressed(self) -> bool:
-        """Drift worth alerting on: a pass-rate drop beyond tolerance, OR any
-        individual test that went from passing to failing.
+        """Drift worth alerting on: a larger SHARE of the comparable suite went
+        from passing to failing than tolerance allows.
 
-        Both read the comparable population only. A recompile that swapped in
-        harder questions, or a test the baseline never graded, must not read as
-        a regression the model never caused.
+        Reads the comparable population only. A recompile that swapped in harder
+        questions, or a test the baseline never graded, must not read as a
+        regression the model never caused.
 
-        NOTE: confining the delta to the shared population makes the first
-        clause unreachable — `delta < -tolerance` requires more flips down than
-        up, which the second clause already catches — so `--tolerance` cannot
-        change this verdict. Deciding whether tolerance should gate the flipped
-        SHARE instead, or be retired, is a product call: gating it would let a
-        real pass->fail regression through a CI gate that currently stops it."""
-        rate_dropped = self.delta is not None and self.delta < -self.tolerance
-        return rate_dropped or bool(self.regressed_tests)
+        One rule, not two. This was `delta < -tolerance OR any flip`, and once
+        the delta is confined to the shared population the first clause can only
+        fire when the second already has — which made the tolerance the user
+        asked for unreachable. Gating the flipped share instead leaves the
+        default (0.0 — a single flip is drift) answering identically on every
+        possible suite, so nothing changes for anyone who does not pass the flag.
+
+        The share is GROSS, not the net delta: an improvement elsewhere is not
+        evidence that a test which started failing did not. `--tolerance 0.05`
+        therefore means "up to 5% of the compared tests may flip down", which is
+        what makes it usable against judge nondeterminism, where a 100-test suite
+        with a 2% per-test flip rate alarms on ~87% of clean runs."""
+        if not self.compared:
+            return False
+        return len(self.regressed_tests) / self.compared > self.tolerance
 
 
 def compare_scorecards(baseline: Scorecard, candidate: Scorecard, *, tolerance: float = 0.0) -> DriftReport:

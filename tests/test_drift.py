@@ -1,5 +1,6 @@
 """Behavior drift detection — scorecard comparison + fresh-eval drift run."""
 
+import itertools
 import re
 
 import pytest
@@ -115,12 +116,50 @@ def test_a_test_the_baseline_never_graded_is_not_drift():
     assert r.regressed is False and r.regressed_tests == []
 
 
-def test_tolerance_never_excuses_a_test_that_flipped_pass_to_fail():
-    """Tolerance bounds the rate drop; a probe that went pass→fail is drift at
-    any tolerance."""
+def test_a_single_flip_is_drift_at_the_default_tolerance():
+    """The default answers as it always has: one probe that went pass→fail is
+    drift, with no rate arithmetic to argue it away."""
     base = _card("run-0001", [("a", True), ("b", True)])
     cand = _card("run-0002", [("a", True), ("b", False)])
-    assert compare_scorecards(base, cand, tolerance=0.9).regressed is True
+    assert compare_scorecards(base, cand).regressed is True
+
+
+def test_tolerance_bounds_the_share_that_may_flip_down():
+    """A tolerance is an explicit opt-in to noise: judge nondeterminism flips a
+    small share of any suite, so a gate that fires on one flip in two hundred
+    fires on almost every clean run. The share is what it bounds."""
+    tests = [(f"t{i}", True) for i in range(20)]
+    base = _card("run-0001", tests)
+    cand = _card("run-0002", [(tid, i > 0) for i, (tid, _) in enumerate(tests)])  # 1/20 = 5%
+
+    assert compare_scorecards(base, cand, tolerance=0.05).regressed is False
+    assert compare_scorecards(base, cand, tolerance=0.04).regressed is True
+    assert compare_scorecards(base, cand).regressed is True   # default excuses nothing
+
+
+def test_an_improvement_elsewhere_does_not_excuse_a_test_that_broke():
+    """The share is gross, not the net delta. A run that fixes one probe and
+    breaks another has a delta of zero and has still broken a probe."""
+    base = _card("run-0001", [("a", True), ("b", False)])
+    cand = _card("run-0002", [("a", False), ("b", True)])
+    r = compare_scorecards(base, cand)
+    assert r.delta == 0.0
+    assert r.regressed is True and r.regressed_tests == ["a"]
+
+
+def test_the_default_verdict_is_exactly_what_it_always_was():
+    """Changing what tolerance gates must not change what the DEFAULT gates.
+
+    Exhaustive over every pass/fail shape a comparable suite of up to six tests
+    can take: at tolerance 0.0 the share rule and the "any flip" rule it replaced
+    agree on every one."""
+    for n in range(1, 7):
+        for shape in itertools.product([(True, True), (True, False), (False, True), (False, False)],
+                                       repeat=n):
+            base = _card("run-0001", [(f"t{i}", b) for i, (b, _) in enumerate(shape)])
+            cand = _card("run-0002", [(f"t{i}", c) for i, (_, c) in enumerate(shape)])
+            r = compare_scorecards(base, cand)
+            assert r.regressed is bool(r.regressed_tests), shape
 
 
 def test_compare_still_matches_by_id_when_either_hash_is_none():
