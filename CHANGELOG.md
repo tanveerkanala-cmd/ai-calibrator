@@ -6,6 +6,12 @@ versions follow [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.0.1] — 2026-08-19
+
+Initial release: ingest → interview → compile → eval/refine → red-team →
+drift → serve/export pipeline, guided + advanced (fine-tuning) modes, web UI,
+Claude/OpenAI/Ollama engines.
+
 ### Added
 - **The web UI was opened in a browser for the first time, and three things it
   found.** Every API test drives `api.py` through TestClient, which proves the
@@ -364,9 +370,3 @@ versions follow [SemVer](https://semver.org/).
   `NaN`/`Infinity` request bodies now return a clean `422` instead of `500`.
 - Top-level `tools`/`functions` in a serve request are rejected with a clear
   `400` (were silently dropped).
-
-## [0.0.1] — unreleased development version
-
-Initial development: ingest → interview → compile → eval/refine → red-team →
-drift → serve/export pipeline, guided + advanced (fine-tuning) modes, web UI,
-Claude/OpenAI/Ollama engines.
