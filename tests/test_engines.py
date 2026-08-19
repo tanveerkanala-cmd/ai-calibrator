@@ -104,3 +104,75 @@ def test_anthropic_truncation_error_names_the_knob():
     eng._client = type("Client", (), {"messages": Messages()})()
     with pytest.raises(RuntimeError, match="CALIBRATOR_ANTHROPIC_MAX_TOKENS=200"):
         eng.complete("hi")
+
+
+BOUNDED_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "results": {
+            "type": "array", "minItems": 2, "maxItems": 2,
+            "items": {"type": "object", "properties": {
+                "rationale": {"type": "string", "maxLength": 500}}},
+        }
+    },
+}
+
+
+def test_prune_schema_constraints_strips_grammar_bounds():
+    from ai_calibrator.engines.base import prune_schema_constraints
+
+    pruned = prune_schema_constraints(BOUNDED_SCHEMA)
+    assert "minItems" not in pruned["properties"]["results"]
+    assert "maxItems" not in pruned["properties"]["results"]
+    assert "maxLength" not in pruned["properties"]["results"]["items"]["properties"]["rationale"]
+    assert pruned["properties"]["results"]["type"] == "array"  # structure survives
+    assert BOUNDED_SCHEMA["properties"]["results"]["maxItems"] == 2  # input untouched
+
+
+def test_anthropic_strips_grammar_bounds_from_schema():
+    """Anthropic structured outputs reject array bounds and string-length
+    constraints. The bounds exist for grammar-constrained local decoding (a
+    looping local judge), so the adapter drops them instead of sending a
+    schema the API refuses."""
+    from ai_calibrator.engines.anthropic import AnthropicEngine
+
+    captured: dict = {}
+
+    class Block:
+        type = "text"
+        text = '{"ok": true}'
+
+    class Resp:
+        stop_reason = "end_turn"
+        content = [Block()]
+
+    class Messages:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return Resp()
+
+    eng = AnthropicEngine.__new__(AnthropicEngine)
+    eng.name = "claude-x@anthropic"
+    eng.model = "claude-x"
+    eng.max_tokens = 1000
+    eng._client = type("Client", (), {"messages": Messages()})()
+    assert eng.complete("hi", schema=BOUNDED_SCHEMA) == {"ok": True}
+    sent = captured["output_config"]["format"]["schema"]
+    assert "maxItems" not in sent["properties"]["results"]
+    assert "maxLength" not in sent["properties"]["results"]["items"]["properties"]["rationale"]
+
+
+def test_openai_strips_grammar_bounds_from_schema():
+    """OpenAI strict json_schema rejects the same bounds — same rule as the
+    Anthropic adapter: the wire schema carries only what the dialect accepts."""
+    from ai_calibrator.engines.openai import OpenAIEngine
+
+    captured: dict = {}
+    eng = OpenAIEngine.__new__(OpenAIEngine)
+    eng._chat = lambda messages, response_format=None: (
+        captured.update(rf=response_format) or '{"ok": true}'
+    )
+    assert eng.complete("hi", schema=BOUNDED_SCHEMA) == {"ok": True}
+    sent = captured["rf"]["json_schema"]["schema"]
+    assert "minItems" not in sent["properties"]["results"]
+    assert "maxLength" not in sent["properties"]["results"]["items"]["properties"]["rationale"]

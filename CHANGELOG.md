@@ -6,6 +6,33 @@ versions follow [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+Three failures found by pointing `calibrate compare` at this repo's own docs
+with local models (subject llama3.2:3b, judge gemma4:12b, via Ollama) — the
+first real run of the experiment the tool exists for:
+
+- **The judge's schema now demands exactly the rows being graded.** The
+  results array was unbounded, and a grammar-constrained local model accepts
+  that invitation: decoding loops, appending rows (or growing one rationale)
+  until the output limit kills the call — and a truncated grade is an engine
+  error that takes the whole run with it. `judge_schema(n)` bounds the array
+  to the batch and caps the free-text field; the Anthropic and OpenAI adapters
+  strip those bounds before sending (their schema dialects reject array-size
+  and string-length keywords, and constrained decoding doesn't grammar-loop
+  there, so nothing is lost).
+- **Ollama schema calls no longer pay for invisible thinking.** A thinking
+  model spends its output budget on unconstrained thinking BEFORE the
+  grammar-constrained JSON — ~12K characters of it per judge call in the run
+  that surfaced this — flakily starving the actual output past `num_predict`.
+  A structured call's entire product is the JSON, so `think` is off for those
+  calls; plain subject calls are untouched, because the subject's answers are
+  the thing being measured.
+- **`compare` reports retrieval as it ran, not as it was enabled.** Passing a
+  project directory enables retrieval; it does not make it happen. A project
+  with no usable index retrieves nothing, and the first live report said
+  "retrieval ON" for a prompt-only bot. The report now probes the index the
+  same way eval's own retrieval-off warning does.
+
 ## [0.0.2] — 2026-08-19
 
 ### Added

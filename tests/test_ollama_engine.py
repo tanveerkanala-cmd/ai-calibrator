@@ -134,3 +134,36 @@ def test_engine_spec_errors_are_actionable():
         get_engine("some-model@bogus")
     with _pytest.raises(ValueError, match="no model name"):
         get_engine("@ollama")
+
+
+def test_schema_calls_disable_thinking(monkeypatch):
+    """A thinking model under a schema-constrained call spends its output
+    budget on unconstrained thinking BEFORE the grammar-constrained JSON —
+    invisible, unbounded, and (found live: a gemma judge) it flakily starves
+    the actual output past num_predict, killing the run as a truncation.
+    A structured call's entire product is the JSON, so thinking is turned off;
+    Ollama accepts think=false on non-thinking models without complaint."""
+    seen = {}
+
+    def fake_post(url, json=None, timeout=None):
+        seen.update(json)
+        return FakeResp({"message": {"content": '{"ok": true}'}})
+
+    monkeypatch.setattr(ollama_mod.httpx, "post", fake_post)
+    eng = OllamaEngine("gemma")
+    assert eng.complete("grade this", schema={"type": "object"}) == {"ok": True}
+    assert seen["think"] is False
+
+
+def test_plain_calls_leave_thinking_alone(monkeypatch):
+    """The subject's answers are the thing being measured — silently changing
+    how the subject generates would change what the scorecard certifies."""
+    seen = {}
+
+    def fake_post(url, json=None, timeout=None):
+        seen.update(json)
+        return FakeResp({"message": {"content": "an answer"}})
+
+    monkeypatch.setattr(ollama_mod.httpx, "post", fake_post)
+    OllamaEngine("gemma").complete("hi")
+    assert "think" not in seen

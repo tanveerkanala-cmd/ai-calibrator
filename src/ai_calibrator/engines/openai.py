@@ -18,6 +18,7 @@ from .base import (
     EngineTimeout,
     call_json,
     missing_credentials_message,
+    prune_schema_constraints,
 )
 
 
@@ -136,7 +137,11 @@ class OpenAIEngine(Engine):
 
         response_format = {
             "type": "json_schema",
-            "json_schema": {"name": "result", "schema": schema, "strict": True},
+            "json_schema": {
+                "name": "result",
+                "schema": prune_schema_constraints(schema),
+                "strict": True,
+            },
         }
 
         def _call() -> str:

@@ -77,6 +77,30 @@ def missing_credentials_message(provider: str, name: str) -> str:
     )
 
 
+_GRAMMAR_ONLY_CONSTRAINTS = frozenset({"minItems", "maxItems", "minLength", "maxLength"})
+
+
+def prune_schema_constraints(schema: dict) -> dict:
+    """A copy of ``schema`` without the bounds the cloud dialects reject.
+
+    Callers state the full contract — eval bounds the judge's results array so
+    a grammar-constrained local model cannot loop appending rows until it hits
+    its output limit. Anthropic structured outputs and OpenAI strict
+    ``json_schema`` both reject array-size and string-length keywords, so the
+    cloud adapters send a pruned copy. Over there the bound is not
+    load-bearing: constrained decoding does not grammar-loop, and the callers
+    already tolerate extra or missing rows.
+    """
+    def _prune(node: Any) -> Any:
+        if isinstance(node, dict):
+            return {k: _prune(v) for k, v in node.items()
+                    if k not in _GRAMMAR_ONLY_CONSTRAINTS}
+        if isinstance(node, list):
+            return [_prune(x) for x in node]
+        return node
+    return _prune(schema)
+
+
 class Engine(ABC):
     """A text-in / text-(or-JSON)-out model behind a uniform interface."""
 

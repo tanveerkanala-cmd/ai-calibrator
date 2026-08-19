@@ -8,6 +8,7 @@ under `<project>/evals/<run-id>/`. The refine loop lives in `pipeline.py`.
 
 from __future__ import annotations
 
+import copy
 import json
 import math
 from pathlib import Path
@@ -41,6 +42,27 @@ JUDGE_SCHEMA = {
     },
     "required": ["results"],
 }
+
+
+def judge_schema(n_criteria: int) -> dict:
+    """``JUDGE_SCHEMA`` bounded to the batch actually being graded.
+
+    An unbounded results array is an invitation a grammar-constrained local
+    model accepts: decoding can loop, appending rows (or growing one
+    rationale) until the model's output limit kills the call — and a truncated
+    grade is an engine error that takes the whole run with it. The judge was
+    handed exactly ``n_criteria`` criteria, so the schema demands exactly that
+    many rows and caps the free-text field. The cloud adapters strip these
+    bounds (their schema dialects reject them — see
+    ``engines.base.prune_schema_constraints``); grammar-decoding engines are
+    exactly where they matter.
+    """
+    schema: dict = copy.deepcopy(JUDGE_SCHEMA)
+    results: dict = schema["properties"]["results"]  # type: ignore[assignment]
+    results["minItems"] = n_criteria
+    results["maxItems"] = n_criteria
+    results["items"]["properties"]["rationale"]["maxLength"] = 500
+    return schema
 
 JUDGE_SYSTEM = (
     "You are a strict grader. Judge the AI output against each listed criterion "
@@ -125,7 +147,8 @@ def _judge(
 ) -> list[CriterionResult]:
     prompt = judge_prompt(test_input, output, criteria)
     out = require_object(
-        judge.complete(prompt, system=judge_system(instructions), schema=JUDGE_SCHEMA), "judge")
+        judge.complete(prompt, system=judge_system(instructions),
+                       schema=judge_schema(len(criteria))), "judge")
     # Key only on string ids. A non-compliant judge can return criterion_id as a
     # list or dict, and an unhashable key raises TypeError here — destroying a
     # whole graded run over one bad row. Dropping the row instead leaves that

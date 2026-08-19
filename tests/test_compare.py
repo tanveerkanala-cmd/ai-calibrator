@@ -272,3 +272,20 @@ def test_cli_rejects_unknown_vs(tmp_path):
     save_project(_project(), tmp_path)
     result = CliRunner().invoke(app, ["compare", str(tmp_path), "--vs", "chaos"])
     assert result.exit_code != 0
+
+
+def test_retrieval_disclosure_reflects_reality_not_intent(tmp_path, monkeypatch):
+    """Passing project_dir ENABLES retrieval; it does not make it happen — a
+    project with no index retrieves nothing (found live: first real compare
+    reported "retrieval ON" for a prompt-only bot). The report must state what
+    the calibrated side actually got."""
+    import ai_calibrator.rag as rag
+
+    report = compare(_project(), RecordingSubject(), RecordingJudge(), project_dir=tmp_path)
+    assert report.retrieval is False  # no index exists in tmp_path
+    assert "retrieval OFF" in "\n".join(summary_lines(report))
+
+    monkeypatch.setattr(rag, "index_available", lambda: True)
+    monkeypatch.setattr(rag, "probe", lambda project_dir: "")
+    report = compare(_project(), RecordingSubject(), RecordingJudge(), project_dir=tmp_path)
+    assert report.retrieval is True

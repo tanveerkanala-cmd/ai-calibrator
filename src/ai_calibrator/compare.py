@@ -88,6 +88,19 @@ class CompareReport:
         return self.specialist.pass_rate - self.baseline.pass_rate
 
 
+def _retrieval_live(project_dir: str | Path | None) -> bool:
+    """Whether the calibrated side will ACTUALLY retrieve — not merely may.
+
+    Passing ``project_dir`` enables retrieval; it does not make it happen. A
+    project with no usable index retrieves nothing, and a report that says
+    "retrieval ON" for a prompt-only bot misstates the experiment's conditions.
+    """
+    if project_dir is None:
+        return False
+    from . import rag
+    return rag.index_available() and not rag.probe(project_dir)
+
+
 def _side(card: Scorecard) -> SideResult:
     graded = [r for r in card.results if r.criteria]
     passed = sum(1 for r in graded if r.passed)
@@ -136,7 +149,7 @@ def compare(
                          system_override=override)
     return CompareReport(
         vs=vs, subject=subject.name, judge=judge.name, judge_passes=judge_passes,
-        n_tests=len(spec_card.results), retrieval=project_dir is not None,
+        n_tests=len(spec_card.results), retrieval=_retrieval_live(project_dir),
         partial=spec_card.partial or base_card.partial,
         specialist=_side(spec_card), baseline=_side(base_card),
         per_criterion=_per_criterion(project, spec_card, base_card),

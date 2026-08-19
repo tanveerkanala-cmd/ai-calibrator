@@ -426,3 +426,41 @@ def test_non_string_criterion_id_does_not_destroy_the_run():
     assert len(card.results) == 1
     assert [c.criterion_id for c in card.results[0].criteria] == ["c1"]
     assert card.results[0].criteria[0].passed is True
+
+
+def test_judge_schema_is_bounded_to_the_batch():
+    """An unbounded results array is an invitation a grammar-constrained local
+    model accepts: decoding loops, appending rows until the output limit kills
+    the whole run (found live: a gemma judge on Ollama, first real `compare`).
+    The judge is handed exactly N criteria, so the schema demands exactly N
+    rows and caps the free-text rationale."""
+    from ai_calibrator.models import BehaviorSpec, Check, EvalCriterion, Project
+    from ai_calibrator.models import TestCase as Case
+
+    captured: dict = {}
+
+    class Subject:
+        name = "s@test"
+
+        def complete(self, prompt, *, system=None, schema=None):
+            return "an answer"
+
+    class Judge:
+        name = "j@test"
+
+        def complete(self, prompt, *, system=None, schema=None):
+            captured["schema"] = schema
+            return {"results": []}
+
+    p = Project(name="p", goal="g")
+    p.spec = BehaviorSpec(goal="g", eval_criteria=[
+        EvalCriterion(id="c1", description="judged one"),
+        EvalCriterion(id="c2", description="judged two"),
+        EvalCriterion(id="c3", description="checked", check=Check(kind="non_empty")),
+    ])
+    p.tests = [Case(id="t1", input="q", expects=["c1", "c2", "c3"])]
+    run_eval(p, Subject(), Judge())
+
+    results = captured["schema"]["properties"]["results"]
+    assert results["minItems"] == 2 and results["maxItems"] == 2  # c3 never reaches the judge
+    assert results["items"]["properties"]["rationale"]["maxLength"] >= 1

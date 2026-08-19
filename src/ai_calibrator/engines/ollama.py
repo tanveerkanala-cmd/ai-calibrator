@@ -64,6 +64,15 @@ class OllamaEngine(Engine):
         }
         if schema is not None:
             payload["format"] = schema  # Ollama constrains output to the schema
+            # A thinking model spends its output budget on unconstrained
+            # thinking BEFORE the grammar-constrained JSON — invisible,
+            # unbounded, and it flakily starves the actual output past
+            # num_predict, killing the call as a truncation. A structured
+            # call's entire product is the JSON, so thinking is off here.
+            # Plain calls are left alone: the subject's answers are the thing
+            # being measured. Ollama accepts think=false on non-thinking
+            # models without complaint.
+            payload["think"] = False
 
         def _call() -> str:
             # Every failure mode a real server can produce must surface as a

@@ -18,6 +18,7 @@ from .base import (
     EngineTimeout,
     call_json,
     missing_credentials_message,
+    prune_schema_constraints,
 )
 
 DEFAULT_MAX_TOKENS = 16000
@@ -150,7 +151,9 @@ class AnthropicEngine(Engine):
                 {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
             ]
         if schema is not None:
-            kwargs["output_config"] = {"format": {"type": "json_schema", "schema": schema}}
+            kwargs["output_config"] = {
+                "format": {"type": "json_schema", "schema": prune_schema_constraints(schema)}
+            }
 
         def _call() -> str:
             try:
