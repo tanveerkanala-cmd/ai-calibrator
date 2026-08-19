@@ -22,7 +22,7 @@ jobs:
           - { os: windows-latest, python: "3.12" }  # exercises the msvcrt lock path
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
@@ -42,7 +42,7 @@ jobs:
     # silently failed to import and a whole layer went untested behind a green badge.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
@@ -74,7 +74,7 @@ jobs:
     # that would crash on Windows (cp1252) or a POSIX box with LC_ALL=C.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
@@ -87,7 +87,7 @@ jobs:
     # Low findings (the fixed `ant` subprocess, best-effort except-pass) don't gate.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
@@ -132,7 +132,7 @@ jobs:
     # first stranger who runs `pip install`.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
