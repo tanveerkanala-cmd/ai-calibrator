@@ -1,6 +1,7 @@
 # AI Calibrator
 
 [![ci](https://github.com/tanveerkanala-cmd/ai-calibrator/actions/workflows/ci.yml/badge.svg)](https://github.com/tanveerkanala-cmd/ai-calibrator/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/ai-calibrator)](https://pypi.org/project/ai-calibrator/)
 
 Turn your knowledge and standards into a **tested, reliable AI** — without
 writing prompts, code, or datasets. You bring your materials and answer
@@ -50,9 +51,8 @@ Contributing: [`CONTRIBUTING.md`](CONTRIBUTING.md)
 ## Quickstart
 
 ```bash
-# from a clone of this repo:
 python3 -m venv .venv && source .venv/bin/activate   # required on stock macOS / modern Debian (PEP 668)
-pip install -e '.[cloud]'                # or '.[all]' for every engine + the web UI (note: [all] pulls a multi-GB ML stack via [rag])
+pip install 'ai-calibrator[cloud]'       # or '[all]' for every engine + the web UI (note: [all] pulls a multi-GB ML stack via [rag])
 export ANTHROPIC_API_KEY=<your-key>      # your own key; nothing is stored in the repo
 calibrate --help
 calibrate init my-support-ai --goal "Answer customer product questions in our voice."
