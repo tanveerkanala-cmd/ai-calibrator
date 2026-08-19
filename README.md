@@ -36,7 +36,7 @@ machine and **no secrets ship in this repo.**
 
 ## Status
 
-Alpha (`v0.0.1`) — but the whole pipeline is built and tested:
+Alpha (`v0.0.2`) — but the whole pipeline is built and tested:
 the Guided loop (`init → ingest → interview → compile → eval → export`, CLI +
 local web UI), a deep verification surface (spec lint, deterministic checks,
 LLM-judge with self-consistency + human judge calibration, coverage, red-team,

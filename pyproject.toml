@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ai-calibrator"
-version = "0.0.1"
+version = "0.0.2"
 description = "Turn your knowledge and standards into a tested, reliable AI — by interview, not by prompting."
 readme = "README.md"
 requires-python = ">=3.10"

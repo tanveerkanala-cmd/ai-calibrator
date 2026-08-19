@@ -6,6 +6,8 @@ versions follow [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.0.2] — 2026-08-19
+
 ### Added
 - **`calibrate compare` — the experiment the tool exists to run.** Every other
   command measures the calibrated AI against your standards; nothing measured
