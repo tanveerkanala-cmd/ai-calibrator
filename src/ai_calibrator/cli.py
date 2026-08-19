@@ -1642,6 +1642,85 @@ def rightsize(
 
 
 @app.command()
+def compare(
+    path: Path = typer.Argument(Path("."), help="Project directory."),
+    vs: str = typer.Option(
+        "goal", "--vs",
+        help="What the baseline gets: 'goal' (same model, the one-line goal as its whole prompt) "
+             "or 'bare' (no system prompt at all)."
+    ),
+    judge_passes: int = typer.Option(
+        1, "--judge-passes", help="Grade each criterion N times and majority-vote (self-consistency)."
+    ),
+    max_tests: Optional[int] = typer.Option(
+        None, "--max-tests", help="Smoke run on the first N tests — the report is stamped PARTIAL."
+    ),
+) -> None:
+    """Measure what calibration bought: the same suite, calibrated vs baseline, one delta."""
+    from .compare import BASELINES
+    from .compare import compare as run_compare
+    from .compare import compare_call_estimate, save_compare, summary_lines
+    from .engines import get_engine
+    from .eval import EvalInterrupted
+    from .lint import lint_engine_roles
+
+    if vs not in BASELINES:
+        typer.secho(f"--vs must be one of: {', '.join(BASELINES)}.", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    if not (1 <= judge_passes <= 9):
+        typer.secho("--judge-passes must be between 1 and 9.", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    if max_tests is not None and max_tests < 1:
+        typer.secho("--max-tests must be >= 1.", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    project = _load(path)
+    if project.spec is None or not project.tests:
+        typer.secho("Nothing to compare — run `calibrate compile` first.", fg=typer.colors.YELLOW)
+        raise typer.Exit(code=1)
+    try:
+        subject = get_engine(project.engines.subject)
+        judge = get_engine(project.engines.judge)
+    except (RuntimeError, ValueError, NotImplementedError) as exc:
+        typer.secho(str(exc), fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    n_tests = min(len(project.tests), max_tests) if max_tests else len(project.tests)
+    typer.echo(f"Comparing calibrated vs {vs} baseline on {n_tests} test(s): "
+               f"subject={subject.name}, judge={judge.name} …")
+    _spend_notice(compare_call_estimate(n_tests, judge_passes),
+                  f"subject={subject.name}, judge={judge.name}",
+                  what=f"{n_tests} test(s) × 2 configurations"
+                       + (f", judged {judge_passes}× each" if judge_passes > 1 else ""))
+    # The same-model warning matters twice as much here: the delta would be one
+    # model's opinion of itself measured against its opinion of itself.
+    for issue in lint_engine_roles(project):
+        typer.secho(f"  ⚠ {issue.message}", fg=typer.colors.YELLOW)
+    if project.materials:
+        detail = _retrieval_off_reason(path)
+        if detail:
+            typer.secho(f"  retrieval: OFF — comparing a prompt-only bot ({detail}).",
+                        fg=typer.colors.YELLOW)
+
+    def _progress(done, total, test_id):
+        typer.echo(f"  · [{done}/{total}] {test_id} — subject + judge …")
+
+    try:
+        report = run_compare(project, subject, judge, vs=vs, judge_passes=judge_passes,
+                             project_dir=path, max_tests=max_tests, on_progress=_progress)
+    except EvalInterrupted:
+        typer.secho("\n⚠ Interrupted — nothing was written (a half-measured comparison "
+                    "is not a comparison).", fg=typer.colors.YELLOW)
+        raise typer.Exit(code=130)
+
+    typer.echo("")
+    for line in summary_lines(report):
+        typer.echo(line)
+    saved = save_compare(path, report)
+    typer.echo(f"\nSaved → {saved}")
+
+
+@app.command()
 def diff(
     before: Path = typer.Argument(..., help="Baseline project."),
     after: Path = typer.Argument(..., help="Project to compare against the baseline."),

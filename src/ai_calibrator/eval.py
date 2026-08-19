@@ -229,6 +229,16 @@ class EvalInterrupted(KeyboardInterrupt):
         self.partial = partial
 
 
+class _SpecPrompt:
+    """Sentinel type: "no override — the subject runs on the compiled spec prompt".
+
+    ``None`` can't carry that meaning as a default, because ``None`` is itself a
+    valid override (`compare --vs bare` sends the subject NO system at all)."""
+
+
+SPEC_PROMPT = _SpecPrompt()
+
+
 def run_eval(
     project: Project,
     subject: Engine,
@@ -239,8 +249,15 @@ def run_eval(
     project_dir: str | Path | None = None,
     max_tests: int | None = None,
     on_progress: Optional[ProgressFn] = None,
+    system_override: "str | None | _SpecPrompt" = SPEC_PROMPT,
 ) -> Scorecard:
     """Run each test on the subject and grade the output against its criteria.
+
+    ``system_override`` replaces the SUBJECT's system prompt (`compare` grades a
+    baseline this way: the goal line only, or ``None`` for no system at all).
+    The judge's context stays the compiled spec prompt either way — the user's
+    standards are the measuring stick regardless of what the subject was told,
+    and two runs graded under different judge context would not be comparable.
 
     ``judge_passes > 1`` grades each criterion with that many independent judge
     calls and majority-votes (self-consistency), recording per-criterion
@@ -262,7 +279,8 @@ def run_eval(
     if spec is None:
         raise ValueError("No behavior spec — run `calibrate compile` first.")
     from . import rag
-    system = render_system_prompt(spec)
+    system = render_system_prompt(spec)  # the judge's context, always
+    subject_system = system if isinstance(system_override, _SpecPrompt) else system_override
     crit_by_id = {c.id: c for c in spec.eval_criteria}
 
     tests = project.tests if max_tests is None else project.tests[:max_tests]
@@ -296,9 +314,9 @@ def run_eval(
             if len(turns) > 1:  # multi-turn conversation test
                 # `output` is the transcript (recorded + judged); `replies` are the
                 # assistant's words alone, one per turn, which is what the checks grade.
-                output, replies = _conversation_output(subject, system, turns, project_dir)
+                output, replies = _conversation_output(subject, subject_system, turns, project_dir)
             else:
-                eff_system = rag.augment_system(system, project_dir, test.input)  # RAG when indexed
+                eff_system = rag.augment_system(subject_system, project_dir, test.input)  # RAG when indexed
                 # Encode the single turn exactly as the runtime and the API's /try
                 # do (`conversation_prompt`), so the certified pass rate is earned
                 # on the prompt the deployed endpoint actually sends.

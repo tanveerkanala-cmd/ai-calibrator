@@ -6,6 +6,25 @@ versions follow [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **`calibrate compare` — the experiment the tool exists to run.** Every other
+  command measures the calibrated AI against your standards; nothing measured
+  what the calibration *bought*. `compare` runs the identical suite twice on
+  the same model — once as deployed (compiled prompt + RAG when indexed), once
+  as a baseline — and reports the delta. The default baseline gets your
+  one-line goal as its whole prompt: what a person gets by pasting their ask
+  into a chat window (beating a model that was never told the job proves
+  nothing; `--vs bare` keeps that floor available, off the default). The judge
+  grades both sides under the same context — your compiled spec — because two
+  runs graded under different context are not comparable; deterministic checks
+  are reported apart from judged criteria, since that part of the delta owes
+  nothing to any judge's opinion; the judge-is-the-subject warning prints here
+  too, where it matters twice; and a tied or losing calibration is reported in
+  exactly those words — this is an instrument, not a gate. The summary goes to
+  `evals/compare.json` and never into the run history `drift` and `ci`
+  baseline against, so a baseline-configuration run can never poison a later
+  comparison.
+
 ## [0.0.1] — 2026-08-19
 
 Initial release: ingest → interview → compile → eval/refine → red-team →

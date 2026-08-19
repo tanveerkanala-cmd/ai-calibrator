@@ -297,6 +297,20 @@ Runs your existing tests across several models (default: the Claude tier ladder)
 and recommends the **cheapest model that still meets your pass bar** — e.g.
 "Haiku passes 94% at ~1/20th Opus's cost."
 
+### `calibrate compare [--vs goal|bare] [--judge-passes N] [--max-tests N]`
+Measures **what calibration bought**: runs the identical suite twice on the same
+model — once as deployed (compiled prompt + RAG when indexed), once as a
+baseline — and reports the delta, e.g. `baseline (goal): 58% → calibrated: 94%`.
+The default baseline (`--vs goal`) gets your one-line goal as its whole prompt —
+what a person gets by pasting their ask into a chat window; `--vs bare` is the
+no-system-prompt floor. The judge grades both sides under the same context (your
+compiled spec — the standards are the measuring stick regardless of what the
+subject was told), deterministic checks are reported apart from judged criteria
+(that part of the delta owes nothing to any judge's opinion), and a tied or
+losing calibration is reported in exactly those words. Writes a summary to
+`evals/compare.json`; never into the run history that `drift`/`ci` baseline
+against.
+
 ### `calibrate drift [--baseline RUN] [--tolerance 0]`
 Re-runs the suite and flags **behavior drift** vs a baseline scorecard (default:
 the latest **full** run): the pass-rate delta and exactly which tests flipped

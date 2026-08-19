@@ -42,8 +42,10 @@ local web UI), a deep verification surface (spec lint, deterministic checks,
 LLM-judge with self-consistency + human judge calibration, coverage, red-team,
 drift, golden snapshots, weighted scoring — composed into one `calibrate ci`
 gate), and the Advanced tier (fine-tuning + Engine-Trainer with prove-it gates).
-The test suite runs engine-free with fakes; the pipeline is also verified
-end-to-end against a real local model via Ollama.
+`calibrate compare` runs your suite against the same model *without* the
+calibration, so "the calibrated AI is better" is a measured delta on your own
+tests, not a claim. The test suite runs engine-free with fakes; the pipeline is
+also verified end-to-end against a real local model via Ollama.
 
 Build plan: `docs/BUILD-PLAN.md` · Architecture: `docs/ARCHITECTURE.md` ·
 Contributing: [`CONTRIBUTING.md`](CONTRIBUTING.md)
