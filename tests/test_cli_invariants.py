@@ -834,3 +834,67 @@ def test_train_engine_next_step_names_the_project_it_just_exported(tmp_path):
     assert r.exit_code == 0, r.output
     prove = next(ln for ln in r.output.splitlines() if "--prove" in ln)
     assert str(tmp_path) in prove
+
+
+def test_interview_does_not_call_an_empty_draft_a_finished_one(tmp_path, monkeypatch):
+    """"All questions answered" is true of an empty list and false of the project.
+
+    A small local interviewer that returns a malformed question for every gap
+    drafts nothing; announcing success there sends the user to `compile`, which
+    refuses because there are no answers to compile."""
+    from ai_calibrator.models import Gap, Project
+    from ai_calibrator.store import save_project
+
+    project = Project(name="p", goal="g")
+    project.gaps = [Gap(dimension="tone")]
+    save_project(project, tmp_path)
+
+    class _MalformedEngine:
+        name = "malformed@test"
+
+        def complete(self, prompt, *, system=None, schema=None):
+            return {"question": None}          # nothing usable to ask
+
+    from ai_calibrator import engines
+    monkeypatch.setattr(engines, "get_engine", lambda spec: _MalformedEngine())
+    result = runner.invoke(app, ["interview", str(tmp_path)])
+
+    assert result.exit_code == 1, result.output
+    assert "All questions answered" not in result.output
+    assert "No questions were drafted" in result.output
+    assert _has_no_traceback(result)
+
+
+def test_a_json_document_is_not_preceded_by_advisory_text(tmp_path, monkeypatch):
+    """`--json` exists to be piped into a parser, so nothing may share stdout
+    with the document. Both advisories that can fire first — the unknown-key
+    warning and the lock-wait notice — are written to stderr."""
+    import json
+
+    import ai_calibrator.engines as engines
+    from ai_calibrator.models import BehaviorSpec, EvalCriterion, Project
+    from ai_calibrator.models import TestCase as Case
+    from ai_calibrator.store import save_project
+
+    project = Project(name="p", goal="g")
+    project.spec = BehaviorSpec(goal="g", eval_criteria=[EvalCriterion(id="c1", description="is answered")])
+    project.tests = [Case(id="t1", input="q", expects=["c1"])]
+    save_project(project, tmp_path)
+    # A typo'd top-level key: ignored by the loader, but it prints a warning.
+    f = tmp_path / "project.yaml"
+    f.write_text(f.read_text(encoding="utf-8") + "\nenignes: {}\n", encoding="utf-8")
+
+    class _Engine:
+        name = "e@test"
+
+        def complete(self, prompt, *, system=None, schema=None):
+            if schema:
+                return {"results": [{"criterion_id": "c1", "passed": True,
+                                     "score": 1.0, "rationale": "ok"}]}
+            return "an answer"
+
+    monkeypatch.setattr(engines, "get_engine", lambda spec: _Engine())
+    result = runner.invoke(app, ["ci", str(tmp_path), "--json"])
+
+    assert "Unknown key" not in result.stdout
+    json.loads(result.stdout)          # the whole of stdout, not a suffix of it

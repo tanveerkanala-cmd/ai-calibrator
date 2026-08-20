@@ -76,8 +76,10 @@ def _duration(seconds: float) -> str:
 
 def _lock_wait_notice() -> None:
     """Printed once when a project lock is contended, so a wait isn't a silent hang."""
+    # stderr, not stdout: `ci --json` and `report --json` are piped into parsers,
+    # and an advisory line ahead of the document makes it unparseable.
     typer.secho("  · project is busy with another calibrate operation — waiting for the lock…",
-                fg=typer.colors.YELLOW)
+                fg=typer.colors.YELLOW, err=True)
 
 
 def _resolve_project(path: Path, projects: Optional[Path]) -> Path:
@@ -164,9 +166,11 @@ def _warn_unknown_keys(project: Project) -> None:
     for key in extra:
         near = difflib.get_close_matches(str(key), known, n=1, cutoff=0.7)
         hint = f" — did you mean '{near[0]}'?" if near else ""
+        # stderr for the same reason as _lock_wait_notice: a warning must not
+        # land in front of a --json document a pipeline is parsing.
         typer.secho(f"⚠ Unknown key {key!r} in project.yaml{hint} It is ignored; "
                     "any real setting it was meant to be is using its default.",
-                    fg=typer.colors.YELLOW)
+                    fg=typer.colors.YELLOW, err=True)
 
 
 def _load(path: Path, on_error=None) -> Project:
@@ -340,7 +344,11 @@ def import_(
             except Exception as exc:
                 typer.secho(f"Import failed: {exc}", fg=typer.colors.RED)
                 raise typer.Exit(code=1)
-    except typer.Exit:
+    except (typer.Exit, KeyboardInterrupt):
+        # Ctrl-C during the extraction call is the likeliest way to abandon a
+        # half-made project, so it must clean up too — KeyboardInterrupt is not
+        # an Exit, and leaving the directory behind strands a lock file the next
+        # run treats as a busy project.
         _cleanup_empty_project_dir(path, _we_created)
         raise
 
@@ -721,10 +729,19 @@ def interview(
         questions = list(project.interview)  # snapshot; lock released before prompting
 
     pending = [it for it in questions if not it.answer]
-    if not pending:
+    if not pending and questions:
         typer.secho("All questions answered. Next:  calibrate compile",
                     fg=typer.colors.GREEN)
         raise typer.Exit(code=0)
+    if not questions:
+        # Nothing was drafted at all (every gap's question came back malformed).
+        # "All questions answered" is true of an empty list and false of the
+        # project: compile has nothing to synthesize from, so this is a failure.
+        typer.secho("No questions were drafted — nothing to answer. Re-run "
+                    "`calibrate interview --regenerate`, or bind a stronger engine "
+                    "for the interviewer role with `calibrate engines`.",
+                    fg=typer.colors.RED)
+        raise typer.Exit(code=1)
 
     # Gather answers WITHOUT holding the lock — the interactive prompts can take
     # minutes, and holding the project lock across them would block every other
@@ -1835,7 +1852,7 @@ def diff(
 def drift(
     path: Path = typer.Argument(Path("."), help="Project directory."),
     baseline: Optional[str] = typer.Option(
-        None, "--baseline", help="Baseline run id (default: the latest saved scorecard)."
+        None, "--baseline", help="Baseline run id (default: the latest FULL saved scorecard)."
     ),
     tolerance: float = typer.Option(
         0.0, "--tolerance", help="Share of compared tests allowed to flip pass->fail (0-1)."
@@ -2341,7 +2358,7 @@ def merge(
                               _yaml.safe_dump({"stakeholders": list(named), "conflicts": audit,
                                                "field_conflicts": scalar_audit},
                                               sort_keys=False, allow_unicode=True))
-    except typer.Exit:
+    except (typer.Exit, KeyboardInterrupt):
         _cleanup_empty_project_dir(out, _we_created)
         raise
     typer.secho(
