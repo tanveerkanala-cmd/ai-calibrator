@@ -319,3 +319,35 @@ def test_config_hash_ignores_list_reordering(tmp_path):
 
     p.spec.standards[0] = "Always cite the policy number AND the fee."
     assert config_hash(p) != base                       # real edit → different
+
+
+def test_an_unreadable_gate_file_does_not_certify_anything(tmp_path):
+    """`latest_gate` answers None for absent and for corrupt alike. Reading that
+    as "no gate" turns a FAILING gate into an uncertified one, and `calibrate
+    run` serves an uncertified AI — the one thing a red gate exists to stop."""
+    from ai_calibrator.ci import GATE_FILE, certification_status
+    from ai_calibrator.models import BehaviorSpec, Project
+
+    project = Project(name="p", goal="g")
+    project.spec = BehaviorSpec(goal="g")
+    evals = tmp_path / "evals"
+    evals.mkdir(parents=True)
+    (evals / GATE_FILE).write_text('{"ok": false, "run_id": "run-0001"', encoding="utf-8")
+
+    status, detail = certification_status(project, tmp_path)
+
+    assert status == "fail"
+    assert "could not be read" in detail
+
+
+def test_a_lone_surrogate_does_not_break_the_config_hash(tmp_path):
+    """`models.content_hash` hashes lone surrogates with surrogatepass because
+    they round-trip through save/load. The gate's own hash used a strict encode,
+    so the same project raised out of `run` and `report` on every retry."""
+    from ai_calibrator.ci import config_hash
+    from ai_calibrator.models import BehaviorSpec, Project
+
+    project = Project(name="p", goal="g")
+    project.spec = BehaviorSpec(goal="ask \ud800 this", standards=["be brief"])
+
+    assert len(config_hash(project, tmp_path)) == 64

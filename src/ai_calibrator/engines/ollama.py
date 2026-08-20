@@ -17,6 +17,32 @@ from .base import Engine, EngineError, EngineTimeout, call_json
 
 DEFAULT_TIMEOUT = 120.0
 
+# Ollama defaults a model's context to whatever the Modelfile says — commonly
+# 2048 or 4096 tokens — and SILENTLY DROPS whatever does not fit, answering 200
+# with done_reason "stop". Nothing in the response says the prompt was cut, so a
+# 32k-character ingest can be answered from its last few thousand characters and
+# every fact, gap, spec and test downstream is built from that fragment. The
+# engine therefore sizes num_ctx to the prompt it is about to send.
+DEFAULT_NUM_CTX = 8192
+MAX_NUM_CTX = 32768
+# Rough bytes-per-token for prose. Deliberately pessimistic: over-reserving costs
+# memory on the server, under-reserving costs silent truncation.
+_BYTES_PER_TOKEN = 3.0
+
+
+def _num_ctx_for(text: str) -> int:
+    """A context window big enough for ``text`` plus room to answer in."""
+    override = os.getenv("CALIBRATOR_OLLAMA_NUM_CTX")
+    if override:
+        try:
+            n = int(override)
+            if n > 0:
+                return n
+        except ValueError:
+            pass
+    needed = int(len(text) / _BYTES_PER_TOKEN) + 1024   # + headroom for the reply
+    return max(DEFAULT_NUM_CTX, min(needed, MAX_NUM_CTX))
+
 
 def _default_timeout() -> float:
     """Env-overridable: a slow machine (or a busy shared model) can need more
@@ -61,6 +87,7 @@ class OllamaEngine(Engine):
             "model": self.model,
             "messages": messages,
             "stream": False,
+            "options": {"num_ctx": _num_ctx_for("".join(m["content"] for m in messages))},
         }
         if schema is not None:
             payload["format"] = schema  # Ollama constrains output to the schema
@@ -121,6 +148,21 @@ class OllamaEngine(Engine):
                 ) from exc
             # A cut-off answer is an error, not an answer: returned as if it were
             # finished, it is graded and certified as the whole answer.
+            # The server reports how much of the prompt it actually evaluated.
+            # If that is materially less than what was sent, the rest was dropped
+            # on the floor and the answer is to a question nobody asked — and
+            # done_reason stays "stop", so the check below never sees it.
+            if isinstance(data, dict):
+                sent = len("".join(m["content"] for m in messages))
+                seen = data.get("prompt_eval_count")
+                if isinstance(seen, int) and seen > 0 and sent / _BYTES_PER_TOKEN > seen * 2:
+                    raise EngineError(
+                        f"Ollama evaluated only {seen} prompt token(s) of roughly "
+                        f"{int(sent / _BYTES_PER_TOKEN)} sent — model {self.model!r} "
+                        "silently dropped most of the input.\n"
+                        "  Raise its context length (CALIBRATOR_OLLAMA_NUM_CTX), or "
+                        "use a model with a larger context."
+                    )
             if isinstance(data, dict) and data.get("done_reason") == "length":
                 raise EngineError(
                     f"Ollama response truncated — model {self.model!r} hit its output limit.\n"

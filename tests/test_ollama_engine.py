@@ -9,6 +9,7 @@ import httpx
 import pytest
 
 import ai_calibrator.engines.ollama as ollama_mod
+from ai_calibrator.engines.base import EngineError
 from ai_calibrator.engines.ollama import OllamaEngine
 
 
@@ -167,3 +168,32 @@ def test_plain_calls_leave_thinking_alone(monkeypatch):
     monkeypatch.setattr(ollama_mod.httpx, "post", fake_post)
     OllamaEngine("gemma").complete("hi")
     assert "think" not in seen
+
+
+def test_the_payload_sizes_the_context_to_the_prompt(monkeypatch):
+    """Ollama defaults a model's context to its Modelfile value and silently
+    drops the overflow, answering 200 with done_reason "stop". A 32k-character
+    ingest is well inside the tool's own 50k cap and well outside a 4k window."""
+    seen: dict = {}
+
+    def fake_post(*a, **k):
+        seen["payload"] = k["json"]
+        return FakeResp({"message": {"content": "ok"}, "prompt_eval_count": 20000})
+
+    monkeypatch.setattr(ollama_mod.httpx, "post", fake_post)
+    OllamaEngine("qwen2.5:7b").complete("x" * 32000)
+
+    assert seen["payload"]["options"]["num_ctx"] >= 32000 / 3
+
+
+def test_a_silently_truncated_prompt_is_an_error_not_an_answer(monkeypatch):
+    """The server reports what it actually evaluated. done_reason stays "stop"
+    when the prompt was cut, so the length guard never fires — and the model
+    answers a question nobody asked, which is then graded and certified."""
+    # 32k chars sent, ~2k tokens evaluated: the rest was dropped.
+    _patch(monkeypatch, FakeResp({"message": {"content": ""}, "done_reason": "stop",
+                                  "prompt_eval_count": 2051}))
+    with pytest.raises(EngineError) as exc:
+        OllamaEngine("qwen2.5:7b").complete("x" * 32000)
+
+    assert "silently dropped" in str(exc.value)

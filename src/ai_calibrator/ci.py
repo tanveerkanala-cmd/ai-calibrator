@@ -264,7 +264,11 @@ def config_hash(project: Project, project_dir: str | Path | None = None) -> str:
                 # The retrieval index is part of the deployed AI now that eval/run
                 # query it — so its content is part of what the gate certifies.
                 + "\n@@rag=" + (rag.index_fingerprint(project_dir) if project_dir is not None else ""))
-    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+    # surrogatepass, like models.content_hash: a lone surrogate is in-domain here
+    # (it round-trips through save/load, and an engine's JSON can carry one), and
+    # a strict encode raises out of `run`, `report` and the certification route
+    # as a bare traceback on every retry.
+    return hashlib.sha256(material.encode("utf-8", "surrogatepass")).hexdigest()
 
 
 def save_gate(project: Project, result: CiResult, project_dir: str | Path) -> Path:
@@ -297,6 +301,15 @@ def certification_status(project: Project, project_dir: str | Path) -> tuple[str
     - none:  `calibrate ci` has never been run"""
     gate = latest_gate(project_dir)
     if gate is None:
+        # A gate file that is present but unreadable is not the same as no gate:
+        # `latest_gate` answers None to both, and reading that as "none" turns a
+        # FAILING gate into an uncertified one that `calibrate run` will serve —
+        # the one thing a red gate is supposed to prevent. Same rule the snapshot
+        # stage already applies to an unreadable golden.json.
+        if (Path(project_dir) / "evals" / GATE_FILE).exists():
+            return "fail", (f"{GATE_FILE} exists but could not be read — the last gate's "
+                            "verdict is unknown, so it cannot certify anything. Re-run "
+                            "`calibrate ci`.")
         return "none", "no gate on record — run `calibrate ci` to certify this AI"
     run = gate.get("run_id") or "?"
     when = gate.get("finished_at") or "unknown time"
