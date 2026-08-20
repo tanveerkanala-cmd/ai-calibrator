@@ -578,20 +578,22 @@ def test_bom_less_wide_encodings_pick_the_right_endianness(tmp_path, encoding):
     (r"\p{L}+", False),            # needs the /u flag promptfoo does not pass
 ])
 def test_only_regexes_both_engines_read_alike_are_exported(pattern, portable):
-    """promptfoo's regex assertion is `new RegExp(value)` — JavaScript. Outside the
-    common subset JS either throws or matches something else, so the exported
-    suite would grade a different rule than `calibrate eval` does."""
+    """A regex is exported as javascript running the pattern under /u, because
+    promptfoo's own `regex` assertion is `new RegExp(value)` with no flags and
+    Python's Unicode classes do not survive that. Constructs with no faithful
+    rewrite take the honest downgrade to a judge instead."""
     p = _checked_project()
     p.spec.eval_criteria[0].check = Check(kind="regex", value=pattern)
 
     out = to_promptfoo(p)
     asserts = yaml.safe_load(out)["tests"][0]["assert"]
+    js = [a["value"] for a in asserts if a["type"] == "javascript"]
 
     if portable:
-        assert {"type": "regex", "value": pattern} in asserts
+        assert any("new RegExp(" in v and "'u'" in v for v in js)
         assert not out.startswith("# NOTE:")
     else:
-        assert all(a["type"] != "regex" for a in asserts)
+        assert not any("new RegExp(" in v for v in js)
         assert any(a["type"] == "llm-rubric" for a in asserts)
         assert "cannot express" in out.splitlines()[0]      # and it says so
 

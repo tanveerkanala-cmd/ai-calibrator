@@ -293,6 +293,11 @@ def chunk_text(text: str, *, size: int = 1000) -> list[str]:
     """
     if not isinstance(size, int) or size < 1:
         raise ValueError(f"chunk size must be an integer >= 1 (got {size!r})")
+    # Normalize line endings first: a Windows-authored document separates
+    # paragraphs with \r\n\r\n, so splitting on \n\n finds no boundary at all and
+    # every chunk is a hard cut through the middle of a sentence — in a file the
+    # user cannot tell apart from any other, feeding every retrieved prompt.
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
     paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
     chunks: list[str] = []
     current = ""

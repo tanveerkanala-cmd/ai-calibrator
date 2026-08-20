@@ -51,7 +51,40 @@ _PY_ONLY_REGEX = (
     "\\p{", "\\P{",                 # Unicode properties need the /u flag JS is not given
     "*+", "++", "?+", "}+",          # possessive quantifiers
     "\\h", "\\R", "\\K",           # `regex` module extensions
+    # Unicode-aware in Python, no JavaScript equivalent worth trusting: a word
+    # boundary around non-ASCII text and POSIX classes both read differently, and
+    # unlike \\d/\\w there is no faithful rewrite (see _js_regex_source).
+    "\\b", "\\B", "[[:",
 )
+
+
+# Python's escapes are Unicode-aware; JavaScript's are ASCII-only unless the
+# pattern runs with /u AND spells them as Unicode property classes. Rewriting
+# them keeps a digit check code-graded on both sides instead of demoting every
+# `\\d` rule to a judge that can talk itself out of a hard fail.
+_JS_CLASS = {
+    "\\d": "\\p{Nd}", "\\D": "\\P{Nd}",
+    "\\w": "[\\p{L}\\p{N}_]", "\\W": "[^\\p{L}\\p{N}_]",
+}
+
+
+def _js_regex_source(pattern: str) -> str:
+    """``pattern`` rewritten so JavaScript's /u engine reads it as Python does."""
+    out: list[str] = []
+    i = 0
+    while i < len(pattern):
+        pair = pattern[i:i + 2]
+        if pair in _JS_CLASS:
+            out.append(_JS_CLASS[pair])
+            i += 2
+            continue
+        if pair.startswith("\\"):     # any other escape passes through intact
+            out.append(pair)
+            i += 2
+            continue
+        out.append(pattern[i])
+        i += 1
+    return "".join(out)
 
 
 def _portable_regex(pattern: str) -> bool:
@@ -107,7 +140,19 @@ def _check_assert(check: Check) -> dict | None:
         # The pattern is escaped because promptfoo renders assertion values
         # through Nunjucks: a `\\{%.*%\\}` rule (the natural way to ban a leaked
         # template tag) is otherwise read as a block tag and the config throws.
-        return {"type": "regex", "value": _nunjucks_literal(value)} if _portable_regex(value) else None
+        if not _portable_regex(value):
+            return None
+        # Emitted as javascript, not promptfoo's `regex` assertion: that one is
+        # `new RegExp(value)` with no flags, and Python's classes only survive
+        # with /u. `$` also differs — Python's matches before a trailing newline
+        # and JavaScript's does not — so the output is trimmed, matching the way
+        # `run_check` grades the same answer here.
+        # _js_literal renders the PATTERN as a JS string literal (the whole
+        # expression must stay live code, not a quoted string that evaluates
+        # truthy for every output).
+        return {"type": "javascript",
+                "value": f"new RegExp({_js_literal(_js_regex_source(value))}, 'u')"
+                         ".test(output.trim())"}
     if kind == "non_empty":
         return {"type": "javascript", "value": "output.trim().length > 0"}
     if kind in ("max_chars", "min_chars"):
@@ -218,6 +263,12 @@ def to_promptfoo(project: Project) -> str:
         if not asserts:  # no criteria → grade against the goal so the test still runs
             asserts = [{"type": "llm-rubric",
                         "value": _nunjucks_literal(f"Satisfies the goal: {project.goal}")}]
+        # `run_eval` fails an empty answer outright before grading, because every
+        # negative check is trivially true of "": a subject that says nothing
+        # satisfies "does not promise a cure" and "at most 280 characters" both.
+        # Without the same pre-emption here, a silent subject scores 0% in
+        # `calibrate eval` and 100% in the exported suite.
+        asserts.append({"type": "javascript", "value": "output.trim().length > 0"})
         tests.append({
             "description": t.id + (f" — {t.notes}" if t.notes else ""),
             # The test input is the most reliably attacker-reachable field in the

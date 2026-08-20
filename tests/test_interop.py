@@ -31,9 +31,12 @@ def test_to_promptfoo_is_valid_yaml_and_structured():
 
     t1 = cfg["tests"][0]
     assert t1["vars"]["input"] == "refund?"
-    assert [a["value"] for a in t1["assert"]] == ["cites the policy"]   # only the targeted criterion
-    assert all(a["type"] == "llm-rubric" for a in t1["assert"])
-    assert len(cfg["tests"][1]["assert"]) == 2                          # empty expects → all criteria
+    values = [a["value"] for a in t1["assert"]]
+    assert values == ["cites the policy", "output.trim().length > 0"]   # targeted criterion + the empty guard
+    graded = [a for a in t1["assert"] if a["value"] != "output.trim().length > 0"]
+    assert all(a["type"] == "llm-rubric" for a in graded)
+    graded_2 = [a for a in cfg["tests"][1]["assert"] if a["value"] != "output.trim().length > 0"]
+    assert len(graded_2) == 2                                           # empty expects → all criteria
 
 
 def test_provider_id_mapping():
@@ -251,7 +254,8 @@ def test_promptfoo_counts_a_repeated_expectation_once():
 
     asserts = yaml.safe_load(to_promptfoo(p))["tests"][0]["assert"]
 
-    assert [a["value"] for a in asserts] == ["is friendly", "cites the policy"]
+    graded = [a["value"] for a in asserts if a["value"] != "output.trim().length > 0"]
+    assert graded == ["is friendly", "cites the policy"]
 
 
 def test_promptfoo_check_operands_cannot_read_the_environment():
@@ -267,14 +271,17 @@ def test_promptfoo_check_operands_cannot_read_the_environment():
     ]
     p.tests = [Case(id="t1", input="q", expects=["ban", "fmt"])]
 
-    ban, fmt = yaml.safe_load(to_promptfoo(p))["tests"][0]["assert"]
+    ban, fmt, _empty_guard = yaml.safe_load(to_promptfoo(p))["tests"][0]["assert"]
 
     assert "{{ env" not in ban["value"] and "{{ env" not in fmt["value"]
     # ...and the operand still means what it meant: the ban catches the literal
     # text, and the pattern reaches `new RegExp` as the owner wrote it.
     assert _js(ban["value"], "here: {{ env.OPENAI_API_KEY }}") is False
     assert not _PARTIAL_TAG.search(fmt["value"])
-    assert _promptfoo_render(fmt["value"]) == r"\{%.*%\}"
+    # The pattern reaches `new RegExp` inside a javascript assertion (promptfoo's
+    # own `regex` assertion runs without /u, which Python's classes need). What
+    # matters is that it still GRADES the same, so run it rather than read it.
+    assert "new RegExp(" in fmt["value"] and "'u'" in fmt["value"]
 
 
 def test_promptfoo_prompt_encodes_the_turn_the_harness_graded():
@@ -297,3 +304,56 @@ def test_promptfoo_declares_the_request_shape_it_cannot_reproduce():
     # ...but it is not a NOTE: those stay reserved for a criterion or a test this
     # export had to degrade, which is a fact about the project, not the format.
     assert not any(line.startswith("# NOTE:") for line in header)
+
+
+def test_an_exported_regex_grades_the_way_run_check_does():
+    """Differential against a real JavaScript engine, because the whole point of
+    the export is that it certifies the same behavior.
+
+    Python's `\\d`/`\\w` are Unicode-aware and JavaScript's are ASCII-only unless
+    the pattern runs as a Unicode property class under /u, and Python's `$`
+    matches before a trailing newline where JavaScript's does not. Every row
+    below graded one way here and the other way in the exported suite."""
+    import json
+    import shutil
+    import subprocess
+
+    import pytest
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("needs node to evaluate the exported assertion")
+
+    from ai_calibrator.checks import run_check
+    from ai_calibrator.models import Check
+
+    cases = [
+        (r"^\d+$", "١٢٣"),        # Arabic-Indic digits: Unicode-aware in Python
+        (r"^\w+$", "café"),
+        (r"^\d+$", "123\n"),      # trailing newline: `$` and stripping differ
+        (r"^\d{3}-\d{4}$", "555-1234"),
+        (r"^\d+$", "abc"),
+    ]
+    payload = []
+    for pattern, output in cases:
+        p = _project()
+        p.spec.eval_criteria = [EvalCriterion(id="c", description="d", weight=Weight.HIGH,
+                                              check=Check(kind="regex", value=pattern))]
+        p.tests = [Case(id="t1", input="q", expects=["c"])]
+        asserts = yaml.safe_load(to_promptfoo(p))["tests"][0]["assert"]
+        src = next(a["value"] for a in asserts if "new RegExp(" in a["value"])
+        payload.append({"src": src, "out": output})
+
+    proc = subprocess.run(
+        [node, "-e",
+         "const cs=JSON.parse(process.argv[1]);"
+         "console.log(JSON.stringify(cs.map(c=>{const output=c.out;"
+         "try{return !!eval(c.src)}catch(e){return 'ERR:'+e.message}})));",
+         json.dumps(payload)],
+        capture_output=True, text=True, encoding="utf-8", timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    js_verdicts = json.loads(proc.stdout)
+
+    for (pattern, output), js in zip(cases, js_verdicts):
+        py, _why = run_check(Check(kind="regex", value=pattern), output)
+        assert py is js, f"{pattern!r} on {output!r}: eval says {py}, export says {js}"
