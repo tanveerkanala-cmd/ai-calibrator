@@ -6,7 +6,86 @@ versions follow [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+### Security
+- **`/api/import` and `/api/merge/apply` no longer adopt a directory the tool
+  did not create.** Both gated only on `project.yaml`, so a project whose name
+  collided with an ordinary folder in the served root — which defaults to the
+  directory you are standing in — wrote itself *into* that folder. `DELETE
+  /api/projects/{name}` then removed the whole tree, the user's own files with
+  it: no stash, no confirmation, `ignore_errors=True`. Reproduced end to end.
+  `create_project` already refused exactly this, with a comment naming the
+  hazard; that refusal is now one helper all three routes call, and in the
+  import route it runs *before* the engine call, so a refused name never spends
+  a token. **Anyone on 0.0.2 or earlier should upgrade.**
+- **Exported promptfoo assertion operands can no longer read the environment.**
+  promptfoo renders assertion *values* through Nunjucks — verified against
+  0.122.0, where a `{{ env.PATH }}` in an operand evaluated to the real PATH.
+  Operands are now escaped, so a spec that quotes a template tag stays text.
+
 ### Fixed
+The sixth audit of this repo: 50 verified defects, each with a regression test
+confirmed failing before its fix. The findings that change what a number means:
+
+- **The prove-it gate now scores rows the candidate never trained on.** It
+  replayed its own training set, so a model that had merely memorised it scored
+  perfect agreement and passed. The bundle writer and the gate now partition the
+  log with one shared rule (hashing the question, so a row cannot migrate sides
+  as the log grows), the gate subtracts whatever the shipped dataset actually
+  contains, and it *refuses* rather than certifying when the log is too small to
+  hold anything back. It also scored against the raw cloud log instead of the
+  ground-truth-corrected answers the bundle ships — failing a candidate for
+  having learned a human's correction — counted one question logged N times as N
+  samples, and let a retracted verdict outrank the label that superseded it.
+- **Drift compares like with like.** Re-minted tests the comparison had already
+  excluded still drove the delta, so a recompile read as a regression and the CI
+  stage failed on a population its own message did not describe. The delta is
+  tallied over exactly the compared ids; "nothing was comparable" is one state
+  (`delta is None`) every layer reads the same way; `drift` exits 1 there instead
+  of printing a green tick beside a -100%.
+- **`--tolerance` does something again.** Confining the delta to the comparable
+  population left it unable to change any verdict. It now gates the share of
+  compared tests that flipped pass→fail — identical to the old rule at the
+  default of `0`, exhaustively, on all 1,398,100 pass/fail shapes a suite of one
+  to ten comparable tests can take.
+- **The judge sees the knowledge the subject was given.** RAG-grounded answers
+  were graded as invented, because the judge got the un-augmented system prompt.
+  The retrieved section now rides in the per-test prompt, leaving the cached
+  system message untouched.
+- **An off-scale judge score follows its own verdict** instead of clamping to a
+  weighted 100% sitting beside a 0% pass rate.
+- **Human labels survive a corrupt labels file.** `save_labels` merged onto a
+  failed read and rewrote the file whole, silently discarding every label saved
+  before it. It now refuses, naming the file.
+- **DOCX ingestion reads tables.** `.paragraphs` excludes them, so policy tables
+  in a user's materials reached the tool as nothing at all.
+- **`rightsize` ranks across providers.** It called a Claude model "cheapest"
+  while silently dropping every non-Claude candidate that passed, because the
+  price table held only Claude ids.
+- **The exported suite behaves like the eval that certified it.** Checks whose
+  promptfoo assertion grades differently now export as `javascript` that
+  normalises the way `run_check` does; the escape round-trips every delimiter;
+  duplicate ids no longer multiply a criterion's weight; the runner sends the
+  turn shape the eval graded; the one shape promptfoo cannot reproduce is stated
+  in the file.
+- **The training tier runs on hardware it was not written on**: bf16 only where
+  the card reports Ampere+ and fp16 where it does not (T4/V100/RTX 20xx could not
+  start training at all), a merge that loads at the size it saves, a
+  `learning_rate` in exponent form that actually reaches the trainer, and
+  hand-edited hyperparameters that survive a re-export in both tiers.
+- **The suite was red at HEAD** in any environment with uvicorn but without the
+  anthropic SDK — including this repo's own `.venv` — because two boot-gate tests
+  assumed a cloud SDK was installed and the full-extras job masked it. They now
+  run with those SDKs made unimportable, so the engine-free promise is tested
+  everywhere.
+- Smaller: an interrupted interview no longer resumes as complete; `diff` prints
+  an examples-only change; `judge-check` continues past the verdicts already
+  labelled and builds ground truth without logging; `examples --import/--dedup`
+  refreshes `build/`; `train-engine` refuses an empty bundle and names the
+  project in its next-step command; the judge-is-subject warning survives two
+  spellings of one engine; a merged spec no longer orders grounding in an index
+  it has none of; `.githooks/pre-push` is installed rather than merely claiming
+  to be.
+
 Three failures found by pointing `calibrate compare` at this repo's own docs
 with local models (subject llama3.2:3b, judge gemma4:12b, via Ollama) — the
 first real run of the experiment the tool exists for:
