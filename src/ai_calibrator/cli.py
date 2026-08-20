@@ -1067,6 +1067,18 @@ def eval_(
                                 f"[{interrupted.partial.run_id}] with {done} graded test(s).",
                                 fg=typer.colors.YELLOW)
                     raise typer.Exit(code=130)
+                except Exception as exc:
+                    # The engine died mid-run. Everything graded before it is
+                    # already spent, so it is saved under its own run id before
+                    # the failure is reported.
+                    partial = getattr(exc, "partial_scorecard", None)
+                    typer.secho(f"Eval failed: {exc}", fg=typer.colors.RED)
+                    if partial is not None and partial.results:
+                        save_scorecard(path, partial)
+                        typer.secho(f"  Saved a PARTIAL scorecard [{partial.run_id}] with the "
+                                    f"{len(partial.results)} test(s) graded before it failed.",
+                                    fg=typer.colors.YELLOW)
+                    raise typer.Exit(code=1)
                 save_scorecard(path, card)
                 cards = [card]
         except (EvalInterrupted, typer.Exit):
@@ -1796,6 +1808,7 @@ def compare(
         typer.secho("\n⚠ Interrupted — nothing was written (a half-measured comparison "
                     "is not a comparison).", fg=typer.colors.YELLOW)
         raise typer.Exit(code=130)
+
 
     typer.echo("")
     for line in summary_lines(report):

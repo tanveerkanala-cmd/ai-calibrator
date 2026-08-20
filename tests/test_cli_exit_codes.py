@@ -602,3 +602,44 @@ def test_interview_states_one_call_per_gap(tmp_path, monkeypatch):
     m = re.search(r"~(\d+) engine call\(s\)", r.output)
     assert m, r.output
     assert int(m.group(1)) == 3          # one per gap
+
+
+def test_an_engine_failure_keeps_the_tests_it_already_graded(tmp_path, monkeypatch):
+    """Ctrl-C on test 20 of 20 saves the 19 already graded; an engine that rate
+    limits at the same point used to discard all 19. Those calls were spent and
+    billed either way, so the work is saved and the failure still reported."""
+    import ai_calibrator.engines as engines
+    from ai_calibrator.models import BehaviorSpec, EvalCriterion, Project
+    from ai_calibrator.models import TestCase as Case
+    from ai_calibrator.store import save_project
+
+    project = Project(name="p", goal="g")
+    project.spec = BehaviorSpec(goal="g", eval_criteria=[EvalCriterion(id="c1", description="answered")])
+    project.tests = [Case(id=f"t{i}", input=f"q{i}", expects=["c1"]) for i in range(1, 6)]
+    save_project(project, tmp_path)
+
+    class _DiesLate:
+        name = "flaky@test"
+
+        def __init__(self):
+            self.subject_calls = 0
+
+        def complete(self, prompt, *, system=None, schema=None):
+            if schema:
+                return {"results": [{"criterion_id": "c1", "passed": True,
+                                     "score": 1.0, "rationale": "ok"}]}
+            self.subject_calls += 1
+            if self.subject_calls == 5:
+                raise RuntimeError("429 rate limited")
+            return "an answer"
+
+    monkeypatch.setattr(engines, "get_engine", lambda spec: _DiesLate())
+    result = runner.invoke(app, ["eval", str(tmp_path)])
+
+    assert result.exit_code == 1
+    assert "429 rate limited" in result.output
+    saved = sorted((tmp_path / "evals").glob("*/scorecard.json"))
+    assert saved, "every graded test was discarded"
+    import json
+    card = json.loads(saved[0].read_text(encoding="utf-8"))
+    assert len(card["results"]) == 4 and card.get("partial") is True

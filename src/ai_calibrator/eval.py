@@ -478,6 +478,14 @@ def run_eval(
         # Ctrl-C mid-run: surface what completed so the caller can still
         # save a partial scorecard instead of losing every graded test.
         raise EvalInterrupted(_card(partial=True))
+    except Exception as exc:
+        # An engine that rate-limits or times out on test 20 of 20 is not a
+        # reason to discard the 19 already graded and paid for. The partial
+        # rides on the exception rather than in a wrapper: callers classify by
+        # exception TYPE (an EngineError is a 502 on the API, not a 400), and a
+        # wrapper would erase that distinction for every one of them.
+        exc.partial_scorecard = _card(partial=True)  # type: ignore[attr-defined]
+        raise
 
     return _card(partial=False)
 
