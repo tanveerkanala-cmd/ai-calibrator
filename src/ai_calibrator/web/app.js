@@ -169,6 +169,10 @@ function renderInterview(p, s, name) {
     const ta = document.createElement("textarea");
     ta.value = item.answer || item.draft_answer || "";
     ta.dataset.qid = item.id;
+    // The question this box is answering. Ids are positional and re-minted on a
+    // redraft, so the save echoes the wording back and the server refuses to
+    // record an answer against a question that changed underneath it.
+    ta.dataset.question = item.question || "";
     // What the box held before anyone touched it, so the save can tell an
     // answer the owner wrote from a draft it merely showed them.
     ta.dataset.prefilled = ta.value;
@@ -183,6 +187,7 @@ function renderInterview(p, s, name) {
   save.textContent = "Save answers";
   save.onclick = () => action(async () => {
     const answers = {};
+    const asked = {};
     // Only what the person actually wrote. Every box arrives prefilled with the
     // tool's drafted guess, so posting them all records the tool's own answers
     // as the owner's ratified ones — the spec then compiles from guesses nobody
@@ -191,13 +196,19 @@ function renderInterview(p, s, name) {
     // draft is a proposal, and the CLI makes accepting one an explicit
     // --accept-drafts choice.
     card.querySelectorAll("textarea").forEach((t) => {
-      if (t.value !== t.dataset.prefilled) answers[t.dataset.qid] = t.value;
+      if (t.value !== t.dataset.prefilled) {
+        answers[t.dataset.qid] = t.value;
+        // Echo the question this answer was typed against: ids shift when the
+        // interview is redrafted, and the server drops an answer whose question
+        // has changed rather than recording it against the wrong one.
+        asked[t.dataset.qid] = t.dataset.question || "";
+      }
     });
     if (!Object.keys(answers).length) {
       banner("Nothing saved — no answer was edited. A drafted answer stays a draft until you change it.");
       return;
     }
-    await api("POST", `/projects/${name}/answers`, { answers });
+    await api("POST", `/projects/${name}/answers`, { answers, asked });
     selectProject(s.name);
   });
   card.appendChild(save);

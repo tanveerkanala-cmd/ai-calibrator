@@ -78,6 +78,12 @@ class CreateProjectBody(BaseModel):
 
 class AnswersBody(BaseModel):
     answers: dict[str, str]
+    # What the client believes it asked, per id. Interview ids are positional and
+    # re-minted on every redraft, so a redraft between the client rendering the
+    # form and the user submitting it shifts them; applying by id alone then
+    # records an answer against a question nobody was shown. Optional, so an
+    # older client keeps working — it just cannot be protected.
+    asked: dict[str, str] = {}
 
 
 class EvalBody(BaseModel):
@@ -613,12 +619,17 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             # via a hand-edited project.yaml), silently dropping an answer the
             # owner gave.
             applied = 0
+            misattached = 0
             for it in project.interview:
                 if it.id in body.answers:
+                    asked = body.asked.get(it.id)
+                    if asked is not None and asked != it.question:
+                        misattached += 1
+                        continue
                     it.answer = body.answers[it.id]
                     applied += 1
             save_project(project, d)
-        return {"applied": applied, "state": _state(project, name)}
+        return {"applied": applied, "misattached": misattached, "state": _state(project, name)}
 
     @app.post("/api/projects/{name}/examples")
     def add_examples(name: str, body: ExamplesBody):

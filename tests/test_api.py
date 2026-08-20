@@ -1295,3 +1295,33 @@ def test_merge_apply_writes_the_protective_gitignore(tmp_path):
     gitignore = tmp_path / "org" / ".gitignore"
     assert gitignore.is_file(), "merged project has no .gitignore"
     assert "logs/" in gitignore.read_text(encoding="utf-8")
+
+
+def test_answers_are_not_applied_to_a_question_that_changed(tmp_path):
+    """The API twin of the CLI's misattachment guard. A client that echoes what
+    it asked gets its answer dropped rather than recorded against a question the
+    user never saw; a client that echoes nothing keeps the old behavior."""
+    import pytest
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from ai_calibrator.api import create_app
+    from ai_calibrator.models import InterviewItem, Project
+    from ai_calibrator.store import load_project, save_project
+
+    p = Project(name="p", goal="g")
+    p.interview = [InterviewItem(id="q1", dimension="refund", question="What is the refund window?")]
+    save_project(p, tmp_path / "p")
+    c = TestClient(create_app(tmp_path))
+
+    r = c.post("/api/projects/p/answers",
+               json={"answers": {"q1": "30 days"}, "asked": {"q1": "What tone?"}})
+
+    assert r.status_code == 200
+    assert r.json()["applied"] == 0 and r.json()["misattached"] == 1
+    assert load_project(tmp_path / "p").interview[0].answer is None
+
+    r2 = c.post("/api/projects/p/answers",
+                json={"answers": {"q1": "30 days"}, "asked": {"q1": "What is the refund window?"}})
+    assert r2.json()["applied"] == 1
+    assert load_project(tmp_path / "p").interview[0].answer == "30 days"

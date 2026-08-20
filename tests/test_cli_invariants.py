@@ -898,3 +898,44 @@ def test_a_json_document_is_not_preceded_by_advisory_text(tmp_path, monkeypatch)
 
     assert "Unknown key" not in result.stdout
     json.loads(result.stdout)          # the whole of stdout, not a suffix of it
+
+
+def test_an_answer_is_never_saved_against_a_question_it_was_not_asked(tmp_path, monkeypatch):
+    """Interview ids are positional and re-minted on every redraft, and the lock
+    is released while the user types. A redraft in that window shifts the ids, so
+    an answer keyed by id alone lands on a different question — stamped human,
+    and indistinguishable afterwards from one the user really gave."""
+    from ai_calibrator.models import Gap, InterviewItem, Project
+    from ai_calibrator.store import load_project, save_project
+
+    project = Project(name="p", goal="g")
+    project.gaps = [Gap(dimension="tone"), Gap(dimension="refund")]
+    project.interview = [
+        InterviewItem(id="q1", dimension="tone", question="What tone?"),
+        InterviewItem(id="q2", dimension="refund", question="What is the refund window?"),
+    ]
+    save_project(project, tmp_path)
+
+    typed: list[str] = []
+
+    def _prompt(*args, **kwargs):
+        # While the user answers the refund question, a concurrent redraft drops
+        # the tone gap: q1 becomes the refund question and q2 something else.
+        if not typed:
+            typed.append("x")
+            shifted = load_project(tmp_path)
+            shifted.gaps = [Gap(dimension="refund"), Gap(dimension="reading")]
+            shifted.interview = [
+                InterviewItem(id="q1", dimension="refund", question="What is the refund window?"),
+                InterviewItem(id="q2", dimension="reading", question="What reading level?"),
+            ]
+            save_project(shifted, tmp_path)
+        return "30 days"
+
+    monkeypatch.setattr("typer.prompt", _prompt)
+    result = runner.invoke(app, ["interview", str(tmp_path)])
+
+    after = load_project(tmp_path)
+    by_dim = {it.dimension: it for it in after.interview}
+    assert by_dim["reading"].answer is None, "an answer landed on a question it was not asked"
+    assert _has_no_traceback(result)

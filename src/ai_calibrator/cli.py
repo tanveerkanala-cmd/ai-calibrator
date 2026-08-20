@@ -761,7 +761,8 @@ def interview(
     # (answer, where it came from). The spec compiles from these, so an answer
     # the tool wrote and nobody read must stay distinguishable from one a person
     # decided — see InterviewItem.answer_source.
-    answers: dict[str, tuple[str, AnswerSource]] = {}
+    # id -> (answer, source, the question it was typed against)
+    answers: dict[str, tuple[str, AnswerSource, str]] = {}
     # An answer a person typed is their work — the same principle `interview.py`
     # states and `--regenerate` was fixed to honour. These answers lived only in
     # this dict until the last question was reached, so a Ctrl-C, an EOF, or a
@@ -771,7 +772,7 @@ def interview(
     try:
         for item in pending:
             if accept_drafts:
-                answers[item.id] = (item.draft_answer or "", "engine")
+                answers[item.id] = (item.draft_answer or "", "engine", item.question)
             else:
                 typer.secho(f"[{item.dimension}] {item.question}", bold=True)
                 if item.rationale:
@@ -783,7 +784,15 @@ def interview(
                 # Enter on a draft a person just read IS ratification; typing their
                 # own answer is authorship. Both are human decisions.
                 source: AnswerSource = "human" if typed else "human_ratified"
-                answers[item.id] = (typed or (item.draft_answer or ""), source)
+                # Keyed by the QUESTION as well as the id: ids are positional
+                # (`q1`, `q2`, …) and re-minted on every redraft, so a redraft
+                # that happens while these prompts are open — the lock is
+                # deliberately released across them — shifts every id down when
+                # one gap's question comes back malformed. Writing by id alone
+                # then stamps this answer onto a different question as
+                # human-ratified, and `compile` builds standards and graded
+                # tests out of a pair no person ever made.
+                answers[item.id] = (typed or (item.draft_answer or ""), source, item.question)
                 typer.echo("")
     except (typer.Abort, EOFError, KeyboardInterrupt):
         aborted = True
@@ -801,12 +810,25 @@ def interview(
         # Apply to EVERY item whose id matches — a dict-by-id would drop all but
         # the last of any duplicate-id items (possible via a hand-edited
         # project.yaml), silently discarding a collected answer.
+        misattached = 0
         for it in project.interview:
             if it.id in answers:
-                it.answer, it.answer_source = answers[it.id]
+                answer, source, asked = answers[it.id]
+                if it.question != asked:
+                    # The question under this id changed while the user typed.
+                    # Dropping the answer loses one reply; keeping it would
+                    # fabricate a ratified answer to a question nobody was shown.
+                    misattached += 1
+                    continue
+                it.answer, it.answer_source = answer, source
         save_project(project, path)
         answered = sum(1 for it in project.interview if it.answer)
         total = len(project.interview)
+    if misattached:
+        typer.secho(f"⚠ {misattached} answer(s) were not saved: the question under that id "
+                    "changed while you were answering (a concurrent redraft). Re-run "
+                    "`calibrate interview` to answer the current wording.",
+                    fg=typer.colors.YELLOW)
 
     if aborted:
         typer.secho(f"⏹ Stopped early — the {len(answers)} answer(s) you gave are saved "
