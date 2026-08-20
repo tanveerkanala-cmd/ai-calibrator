@@ -320,3 +320,22 @@ def test_recompile_lets_a_real_new_value_replace_the_prior_one(tmp_path):
     compile_project(project, SeqEngine([changed, TESTS_PAYLOAD]), project_dir=tmp_path)
 
     assert project.spec.refusal_policy == "Decline anything legal; escalate immediately."
+
+
+def test_a_recompile_keeps_a_test_the_owner_wrote_by_hand():
+    """project.yaml is documented as editable, and synthesis only ever mints
+    `t<n>` ids. Pinning by the known prefixes alone deleted anything else on the
+    next compile — from project.yaml and build/ both — and the summary reported
+    only a smaller test count."""
+    from ai_calibrator.compile import _pin_prior_tests
+    from ai_calibrator.models import TestCase as Case
+
+    prior = [Case(id="t1", input="synthesized"),
+             Case(id="refund_edge", input="customer demands refund after 90 days"),
+             Case(id="fb_1", input="from the flywheel")]
+    fresh = [Case(id="t1", input="regenerated")]
+
+    kept = {t.id for t in _pin_prior_tests(prior, fresh)}
+
+    assert "refund_edge" in kept          # the owner's own regression anchor
+    assert kept == {"t1", "refund_edge", "fb_1"}

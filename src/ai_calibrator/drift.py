@@ -113,6 +113,15 @@ def compare_scorecards(baseline: Scorecard, candidate: Scorecard, *, tolerance: 
         if not same_question(base, cand):
             incomparable.append(cand.test_id)
             continue
+        # A result with no criteria was never GRADED — `run_eval` records one
+        # when a test targets a criterion the spec no longer has. `pass_rate` and
+        # `save_scorecard` both exclude those by explicit rule, so a scorecard
+        # can honestly read 100% while holding one; folding it in here turns
+        # `TestResult.passed`'s False-for-empty into a pass->fail regression the
+        # model never caused, and fails the gate on a spec edit.
+        if not base.criteria or not cand.criteria:
+            incomparable.append(cand.test_id)
+            continue
         # Counted whether or not the verdict moved: "we compared these and
         # nothing flipped" is a real result, and the caller has to be able to
         # tell it apart from "there was nothing left to compare".

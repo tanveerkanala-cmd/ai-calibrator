@@ -532,3 +532,34 @@ def test_the_trainer_reproduces_the_system_message_the_judge_graded_under(tmp_pa
     recorded = rows[0]["messages"][0]["content"]
     assert recorded == judge_system(render_system_prompt(p.spec))
     assert "30-day window" in recorded
+
+
+def test_a_trailing_newline_is_graded_the_way_it_is_served():
+    """The single-turn path used to grade the raw reply while the multi-turn path
+    and the runtime guard both stripped, so "12345\\n" failed max_chars=5 in the
+    eval and passed when served. An eval STRICTER than serving deflates the pass
+    rate and can fail the gate on behavior the endpoint allows."""
+    from ai_calibrator.eval import run_eval
+    from ai_calibrator.models import BehaviorSpec, Check, EvalCriterion, Project
+    from ai_calibrator.models import TestCase as Case
+
+    class _TrailingNewline:
+        name = "s@test"
+
+        def complete(self, prompt, *, system=None, schema=None):
+            return "12345\n"
+
+    class _Judge:
+        name = "j@test"
+
+        def complete(self, prompt, *, system=None, schema=None):
+            return {"results": []}
+
+    p = Project(name="p", goal="g")
+    p.spec = BehaviorSpec(goal="g", eval_criteria=[
+        EvalCriterion(id="brief", description="short", check=Check(kind="max_chars", value="5"))])
+    p.tests = [Case(id="t1", input="q", expects=["brief"])]
+
+    card = run_eval(p, _TrailingNewline(), _Judge(), run_id="r")
+
+    assert card.results[0].criteria[0].passed is True

@@ -290,3 +290,39 @@ def test_preserved_knobs_are_exactly_what_the_generated_trainer_reads():
 
     ns = _from_generated_trainer({"DEFAULTS"})
     assert set(ns["DEFAULTS"]) == set(TUNABLE_KEYS)
+
+
+def test_the_gate_reads_what_it_trained_on_from_disk_not_the_moved_spec(tmp_path):
+    """The spec moves after an export — an `absorb` that retracts an example, a
+    `--dedup`, any hand edit. Reading the memorization check off the moved spec
+    makes a test the model DID train on look held out, so the warning disappears
+    and the gate accepts a fine-tune whose only win is reciting its training row."""
+    import json
+
+    from ai_calibrator.finetune import training_overlap
+    from ai_calibrator.models import (
+        BehaviorSpec, CriterionResult, Example, Project, Scorecard,
+    )
+    from ai_calibrator.models import TestCase as Case
+    from ai_calibrator.models import TestResult as Result
+
+    project = Project(name="p", goal="g")
+    project.spec = BehaviorSpec(goal="g")
+    project.tests = [Case(id="fb_1", input="Q")]
+    card = Scorecard(run_id="run-0001", results=[
+        Result(test_id="fb_1", output="A",
+               criteria=[CriterionResult(criterion_id="c1", passed=True)],
+               input_hash=None)])
+
+    bundle = tmp_path / "finetune"
+    bundle.mkdir(parents=True)
+    (bundle / "dataset.jsonl").write_text(
+        json.dumps({"messages": [{"role": "user", "content": "Q"},
+                                 {"role": "assistant", "content": "A"}]}) + "\n",
+        encoding="utf-8")
+
+    # The spec no longer carries the example: the `up` was retracted by a later
+    # `down`, so `is_training_row` is False for everything it holds now.
+    project.spec.examples = [Example(input="Q", bad_output="A")]
+
+    assert training_overlap(project, card, project_dir=tmp_path) == ["fb_1"]

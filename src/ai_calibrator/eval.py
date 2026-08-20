@@ -419,7 +419,15 @@ def run_eval(
                 # Encode the single turn exactly as the runtime and the API's /try
                 # do (`conversation_prompt`), so the certified pass rate is earned
                 # on the prompt the deployed endpoint actually sends.
-                output = as_str(subject.complete(conversation_prompt([], test.input), system=eff_system))
+                # Stripped, exactly as the multi-turn path and the runtime guard
+                # both strip: a trailing newline is routine from a local model,
+                # and without this the same answer fails max_chars here while
+                # passing when served — the eval being STRICTER than serving is
+                # the half of "what the eval certifies is what serving allows"
+                # that deflates the pass rate and can fail the gate on behavior
+                # the endpoint would have allowed.
+                output = as_str(subject.complete(conversation_prompt([], test.input),
+                                                 system=eff_system)).strip()
                 replies = [output]
             # De-dup while preserving order: a duplicated id in `expects` (hand-edited
             # YAML, or an engine that repeats one) would otherwise append the same

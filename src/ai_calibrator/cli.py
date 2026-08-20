@@ -2726,7 +2726,7 @@ def finetune(
         # turn those same examples into ex_*/fb_* tests — so the headline rate can
         # include prompts the model trained on, which a memorizing fine-tune passes
         # by construction. Decide the gate on the HELD-OUT tests only.
-        overlap = training_overlap(project, cand_card)
+        overlap = training_overlap(project, cand_card, project_dir=path)
         graded = [r for r in cand_card.results if r.criteria]
         # Comparability is not an overlap question. Every check below — did either
         # run grade anything, do they share any test — is about whether these two

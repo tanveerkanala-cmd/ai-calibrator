@@ -259,3 +259,24 @@ def test_scorecard_rejects_unsafe_run_id(bad):
 def test_scorecard_accepts_normal_run_ids():
     assert Scorecard(run_id="run-0001").run_id == "run-0001"
     assert Scorecard(run_id="redteam-0002").run_id == "redteam-0002"
+
+
+def test_a_test_that_was_never_graded_is_not_a_regression():
+    """`run_eval` records an empty criteria list when a test targets a criterion
+    the spec no longer has, and `TestResult.passed` is False for an empty list.
+    Both scorecards can honestly report 100% — `pass_rate` excludes ungraded
+    results by rule — while drift reads the gap as a pass->fail flip and fails
+    the gate on a spec edit the model had no part in."""
+    base = Scorecard(run_id="run-0001", results=[
+        Result(test_id="t5", output="o", criteria=[CriterionResult(criterion_id="c1", passed=True)]),
+        Result(test_id="t6", output="o", criteria=[CriterionResult(criterion_id="c2", passed=True)]),
+    ])
+    cand = Scorecard(run_id="run-0002", results=[
+        Result(test_id="t5", output="o", criteria=[]),          # c1 removed from the spec
+        Result(test_id="t6", output="o", criteria=[CriterionResult(criterion_id="c2", passed=True)]),
+    ])
+
+    assert base.pass_rate == 1.0 and cand.pass_rate == 1.0
+    r = compare_scorecards(base, cand)
+    assert r.regressed_tests == [] and r.regressed is False
+    assert r.compared == 1 and r.incomparable_tests == ["t5"]

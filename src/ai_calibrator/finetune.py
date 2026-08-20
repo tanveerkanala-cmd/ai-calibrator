@@ -338,7 +338,39 @@ def rate_over(card: Scorecard, test_ids: set[str]) -> tuple[float, int]:
     return round(sum(1 for r in graded if r.passed) / len(graded), 4), len(graded)
 
 
-def training_overlap(project: Project, card: Scorecard) -> list[str]:
+def _shipped_training_inputs(project_dir: str | Path | None) -> set[str] | None:
+    """The prompts ``finetune/dataset.jsonl`` actually trained on, or None if no
+    bundle has been exported.
+
+    What the candidate saw is a fact on disk, not something to infer from the
+    spec — the same rule ``train_engine._trained_questions`` follows. The spec
+    moves after an export (an `absorb` that retracts an example, `examples
+    --dedup`, any hand edit), and reading the memorization check off the moved
+    spec makes a test the model DID train on look held out: the warning
+    disappears and the gate accepts a fine-tune whose only win is reciting its
+    own training row."""
+    if project_dir is None:
+        return None
+    f = Path(project_dir) / "finetune" / "dataset.jsonl"
+    if not f.exists():
+        return None
+    inputs: set[str] = set()
+    for line in f.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        messages = row.get("messages") if isinstance(row, dict) else None
+        if not isinstance(messages, list):
+            continue
+        for m in messages:
+            if isinstance(m, dict) and m.get("role") == "user" and isinstance(m.get("content"), str):
+                inputs.add(m["content"])
+    return inputs
+
+
+def training_overlap(project: Project, card: Scorecard,
+                     *, project_dir: str | Path | None = None) -> list[str]:
     """Test ids in ``card`` whose input was also a TRAINING prompt.
 
     The dataset is built from ``spec.examples`` and `examples-to-tests` /
@@ -363,10 +395,13 @@ def training_overlap(project: Project, card: Scorecard) -> list[str]:
     does now. Reading the memorization check off the CURRENT input for that id
     would answer the question about a prompt the run never sent, so a result
     whose recorded content no longer matches its test is skipped."""
-    trained = {
-        ex.input for ex in (project.spec.examples if project.spec else [])
-        if is_training_row(ex)
-    }
+    trained = _shipped_training_inputs(project_dir)
+    if trained is None:
+        # No bundle on disk: the live spec is the best available answer.
+        trained = {
+            ex.input for ex in (project.spec.examples if project.spec else [])
+            if is_training_row(ex)
+        }
     by_id = {t.id: t for t in project.tests}
     out = []
     for r in card.results:

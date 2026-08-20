@@ -10,6 +10,7 @@ deterministic renders; the test cases are a second engine pass. Output lands in
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -399,6 +400,12 @@ def write_build_bundle(spec: BehaviorSpec, tests: list[TestCase], project_dir: s
 # See compile_project.
 _PINNED_TEST_PREFIXES = ("fb_", "rt_", "ex_")
 
+# The ids synthesis MINTS, and therefore the only ids a recompile is entitled to
+# replace. Anything else in a prior suite came from somewhere this compile cannot
+# reproduce — most importantly the owner's own hand, since project.yaml is
+# documented as editable — so it is carried forward like any other pinned case.
+_SYNTHESIZED_TEST_ID = re.compile(r"t\d+$")
+
 
 def _merge_prior_spec(prior: BehaviorSpec, spec: BehaviorSpec) -> None:
     """Carry forward spec content the fresh synthesis can't reproduce (mutates
@@ -419,12 +426,19 @@ def _merge_prior_spec(prior: BehaviorSpec, spec: BehaviorSpec) -> None:
 
 
 def _pin_prior_tests(prior_tests: list[TestCase], tests: list[TestCase]) -> list[TestCase]:
-    """Re-pin ``fb_*`` (flywheel) / ``rt_*`` (red-team) regression tests that the
-    fresh synthesis doesn't regenerate, appended to the fresh ``t*`` tests."""
+    """Re-pin prior tests the fresh synthesis doesn't regenerate, appended to the
+    fresh ``t*`` tests.
+
+    That is ``fb_*`` (flywheel), ``rt_*`` (red-team), ``ex_*`` (promoted
+    examples) — and anything whose id synthesis would never mint, which is how a
+    test the owner wrote into project.yaml by hand survives a recompile. Keying
+    on the known prefixes alone deleted those silently, from project.yaml and
+    build/ alike, and the summary only reported a smaller number."""
     fresh_ids = {t.id for t in tests}
     pinned = [
         t for t in prior_tests
-        if t.id.startswith(_PINNED_TEST_PREFIXES) and t.id not in fresh_ids
+        if t.id not in fresh_ids
+        and (t.id.startswith(_PINNED_TEST_PREFIXES) or not _SYNTHESIZED_TEST_ID.fullmatch(t.id))
     ]
     return tests + pinned
 
