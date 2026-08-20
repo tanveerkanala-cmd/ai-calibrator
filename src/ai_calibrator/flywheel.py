@@ -268,7 +268,14 @@ def absorb_feedback(project: Project, project_dir: str | Path, *,
     # Archive: consumed records append to the audit trail; the inbox empties.
     logs = Path(project_dir) / "logs"
     absorbed = logs / ABSORBED_FILE
-    prior = absorbed.read_text(encoding="utf-8") if absorbed.exists() else ""
+    # Bytes + lenient decode, like the inbox read above: this runs AFTER commit(),
+    # so a strict decode raised with the project already mutated and the inbox
+    # never truncated — every retry re-ran the same crash and the project could
+    # never absorb feedback again.
+    try:
+        prior = absorbed.read_bytes().decode("utf-8", "replace") if absorbed.exists() else ""
+    except OSError:
+        prior = ""
     atomic_write_text(absorbed, prior + "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records))
     # Keep what could not be parsed. Truncating it away would destroy the only
     # copy of a record nothing consumed — and a later release that can read it

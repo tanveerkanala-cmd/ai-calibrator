@@ -134,3 +134,30 @@ def test_concurrent_appends_never_lost_during_absorb(tmp_path):
     assert read_feedback(tmp_path) == []                    # inbox drained
     archived = (tmp_path / "logs" / "feedback-absorbed.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(archived) == N                               # every record archived exactly once
+
+
+def test_an_unreadable_archive_does_not_brick_absorb_forever(tmp_path):
+    """The archive is read AFTER the project is committed, so a strict decode
+    raised with the project already mutated and the inbox never truncated —
+    every retry re-ran the same crash and that project could never absorb
+    feedback again."""
+    import json
+
+    from ai_calibrator.flywheel import ABSORBED_FILE, FEEDBACK_FILE, absorb_feedback
+    from ai_calibrator.models import BehaviorSpec, Project
+    from ai_calibrator.store import save_project
+
+    project = Project(name="p", goal="g")
+    project.spec = BehaviorSpec(goal="g")
+    save_project(project, tmp_path)
+
+    logs = tmp_path / "logs"
+    logs.mkdir(parents=True)
+    (logs / ABSORBED_FILE).write_bytes(b'{"note": "caf\xc3"}\n')
+    (logs / FEEDBACK_FILE).write_text(
+        json.dumps({"turns": ["q"], "output": "a", "verdict": "up"}) + "\n", encoding="utf-8")
+
+    result = absorb_feedback(project, project_dir=tmp_path)
+
+    assert result.ups == 1 and result.examples_added == 1
+    assert (logs / FEEDBACK_FILE).read_text(encoding="utf-8") == ""   # inbox truncated

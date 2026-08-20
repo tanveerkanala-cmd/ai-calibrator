@@ -198,12 +198,24 @@ def build_merged_spec(
     additions = [a for a in (additions or []) if is_str(a)]
     statements = gather(named_specs)
 
-    standards = [s.text for s in statements if s.kind == "standard" and s.idx not in drops]
-    do_not = [s.text for s in statements if s.kind == "do_not" and s.idx not in drops]
+    # Drop by TEXT as well as index. The output is text-deduped, so dropping one
+    # of several identically-worded statements had no effect at all: the merged
+    # spec shipped both sides of the very contradiction the owner had just
+    # adjudicated, under a success message, recorded as resolved.
+    dropped_text = {s.text for s in statements if s.idx in drops}
+    standards = [s.text for s in statements
+                 if s.kind == "standard" and s.idx not in drops and s.text not in dropped_text]
+    do_not = [s.text for s in statements
+              if s.kind == "do_not" and s.idx not in drops and s.text not in dropped_text]
     standards = _dedup(standards + additions)
     do_not = _dedup(do_not)
 
-    specs = list(named_specs.values())
+    # Sorted by stakeholder name, like `gather` and the criteria loop below: an
+    # example collision keeps the FIRST spec's version, so insertion order
+    # decided which human judgment survived — and `/merge/detect` and
+    # `/merge/apply` could be handed the same sources in different orders and
+    # ship different AIs.
+    specs = [sp for _name, sp in sorted(named_specs.items())]
     # Additive unions across stakeholders (dedup by a natural key).
     edge_cases: list[EdgeCase] = []
     seen_edges: set[tuple[str, str]] = set()
@@ -239,11 +251,24 @@ def build_merged_spec(
                 criteria.append(alt)
     examples: list[Example] = []
     seen_ex: set[str] = set()
+    by_input: dict[str, Example] = {}
     for sp in specs:
         for ex in sp.examples:
-            if ex.input not in seen_ex:
+            kept = by_input.get(ex.input)
+            if kept is None:
+                by_input[ex.input] = ex
                 seen_ex.add(ex.input)
                 examples.append(ex)
+                continue
+            # Same question, two stakeholders. Keeping only the first discarded a
+            # human judgment with no conflict reported — and a bad_output is a
+            # different fact about the answer than a good_output, so they merge
+            # rather than compete.
+            if kept.good_output is None and ex.good_output is not None:
+                kept.good_output = ex.good_output
+                kept.source = ex.source
+            if kept.bad_output is None and ex.bad_output is not None:
+                kept.bad_output = ex.bad_output
     # NOT unioned. A merged project is constructed from the specs and nothing
     # else: no materials/ are copied and no knowledge.lancedb is built, so
     # retrieval has nothing to augment the prompt with. Carrying the sources

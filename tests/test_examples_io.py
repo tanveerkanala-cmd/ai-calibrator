@@ -172,3 +172,23 @@ def test_dedup_keeps_the_correction_over_a_later_input_only_row():
         Example(input="q", why="older"), Example(input="q", why="newer")])
     dedup_examples(bare)
     assert [e.why for e in bare.examples] == ["newer"]
+
+
+def test_a_header_is_a_row_where_every_cell_is_a_column_name(tmp_path):
+    """Testing only the INPUT names mis-read both ways: `query,response` was
+    called headerless so the header imported as a human-authored trainable
+    example, and a headerless chat export starting with `user` lost its first
+    real message to a header that was never there."""
+    from ai_calibrator.examples_io import load_examples_report
+
+    named = tmp_path / "named.csv"
+    named.write_text("query,response\nWhat is the refund window?,30 days\n", encoding="utf-8")
+    report = load_examples_report(named)
+    assert [(e.input, e.good_output) for e in report.examples] == [
+        ("What is the refund window?", "30 days")]
+
+    chat = tmp_path / "chat.csv"
+    chat.write_text("user,where is my order?\nassistant,it ships tomorrow\n", encoding="utf-8")
+    report2 = load_examples_report(chat)
+    assert [e.input for e in report2.examples] == ["user", "assistant"]
+    assert all(e.good_output for e in report2.examples)

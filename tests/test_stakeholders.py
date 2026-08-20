@@ -131,3 +131,45 @@ def test_merged_project():
 def test_cli_merge_requires_two_sources(tmp_path):
     r = CliRunner().invoke(app, ["merge", str(tmp_path / "out"), "--from", str(tmp_path / "a")])
     assert r.exit_code == 1 and "at least two" in r.output
+
+
+def test_dropping_a_rule_drops_its_identical_twin_too():
+    """`drops` is index-keyed and the output is text-deduped, so dropping one of
+    several identically-worded statements had no effect: the merged spec shipped
+    both sides of the contradiction the owner had just adjudicated."""
+    from ai_calibrator.models import BehaviorSpec, TaskType
+    from ai_calibrator.stakeholders import build_merged_spec, gather
+
+    legal = BehaviorSpec(goal="g", standards=["Always add a legal disclaimer"])
+    support = BehaviorSpec(goal="g", standards=["Always add a legal disclaimer"])
+    brand = BehaviorSpec(goal="g", do_not=["add disclaimers"])
+    named = {"legal": legal, "support": support, "brand": brand}
+
+    statements = gather(named)
+    disclaimer_idxs = {s.idx for s in statements if s.text == "Always add a legal disclaimer"}
+    spec = build_merged_spec(named, goal="g", task_type=TaskType.ASSISTANT, drops=disclaimer_idxs)
+
+    assert "Always add a legal disclaimer" not in spec.standards
+    assert "add disclaimers" in spec.do_not
+
+
+def test_a_stakeholder_example_is_not_lost_to_source_order():
+    """Two stakeholders answering the same question is a collision, not a
+    duplicate: keeping the first discarded a human judgment silently, and the
+    survivor depended on dict insertion order — so detect and apply could be
+    given the same sources in different orders and ship different AIs."""
+    from ai_calibrator.models import BehaviorSpec, Example, TaskType
+    from ai_calibrator.stakeholders import build_merged_spec
+
+    a = BehaviorSpec(goal="g", examples=[Example(input="refund?", good_output="A's answer")])
+    b = BehaviorSpec(goal="g", examples=[Example(input="refund?", bad_output="B says this is BAD")])
+
+    forward = build_merged_spec({"a": a.model_copy(deep=True), "b": b.model_copy(deep=True)},
+                                goal="g", task_type=TaskType.ASSISTANT)
+    reverse = build_merged_spec({"b": b.model_copy(deep=True), "a": a.model_copy(deep=True)},
+                                goal="g", task_type=TaskType.ASSISTANT)
+
+    for spec in (forward, reverse):
+        assert len(spec.examples) == 1
+        assert spec.examples[0].good_output == "A's answer"
+        assert spec.examples[0].bad_output == "B says this is BAD"

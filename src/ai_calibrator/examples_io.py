@@ -20,8 +20,9 @@ from .coerce import as_opt_str, is_str
 from .models import BehaviorSpec, Example
 
 # accepted column / key names, in priority order
-_INPUT_KEYS = ("input", "question", "prompt", "user", "q")
-_OUTPUT_KEYS = ("good_output", "output", "answer", "response", "assistant", "a", "ideal")
+_INPUT_KEYS = ("input", "question", "prompt", "user", "q", "query", "user question")
+_OUTPUT_KEYS = ("good_output", "output", "answer", "response", "assistant", "a", "ideal",
+                "ideal response", "reply")
 _BAD_KEYS = ("bad_output", "bad", "rejected")
 
 
@@ -161,13 +162,23 @@ def _parse_csv(text: str) -> list[tuple[dict, int]]:
     # can point at the file. csv.reader collapses embedded newlines within a
     # quoted field, so this is the row's starting line — close enough to locate it.
     all_rows: list[tuple[list[str], int]] = []
-    for lineno, r in enumerate(reader, start=1):
+    for r in reader:
+        # reader.line_num is the PHYSICAL line the record ends on; enumerate
+        # counts records, so one quoted field with an embedded newline made every
+        # later skip-report line number point into the middle of a good row.
         if any(c.strip() for c in r):
-            all_rows.append((r, lineno))
+            all_rows.append((r, reader.line_num))
     if not all_rows:
         return []
     header = [c.strip().lower() for c in all_rows[0][0]]
-    has_header = any(h in _INPUT_KEYS for h in header)
+    # EVERY cell has to look like a column name, not just one. Testing only the
+    # input names mis-read both ways: `query,response` was called headerless, so
+    # the header itself imported as a human-authored, trainable example; and a
+    # headerless chat export whose first cell is `user` lost its first real
+    # message to a header that was never there.
+    _HEADER_KEYS = _INPUT_KEYS + _OUTPUT_KEYS + _BAD_KEYS
+    cells = [h for h in header if h]
+    has_header = bool(cells) and all(h in _HEADER_KEYS for h in cells)
     if has_header:
         return [(dict(zip(header, r, strict=False)), ln) for r, ln in all_rows[1:]]
     # headerless: first col is input, second (if present) is output

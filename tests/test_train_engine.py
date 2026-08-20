@@ -535,3 +535,22 @@ def test_regenerating_an_engine_bundle_keeps_hand_edited_hyperparameters(tmp_pat
 
     after = yaml.safe_load(recipe_file.read_text(encoding="utf-8"))
     assert after["learning_rate"] == 7e-6 and after["lora_r"] == 64
+
+
+def test_one_bad_byte_does_not_brick_the_whole_tier(tmp_path):
+    """A truncated multi-byte character — a kill mid-flush, a half-restored
+    backup — made read_text raise. Every entrance to the Engine-Trainer goes
+    through here, so the CLI answered with a traceback and the API with a 500
+    until someone hand-repaired the file, with every good record behind the bad
+    byte unreachable. `flywheel.read_feedback_lines` was hardened for this."""
+    from ai_calibrator.train_engine import read_log
+
+    logs = tmp_path / "logs"
+    logs.mkdir(parents=True)
+    good = b'{"system": "s", "prompt": "q1", "output": "a1"}\n'
+    bad = b'{"system": "s", "prompt": "caf\xc3", "output": "a2"}\n'
+    (logs / "judge.jsonl").write_bytes(good + bad + good.replace(b"q1", b"q3"))
+
+    rows = read_log(tmp_path, "judge")
+
+    assert [r["prompt"] for r in rows] == ["q1", "caf�", "q3"]

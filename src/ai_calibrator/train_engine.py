@@ -65,7 +65,17 @@ def read_log(project_dir: str | Path, role: str) -> list[dict]:
     if not f.exists():
         return []
     rows: list[dict] = []
-    for line in f.read_text(encoding="utf-8").splitlines():
+    # Bytes, decoded leniently — the same rule `flywheel.read_feedback_lines`
+    # already follows. One truncated multi-byte character (a kill mid-flush) made
+    # read_text raise, and since every entrance to this tier goes through here,
+    # the whole Engine-Trainer became a traceback on the CLI and a 500 on the API
+    # until someone hand-repaired the file, with every good record behind it
+    # unreachable.
+    try:
+        raw = f.read_bytes()
+    except OSError:
+        return []
+    for line in raw.decode("utf-8", "replace").splitlines():
         line = line.strip()
         if not line:
             continue
