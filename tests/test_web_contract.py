@@ -214,8 +214,13 @@ def _run_ui(script: str, routes: dict) -> dict:
         d = Path(tmp)
         (d / "harness.mjs").write_text(_HARNESS, encoding="utf-8")
         (d / "plan.json").write_text(json.dumps({"routes": routes, "script": script}), encoding="utf-8")
+        # Decode as UTF-8 explicitly: the panel's own text carries non-ASCII
+        # (the arrow, the tick), and `text=True` alone decodes with the locale's
+        # encoding — ASCII under LC_ALL=C, where reading the harness's own output
+        # raises before any assertion runs.
         proc = subprocess.run([node, str(d / "harness.mjs"), str(WEB / "app.js"), str(d / "plan.json")],
-                              capture_output=True, text=True, timeout=60)
+                              capture_output=True, text=True, timeout=60,
+                              encoding="utf-8", errors="replace")
     assert proc.returncode == 0, proc.stderr
     return json.loads(proc.stdout)
 

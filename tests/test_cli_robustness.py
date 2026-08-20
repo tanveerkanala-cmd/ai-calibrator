@@ -748,10 +748,14 @@ def test_the_training_install_floors_are_the_ones_the_trainer_needs():
     package is upgraded. A floor below what the generated train.py calls leaves
     that package untouched, and the crash it causes is then reported as a
     memory problem the owner does not have."""
-    import tomllib
     from pathlib import Path
 
     import pytest
+
+    try:
+        import tomllib      # stdlib from 3.11; the declared floor is 3.10
+    except ModuleNotFoundError:
+        tomllib = pytest.importorskip("tomli", reason="needs tomllib (3.11+) or tomli to read pyproject")
 
     from ai_calibrator import cli
 
