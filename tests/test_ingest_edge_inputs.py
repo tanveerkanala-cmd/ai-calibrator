@@ -614,3 +614,36 @@ def test_a_single_oversized_material_is_reported_as_not_analyzed(tmp_path, monke
 
     assert result.materials == 1
     assert result.analyzed == 0     # nothing fit the window, and the CLI now says so
+
+
+def test_a_file_that_parses_to_nothing_is_reported_not_dropped(tmp_path, monkeypatch):
+    """An image-only scanned PDF parses to "". Every other failure in the scan is
+    reported; this one vanished, and the owner was told every file was analyzed
+    while the handbook they uploaded informed nothing."""
+    import ai_calibrator.ingest as ingest_mod
+
+    materials = tmp_path / "materials"
+    materials.mkdir()
+    (materials / "scan.pdf").write_bytes(b"%PDF-1.4 fake")
+    (materials / "notes.txt").write_text("Refunds within 30 days.", encoding="utf-8")
+
+    monkeypatch.setattr(ingest_mod, "read_document",
+                        lambda p: "" if p.suffix == ".pdf" else p.read_text(encoding="utf-8"))
+
+    docs, skipped = parse_materials(materials)
+
+    assert [p.name for p, _ in docs] == ["notes.txt"]
+    assert [rel for rel, _ in skipped] == ["scan.pdf"]
+    assert "no text" in dict(skipped)["scan.pdf"]
+
+
+def test_a_fact_that_is_not_a_string_is_dropped_not_stringified():
+    """The shard markers are all JSON punctuation, so a dict laundered through
+    Python's repr passed the filter and reached the spec as a fact — and the
+    owner's review screen showed it as one."""
+    engine = FakeEngine({"facts": ["We ship internationally.", {"fact": "Always greet politely"}],
+                         "gaps": []})
+
+    facts, _gaps, _analyzed = extract_gaps("g", "assistant", [("f.md", "t")], engine)
+
+    assert facts == ["We ship internationally."]

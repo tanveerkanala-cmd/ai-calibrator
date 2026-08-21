@@ -144,6 +144,11 @@ def parse_materials(
             continue
         if text.strip():
             docs.append((p, text))
+        else:
+            # Every other failure in this loop is reported; a file that parses to
+            # nothing (an image-only scanned PDF is the common one) vanished
+            # instead, and the owner was told every file was analyzed.
+            skipped.append((_rel(p), "parsed to no text — an image-only scan, or an empty file?"))
     return docs, skipped
 
 
@@ -202,8 +207,13 @@ def extract_gaps(
         "Extract the facts and identify the gaps."
     )
     result = require_object(engine.complete(prompt, system=_EXTRACT_SYSTEM, schema=GAP_SCHEMA), "extractor")
-    facts = [str(f) for f in as_list(result.get("facts"))
-             if not _looks_like_shard(str(f), max_len=MAX_FACT_CHARS, markers=_FACT_SHARD_MARKERS)]
+    # Non-strings are DROPPED, not str()'d: the shard markers are all JSON
+    # punctuation, so a dict laundered through repr — {'fact': 'Always greet'} —
+    # passed the filter and reached the spec as a fact. The gaps loop below
+    # already rejects non-dict entries outright, for the same reason.
+    facts = [f for f in as_list(result.get("facts"))
+             if is_str(f) and not _looks_like_shard(f, max_len=MAX_FACT_CHARS,
+                                                    markers=_FACT_SHARD_MARKERS)]
     gaps = [
         Gap(dimension=g["dimension"], why_it_matters=as_opt_str(g.get("why_it_matters")))
         for g in as_list(result.get("gaps"))

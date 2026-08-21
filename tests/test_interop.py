@@ -354,6 +354,6 @@ def test_an_exported_regex_grades_the_way_run_check_does():
     assert proc.returncode == 0, proc.stderr
     js_verdicts = json.loads(proc.stdout)
 
-    for (pattern, output), js in zip(cases, js_verdicts):
+    for (pattern, output), js in zip(cases, js_verdicts, strict=True):
         py, _why = run_check(Check(kind="regex", value=pattern), output)
         assert py is js, f"{pattern!r} on {output!r}: eval says {py}, export says {js}"

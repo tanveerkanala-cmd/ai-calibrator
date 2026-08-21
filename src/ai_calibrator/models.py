@@ -22,6 +22,13 @@ _YAML_LINE_SEPARATORS = str.maketrans({"\u0085": "\n", "\u2028": "\n", "\u2029":
 
 
 def _normalize_yaml_text(v: object) -> object:
+    if isinstance(v, bytes):
+        # A YAML `!!binary` field loads as bytes, survives into an extra, and then
+        # makes model_dump(mode="json") raise on the next save — so the project
+        # loads fine and becomes permanently unsaveable, with every mutating
+        # command ending in a raw traceback that names nothing. Decoded here so
+        # the value is carried through as text instead.
+        return v.decode("utf-8", "replace")
     if isinstance(v, str):
         return v.translate(_YAML_LINE_SEPARATORS)
     if isinstance(v, list):
@@ -342,7 +349,13 @@ def content_hash(*parts: str) -> str:
     authenticate it."""
     import hashlib
 
-    payload = "\x00".join(parts)
+    # Length-prefixed, not merely NUL-joined: a turn is allowed to CONTAIN a NUL
+    # (an engine's JSON can carry \u0000 and it round-trips through the project
+    # file), and with a bare join "a\x00b" and ("a", "b") hash identically — so a
+    # recompile that split one turn into two would let an old scorecard's
+    # verdicts be credited to a question that was never asked, which is the one
+    # thing this hash exists to prevent.
+    payload = "\x00".join(f"{len(p)}:{p}" for p in parts)
     return hashlib.sha256(payload.encode("utf-8", "surrogatepass")).hexdigest()[:16]
 
 
@@ -426,10 +439,13 @@ def validate_project_name(v: object) -> str:
     if not isinstance(v, str) or not v.strip():
         raise ValueError("project name must be a non-empty string")
     v = v.strip()
-    if len(v) > 120:
-        # the name becomes a directory name; filesystems cap components at
-        # ~255 bytes — fail here with a clear message, not an OSError later
-        raise ValueError("project name too long (max 120 characters)")
+    # Measured in BYTES, because that is what the cap actually is: ext4/xfs/btrfs
+    # cap a component at 255 bytes, so 86 CJK characters is already over while
+    # passing a 120-character test — and the failure then arrives as an
+    # ENAMETOOLONG OSError from mkdir, which is exactly what this check exists to
+    # prevent. (APFS counts differently, which is why this never showed up here.)
+    if len(v) > 120 or len(v.encode("utf-8")) > 240:
+        raise ValueError("project name too long (max 120 characters / 240 bytes)")
     # The name becomes a directory component. Reject path separators, the
     # Windows-reserved characters (\ / : * ? " < > |), control chars, and the
     # . / .. specials — so a name valid on POSIX can't create an invalid path

@@ -16,6 +16,7 @@ from pathlib import Path
 import yaml
 
 from .coerce import safe_token
+from . import rag
 from .compile import rag_config, render_system_prompt, rubric
 from .engines.base import parse_engine_spec
 from .models import Project
@@ -190,7 +191,12 @@ def export_bundle(project: Project, *, project_dir: str | Path, name: str | None
 
     # Only claim an index if one actually exists on disk — otherwise the config
     # would point the runtime at a `knowledge.lancedb` that was never built.
-    has_index = (Path(project_dir) / "knowledge.lancedb").exists()
+    # `rag.probe` is the question, not `exists()`: lancedb.connect creates the
+    # directory before the table is written, so an interrupted ingest (or the rag
+    # extra uninstalled afterwards) leaves a present-but-empty index. The bundle
+    # then promised grounded answers, suppressed the no-index warning, and
+    # retrieved nothing for every query.
+    has_index = rag.probe(project_dir) is None
     rag_cfg = rag_config(spec)
     if not has_index:
         rag_cfg["index"] = None

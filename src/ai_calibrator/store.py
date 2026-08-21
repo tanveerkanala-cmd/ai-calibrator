@@ -279,6 +279,10 @@ knowledge.db
 *.lancedb/
 calibration-report.*
 badge.json
+# ...except the two artifacts the docs tell you to commit and serve: the badge
+# endpoint shields.io reads, and the shareable certificate.
+!badge.json
+!calibration-report.html
 
 # never commit credentials
 .env
