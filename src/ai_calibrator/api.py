@@ -10,6 +10,7 @@ Run with `calibrate serve`. Needs the `api` extra:  pip install -e '.[api]'
 
 from __future__ import annotations
 
+import hashlib
 import math
 import os
 import tempfile
@@ -144,6 +145,10 @@ class MergeApplyBody(BaseModel):
     sources: list[str]
     goal: str | None = None
     drops: list[int] = Field(default_factory=list)
+    # The fingerprint /api/merge/detect returned. Optional so an older client
+    # still works, but without it a drop index cannot be checked against the set
+    # it was chosen from.
+    statements_fingerprint: str | None = None
     additions: list[str] = Field(default_factory=list)
 
 
@@ -1223,6 +1228,11 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             raise HTTPException(400, "both projects must have a compiled spec")
         return diff_dict(diff_specs(pa.spec, pb.spec))
 
+    def _statements_fingerprint(statements) -> str:
+        """Identity of the gathered statement set the drop indices index into."""
+        material = "\x00".join(f"{s.idx}:{s.kind}:{s.stakeholder}:{s.text}" for s in statements)
+        return hashlib.sha256(material.encode("utf-8", "surrogatepass")).hexdigest()[:16]
+
     @app.post("/api/merge/detect")
     def merge_detect(body: MergeDetectBody, make_engine=Depends(_engine_factory)):
         from .stakeholders import (build_merged_spec, conflict_dict, detect_conflicts, gather,
@@ -1246,6 +1256,11 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
                     "format": preview.format, "refusal_policy": preview.refusal_policy}
         return {
             "stakeholders": list(named),
+            # Indices are positions in THIS gathered set. A source edited between
+            # detect and apply renumbers it, so `drops:[4]` deletes whatever is
+            # fourth then — a different rule than the one the owner ruled on.
+            # Echo this back on apply and it can refuse instead.
+            "statements_fingerprint": _statements_fingerprint(statements),
             "statements": [{"idx": s.idx, "text": s.text, "kind": s.kind, "stakeholder": s.stakeholder}
                            for s in statements],
             "conflicts": [conflict_dict(c) for c in conflicts],
@@ -1264,6 +1279,13 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
     def merge_apply(body: MergeApplyBody):
         from .stakeholders import merged_project
         named, first = _merge_sources(body.sources)
+        if body.statements_fingerprint is not None:
+            from .stakeholders import gather
+            current = _statements_fingerprint(gather(named))
+            if current != body.statements_fingerprint:
+                raise HTTPException(409, "a source changed since /api/merge/detect ran, so the "
+                                         "drop indices no longer name the same rules — re-run "
+                                         "detect and re-confirm the resolutions")
         out_name = _safe(body.out)
         out_dir = root / out_name
         goal = body.goal or first.goal

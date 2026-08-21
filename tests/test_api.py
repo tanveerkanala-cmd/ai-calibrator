@@ -1325,3 +1325,38 @@ def test_answers_are_not_applied_to_a_question_that_changed(tmp_path):
                 json={"answers": {"q1": "30 days"}, "asked": {"q1": "What is the refund window?"}})
     assert r2.json()["applied"] == 1
     assert load_project(tmp_path / "p").interview[0].answer == "30 days"
+
+
+def test_merge_apply_refuses_drop_indices_from_a_stale_detect(tmp_path):
+    """`drops` are positions in the set /merge/detect gathered. A source edited
+    between the two calls renumbers that set, so the same indices delete
+    different rules — silently, with a 200 — and the merged AI ships the
+    contradiction the owner thought they had resolved."""
+    import pytest
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from ai_calibrator.api import create_app
+    from ai_calibrator.models import BehaviorSpec, Project
+    from ai_calibrator.store import load_project, save_project
+
+    for name, standards in (("legal", ["L-s1", "Always add a disclaimer"]),
+                            ("sales", ["S-s1", "Never add disclaimers"])):
+        p = Project(name=name, goal="g")
+        p.spec = BehaviorSpec(goal="g", standards=standards)
+        save_project(p, tmp_path / name)
+
+    c = TestClient(create_app(tmp_path))
+    fingerprint = "0" * 16          # what a stale client would echo back
+
+    # A source changes between detect and apply.
+    legal = load_project(tmp_path / "legal")
+    legal.spec.standards.insert(0, "L-NEW from teach")
+    save_project(legal, tmp_path / "legal")
+
+    r = c.post("/api/merge/apply", json={"out": "merged", "sources": ["legal", "sales"],
+                                         "drops": [4], "statements_fingerprint": fingerprint})
+
+    assert r.status_code == 409
+    assert "no longer name the same rules" in r.json()["detail"]
+    assert not (tmp_path / "merged").exists()

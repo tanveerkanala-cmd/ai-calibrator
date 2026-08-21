@@ -7,6 +7,8 @@ ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, or an `ant auth login` profile — so
 
 from __future__ import annotations
 
+import json
+
 import os
 import sys
 from typing import Any
@@ -74,7 +76,16 @@ def _friendly_anthropic_error(exc: Exception, name: str) -> EngineError | None:
         return EngineError(f"Could not reach Anthropic for {name} (network/endpoint issue): {exc}")
     if isinstance(exc, anthropic.APIError):
         status = getattr(exc, "status_code", "?")
-        return EngineError(f"Anthropic API error ({status}) for {name}: {getattr(exc, 'message', exc)}")
+        err = EngineError(f"Anthropic API error ({status}) for {name}: {getattr(exc, 'message', exc)}")
+        # Carry the HTTP status, the contract `engines.base` declares and the
+        # OpenAI adapter implements: callers use it to tell "this model rejected
+        # the request" (400 — e.g. no structured-output support, safe to retry
+        # unconstrained) from a timeout / 429 / 5xx, which must never silently
+        # downgrade to an unconstrained call. Without it the DEFAULT provider was
+        # the one adapter that could not recover from a model that cannot do
+        # json_schema.
+        err.status = status if isinstance(status, int) else None
+        return err
     # The base SDK error (NOT an APIError) is what a missing / empty key raises at
     # request-build time ("Could not resolve authentication method …") — the exact
     # raw jargon a keyless first run used to hit. Treat it as missing credentials.
@@ -202,4 +213,22 @@ class AnthropicEngine(Engine):
             # `or ""` guards a text block whose .text is None — the contract is a str.
             return next((b.text or "" for b in blocks if getattr(b, "type", None) == "text"), "")
 
-        return call_json(_call) if schema is not None else _call()
+        if schema is None:
+            return _call()
+        try:
+            return call_json(_call)
+        except EngineError as exc:
+            # ONLY "this model does not support structured output" may fall back,
+            # the same rule the OpenAI adapter follows: catching everything would
+            # let a timeout, a 429, a 5xx or an auth failure silently drop schema
+            # enforcement, and an unconstrained-but-parseable reply would then be
+            # accepted as a successfully constrained result.
+            if getattr(exc, "status", None) != 400:
+                raise
+            kwargs.pop("output_config", None)
+            kwargs["messages"] = [
+                {"role": "user",
+                 "content": prompt + "\n\nRespond with ONLY valid JSON matching this schema: "
+                            + json.dumps(schema)},
+            ]
+            return call_json(_call)
