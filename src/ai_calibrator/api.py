@@ -33,6 +33,7 @@ except ImportError as exc:  # pragma: no cover - depends on optional extra
 
 from .auth import all_status
 from .models import EngineBinding, Project, TaskType
+from .paths import contained
 from .store import (LOCK_FILE, PROJECT_FILE, load_project, project_lock, save_project,
                     write_project_gitignore)
 from .webguard import MAX_BODY_BYTES, install_guard
@@ -259,7 +260,12 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
             raise HTTPException(400, f"invalid project name: {exc}")
 
     def _dir(name: str) -> Path:
-        return root / _safe(name)
+        # Every route reaches a project's directory through this one join: the
+        # validated name, then the containment backstop (see paths.py).
+        try:
+            return contained(root, _safe(name))
+        except ValueError as exc:
+            raise HTTPException(400, f"invalid project name: {exc}")
 
     def _load(name: str) -> Project:
         try:
@@ -395,7 +401,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
     @app.post("/api/projects")
     def create_project(body: CreateProjectBody):
         name = _safe(body.name)  # canonical: stored name == directory name == routing key
-        d = root / name
+        d = _dir(name)
         project = Project(name=name, goal=body.goal, task_type=body.task_type)
         # Answer the permanent condition before waiting on the lock: a name that
         # already exists will still exist in ten seconds, so making the caller
@@ -490,7 +496,10 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         d = _dir(name)
         if not (d / "project.yaml").exists():
             raise HTTPException(404, f"no project {name!r}")
-        target = d / "materials" / Path(filename).name
+        try:
+            target = contained(d / "materials", Path(filename).name)
+        except ValueError:  # "", "." or ".." — never a material file
+            raise HTTPException(404, f"no material {filename!r}")
         if not target.is_file():
             raise HTTPException(404, f"no material {filename!r}")
         with _held(d, name):
@@ -508,10 +517,14 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         # files: "" (from "."), ".." (the project dir), and anything past the
         # filesystem's component limit. Each one reaches os.replace below and comes
         # back as a 500 + traceback; every other bad input on this API is a clean 4xx.
+        # `contained` refuses the first two (they resolve to materials/ or above it).
         base = Path(file.filename or "upload.txt").name
-        if base in ("", ".", "..") or len(base.encode("utf-8")) > 200:
+        try:
+            if len(base.encode("utf-8")) > 200:
+                raise ValueError(base)
+            target = contained(mats, base)
+        except ValueError:
             raise HTTPException(400, "invalid filename — give the file a plain name under 200 bytes")
-        target = mats / base
         # Stream to a unique temp file, then atomically rename into place. A
         # disconnect mid-upload leaves no partial file, and two concurrent uploads
         # of the same name can't interleave bytes — the last complete one wins
@@ -1184,7 +1197,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         if not body.prompt.strip():
             raise HTTPException(400, "prompt is empty")
         name = _safe(body.name)
-        d = root / name
+        d = _dir(name)
         if (d / "project.yaml").exists():   # permanent — don't wait out the lock for it
             raise HTTPException(409, "project already exists")
         # Before spending an engine call on it: an import writes project.yaml,
@@ -1254,7 +1267,7 @@ def create_app(projects_root: Path | None = None, allowed_hosts: list[str] | Non
         from .stakeholders import merged_project
         named, first = _merge_sources(body.sources)
         out_name = _safe(body.out)
-        out_dir = root / out_name
+        out_dir = _dir(out_name)
         goal = body.goal or first.goal
         if (out_dir / "project.yaml").exists():   # permanent — don't wait out the lock
             raise HTTPException(409, "merged project already exists")

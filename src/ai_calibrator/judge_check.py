@@ -21,6 +21,7 @@ from pathlib import Path
 
 from .coerce import as_bool
 from .models import BehaviorSpec, Scorecard
+from .paths import run_dir
 from .store import atomic_write_text
 
 LABELS_FILE = "human-labels.json"
@@ -28,10 +29,7 @@ LABELS_FILE = "human-labels.json"
 
 def _labels_path(project_dir: str | Path, run_id: str) -> Path:
     # run_id becomes a path component — same guard as drift.load_scorecard.
-    if not isinstance(run_id, str) or not run_id.strip() \
-            or "/" in run_id or "\\" in run_id or ".." in run_id:
-        raise ValueError(f"invalid run id: {run_id!r}")
-    return Path(project_dir) / "evals" / run_id / LABELS_FILE
+    return run_dir(project_dir, run_id) / LABELS_FILE
 
 
 def save_labels(project_dir: str | Path, run_id: str, labels: list[dict]) -> Path:

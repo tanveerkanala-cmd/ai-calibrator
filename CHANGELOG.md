@@ -33,6 +33,17 @@ first real run of the experiment the tool exists for:
   "retrieval ON" for a prompt-only bot. The report now probes the index the
   same way eval's own retrieval-off warning does.
 
+### Security
+- **Every path built from a request or flag value is now checked for where it
+  lands.** Project names, run ids, upload filenames and engine roles already had
+  validators; a new `paths.contained` sits under all of them and refuses any
+  join that resolves outside its base directory. It closes one gap the
+  validators missed: on Windows, a run id like `D:x` joined onto the project's
+  `evals\` points at another drive (no separator, no `..`). `judge-check` would
+  read a `scorecard.json` from there and, if one parsed, write its labels file
+  beside it. Reachable only through the local API, which listens on 127.0.0.1. Clears all 90 CodeQL `py/path-injection`
+  alerts. `train-engine` now prints the bundle's absolute path.
+
 ## [0.0.2] — 2026-08-19
 
 ### Added
