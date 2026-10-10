@@ -34,6 +34,7 @@ from .coerce import as_bool
 from .engines.base import Engine
 from .finetune import _hand_edited_tunables, recommend_recipe, render_train_py
 from .models import result_matches_test
+from .paths import contained
 from .store import atomic_write_text
 
 TRAINABLE_ROLES = {"extractor", "interviewer", "predictor", "compiler", "judge"}
@@ -61,7 +62,7 @@ MIN_PROVE_SAMPLES = 3
 
 def read_log(project_dir: str | Path, role: str) -> list[dict]:
     """Read ``logs/<role>.jsonl``, skipping any malformed (e.g. interleaved) lines."""
-    f = Path(project_dir) / "logs" / f"{role}.jsonl"
+    f = contained(Path(project_dir) / "logs", f"{role}.jsonl")
     if not f.exists():
         return []
     rows: list[dict] = []
@@ -426,7 +427,7 @@ def export_engine_bundle(project_dir: str | Path, role: str, *, base_model: str 
         human = sum(1 for r in rows if HUMAN_RATIONALE in r["messages"][-1]["content"])
     recipe = recommend_recipe(len(rows), base_model=base_model)
 
-    out = Path(project_dir) / "trained-engines" / role
+    out = contained(Path(project_dir) / "trained-engines", role)
     out.mkdir(parents=True, exist_ok=True)
     # Re-exporting must not silently revert hyperparameters the user tuned by
     # hand — the same rule the fine-tune bundle follows, and the same key set,

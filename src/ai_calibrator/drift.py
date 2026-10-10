@@ -20,6 +20,7 @@ from pathlib import Path
 from .engines.base import Engine
 from .eval import next_run_id, run_eval, save_scorecard
 from .models import Scorecard, same_question
+from .paths import run_dir
 
 
 @dataclass
@@ -145,11 +146,8 @@ def compare_scorecards(baseline: Scorecard, candidate: Scorecard, *, tolerance: 
 
 def load_scorecard(project_dir: str | Path, run_id: str) -> Scorecard:
     # run_id is used as a path component (and may be user-supplied via
-    # --baseline / --candidate) — reject empty or traversal-bearing ids.
-    if not isinstance(run_id, str) or not run_id.strip() \
-            or "/" in run_id or "\\" in run_id or ".." in run_id:
-        raise ValueError(f"invalid run id: {run_id!r}")
-    f = Path(project_dir) / "evals" / run_id / "scorecard.json"
+    # --baseline / --candidate) — run_dir refuses any id that would leave evals/.
+    f = run_dir(project_dir, run_id) / "scorecard.json"
     if not f.exists():
         raise FileNotFoundError(f"no scorecard at evals/{run_id}/")
     return Scorecard.model_validate(json.loads(f.read_text(encoding="utf-8")))
